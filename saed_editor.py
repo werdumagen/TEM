@@ -102,12 +102,21 @@ class PointEditor(tk.Frame):
 
     # ---------- UI ----------
     def _build_ui(self):
-        toolbar = ttk.Frame(self, padding=(16, 12, 16, 4))
-        toolbar.pack(side=tk.TOP, fill=tk.X)
-        toolbar.grid_columnconfigure(2, weight=1)
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        history_group = ttk.Frame(toolbar)
-        history_group.grid(row=0, column=0, sticky="w")
+        side_panel = ttk.Frame(self, padding=(16, 16, 12, 16))
+        side_panel.grid(row=0, column=0, sticky="ns")
+        side_panel.columnconfigure(0, weight=1)
+
+        controls = ttk.Frame(side_panel)
+        controls.pack(side=tk.TOP, fill=tk.X)
+
+        header_row = ttk.Frame(controls)
+        header_row.pack(fill=tk.X)
+
+        history_group = ttk.Frame(header_row)
+        history_group.pack(side=tk.LEFT)
         ttk.Button(history_group, text="◀", width=3, command=self._undo_btn, style="Toolbutton").pack(
             side=tk.LEFT, padx=(0, 4)
         )
@@ -115,10 +124,13 @@ class PointEditor(tk.Frame):
             side=tk.LEFT, padx=(0, 4)
         )
 
-        ttk.Separator(toolbar, orient=tk.VERTICAL).grid(row=0, column=1, sticky="ns", padx=10, pady=4)
+        help_button = ttk.Button(header_row, text="?", width=3, command=self._toggle_help, style="Toolbutton")
+        help_button.pack(side=tk.RIGHT)
 
-        zoom_group = ttk.LabelFrame(toolbar, text="Масштаб", padding=(12, 8, 12, 10))
-        zoom_group.grid(row=0, column=2, sticky="we")
+        ttk.Separator(controls, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 10))
+
+        zoom_group = ttk.LabelFrame(controls, text="Масштаб", padding=(12, 8, 12, 10))
+        zoom_group.pack(fill=tk.X)
         self.zoom_var = tk.DoubleVar(value=self.zoom_val)
         self.zoom_scale = ttk.Scale(zoom_group, from_=0, to=100, variable=self.zoom_var, command=self._on_zoom_change)
         self.zoom_scale.pack(fill=tk.X, padx=4, pady=(0, 6))
@@ -126,30 +138,18 @@ class PointEditor(tk.Frame):
         self.zoom_hint.pack(fill=tk.X, padx=4)
         self.zoom_scale.set(self.zoom_val)
 
-        ttk.Separator(toolbar, orient=tk.VERTICAL).grid(row=0, column=3, sticky="ns", padx=10, pady=4)
+        ttk.Separator(controls, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 10))
 
-        help_button = ttk.Button(toolbar, text="?", width=3, command=self._toggle_help, style="Toolbutton")
-        help_button.grid(row=0, column=4, sticky="ne")
-
-        ttk.Separator(toolbar, orient=tk.HORIZONTAL).grid(row=1, column=0, columnspan=5, sticky="ew", pady=(8, 6))
-
-        file_group = ttk.Frame(toolbar)
-        file_group.grid(row=2, column=0, columnspan=2, sticky="w")
+        file_group = ttk.Frame(controls)
+        file_group.pack(fill=tk.X)
         ttk.Button(file_group, text="Открыть JSON…", command=self._open_json).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(file_group, text="Сохранить", command=self._save_points).pack(side=tk.LEFT, padx=(0, 6))
 
-        analysis_group = ttk.Frame(toolbar)
-        analysis_group.grid(row=2, column=2, sticky="w")
+        analysis_group = ttk.Frame(controls)
+        analysis_group.pack(fill=tk.X, pady=(8, 0))
         ttk.Button(analysis_group, text="Начать анализ", command=self._start_analysis).pack(side=tk.LEFT, padx=(0, 6))
 
-        toolbar.grid_rowconfigure(2, weight=0)
-
-        status_frame = ttk.Frame(self, padding=(16, 0, 16, 6))
-        status_frame.pack(side=tk.TOP, fill=tk.X)
-        self.status_label = ttk.Label(status_frame, anchor="w")
-        self.status_label.pack(fill=tk.X)
-
-        self.help_panel = ttk.LabelFrame(self, text="Подсказки", padding=(16, 12, 16, 12))
+        self.help_panel = ttk.LabelFrame(side_panel, text="Подсказки", padding=(16, 12, 16, 12))
         help_text = (
             "ЛКМ по пустому месту — добавить точку\n"
             "ЛКМ по центру — перетащить центр и пересчитать фильтры\n"
@@ -160,11 +160,24 @@ class PointEditor(tk.Frame):
         ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=780).pack(fill=tk.X)
         self._help_visible = False
 
-        self.fig = plt.Figure(figsize=(9.4, 6.4));
+        self._side_spacer = ttk.Frame(side_panel)
+        self._side_spacer.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        status_frame = ttk.Frame(side_panel, padding=(0, 0, 0, 0))
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
+        self.status_label = ttk.Label(status_frame, anchor="w")
+        self.status_label.pack(fill=tk.X)
+
+        canvas_frame = ttk.Frame(self, padding=(0, 16, 16, 16))
+        canvas_frame.grid(row=0, column=1, sticky="nsew")
+        canvas_frame.rowconfigure(0, weight=1)
+        canvas_frame.columnconfigure(0, weight=1)
+
+        self.fig = plt.Figure(figsize=(9.4, 6.4))
         self.ax = self.fig.add_subplot(111)
         self.ax.axis("off")
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=canvas_frame)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         self.canvas.mpl_connect("button_press_event", self._on_down)
         self.canvas.mpl_connect("button_release_event", self._on_up)
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
@@ -178,7 +191,7 @@ class PointEditor(tk.Frame):
     def _toggle_help(self):
         self._help_visible = not self._help_visible
         if self._help_visible:
-            self.help_panel.pack(side=tk.TOP, fill=tk.X, padx=16, pady=(0, 8))
+            self.help_panel.pack(side=tk.TOP, fill=tk.X, pady=(12, 8), before=self._side_spacer)
             self._set_status("Подробные подсказки раскрыты")
         else:
             self.help_panel.pack_forget()

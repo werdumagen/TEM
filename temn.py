@@ -127,14 +127,19 @@ class SAEDLauncherFrame(ttk.Frame):
     def __init__(self, master: tk.Misc, controller=None):
         super().__init__(master)
         self.controller = controller
+        self._scroll_canvas = None
+        self._scroll_window_id = None
         self._build_ui()
 
     def _build_ui(self):
-        container = ttk.Frame(self, padding=(16, 16, 16, 12))
-        container.pack(fill=tk.BOTH, expand=True)
-        container.grid_columnconfigure(0, weight=1)
+        outer = ttk.Frame(self)
+        outer.pack(fill=tk.BOTH, expand=True)
 
-        data_box = ttk.LabelFrame(container, text="Исходные данные", padding=(12, 10, 12, 12))
+        fixed = ttk.Frame(outer, padding=(16, 16, 16, 0))
+        fixed.pack(side=tk.TOP, fill=tk.X)
+        fixed.grid_columnconfigure(0, weight=1)
+
+        data_box = ttk.LabelFrame(fixed, text="Исходные данные", padding=(12, 10, 12, 12))
         data_box.grid(row=0, column=0, sticky="nsew")
         for col in (0, 1, 2, 3):
             weight = 1 if col == 1 else 0
@@ -165,7 +170,7 @@ class SAEDLauncherFrame(ttk.Frame):
             foreground="#555555"
         ).grid(row=3, column=0, columnspan=4, sticky="we", padx=6, pady=(0, 4))
 
-        pre_box = ttk.LabelFrame(container, text="Предобработка", padding=(12, 10, 12, 12))
+        pre_box = ttk.LabelFrame(fixed, text="Предобработка", padding=(12, 10, 12, 12))
         pre_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         pre_box.grid_columnconfigure(1, weight=1)
 
@@ -195,8 +200,37 @@ class SAEDLauncherFrame(ttk.Frame):
             foreground="#555555"
         ).grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 0))
 
-        detect_box = ttk.LabelFrame(container, text="Детектор и уточнение", padding=(12, 10, 12, 12))
-        detect_box.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        scroll_host = ttk.Frame(outer)
+        scroll_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(scroll_host, borderwidth=0, highlightthickness=0)
+        vscroll = ttk.Scrollbar(scroll_host, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable = ttk.Frame(canvas, padding=(16, 12, 16, 12))
+        scrollable.grid_columnconfigure(0, weight=1)
+
+        self._scroll_canvas = canvas
+        self._scroll_window_id = canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=vscroll.set)
+
+        scrollable.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda e: canvas.itemconfigure(self._scroll_window_id, width=e.width)
+        )
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        scrollable.bind("<Enter>", self._activate_scroll)
+        scrollable.bind("<Leave>", self._deactivate_scroll)
+        canvas.bind("<Enter>", self._activate_scroll)
+        canvas.bind("<Leave>", self._deactivate_scroll)
+
+        detect_box = ttk.LabelFrame(scrollable, text="Детектор и уточнение", padding=(12, 10, 12, 12))
+        detect_box.grid(row=0, column=0, sticky="nsew")
         detect_box.grid_columnconfigure(1, weight=1)
 
         ttk.Label(
@@ -265,8 +299,8 @@ class SAEDLauncherFrame(ttk.Frame):
             foreground="#555555"
         ).grid(row=14, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))
 
-        action_box = ttk.Frame(container, padding=(0, 12, 0, 0))
-        action_box.grid(row=3, column=0, sticky="nsew")
+        action_box = ttk.Frame(scrollable, padding=(0, 12, 0, 0))
+        action_box.grid(row=1, column=0, sticky="nsew")
         action_box.grid_columnconfigure(0, weight=1)
 
         ttk.Label(
@@ -281,6 +315,30 @@ class SAEDLauncherFrame(ttk.Frame):
         )
 
         self._on_preproc_change(None)
+
+    def _activate_scroll(self, _event):
+        if self._scroll_canvas is None:
+            return
+        self._scroll_canvas.bind_all("<MouseWheel>", self._on_scroll_mousewheel)
+        self._scroll_canvas.bind_all("<Button-4>", self._on_scroll_mousewheel)
+        self._scroll_canvas.bind_all("<Button-5>", self._on_scroll_mousewheel)
+
+    def _deactivate_scroll(self, _event):
+        if self._scroll_canvas is None:
+            return
+        self._scroll_canvas.unbind_all("<MouseWheel>")
+        self._scroll_canvas.unbind_all("<Button-4>")
+        self._scroll_canvas.unbind_all("<Button-5>")
+
+    def _on_scroll_mousewheel(self, event):
+        if self._scroll_canvas is None:
+            return
+        if getattr(event, "delta", 0):
+            self._scroll_canvas.yview_scroll(int(-event.delta / 120), "units")
+        elif getattr(event, "num", None) == 4:
+            self._scroll_canvas.yview_scroll(-1, "units")
+        elif getattr(event, "num", None) == 5:
+            self._scroll_canvas.yview_scroll(1, "units")
 
     def _on_preproc_change(self, _evt):
         mode = self.cmb_pre.get()
