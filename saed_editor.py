@@ -15,7 +15,7 @@ import sys, json, subprocess
 from pathlib import Path
 from typing import Optional
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox
 import numpy as np
 from PIL import Image
 import matplotlib
@@ -102,28 +102,66 @@ class PointEditor(tk.Frame):
 
     # ---------- UI ----------
     def _build_ui(self):
-        top = tk.Frame(self); top.pack(side=tk.TOP, fill=tk.X)
+        toolbar = ttk.Frame(self, padding=(16, 12, 16, 4))
+        toolbar.pack(side=tk.TOP, fill=tk.X)
+        toolbar.grid_columnconfigure(2, weight=1)
 
-        tk.Button(top, text="◀", width=2, height=1, command=self._undo_btn).pack(side=tk.LEFT, padx=(6,2), pady=6)
-        tk.Button(top, text="▶", width=2, height=1, command=self._redo_btn).pack(side=tk.LEFT, padx=(2,10), pady=6)
-
-        self.zoom_scale = tk.Scale(
-            top, from_=0, to=100, orient=tk.HORIZONTAL, length=240,
-            label="Масштаб (0=весь кадр, 100=50×50)", command=self._on_zoom_change
+        history_group = ttk.Frame(toolbar)
+        history_group.grid(row=0, column=0, sticky="w")
+        ttk.Button(history_group, text="◀", width=3, command=self._undo_btn, style="Toolbutton").pack(
+            side=tk.LEFT, padx=(0, 4)
         )
+        ttk.Button(history_group, text="▶", width=3, command=self._redo_btn, style="Toolbutton").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+
+        ttk.Separator(toolbar, orient=tk.VERTICAL).grid(row=0, column=1, sticky="ns", padx=10, pady=4)
+
+        zoom_group = ttk.LabelFrame(toolbar, text="Масштаб", padding=(12, 8, 12, 10))
+        zoom_group.grid(row=0, column=2, sticky="we")
+        self.zoom_var = tk.DoubleVar(value=self.zoom_val)
+        self.zoom_scale = ttk.Scale(zoom_group, from_=0, to=100, variable=self.zoom_var, command=self._on_zoom_change)
+        self.zoom_scale.pack(fill=tk.X, padx=4, pady=(0, 6))
+        self.zoom_hint = ttk.Label(zoom_group, anchor="w")
+        self.zoom_hint.pack(fill=tk.X, padx=4)
         self.zoom_scale.set(self.zoom_val)
-        self.zoom_scale.pack(side=tk.LEFT, padx=(0,10), pady=6)
 
-        tk.Button(top, text="Открыть JSON…", command=self._open_json).pack(side=tk.LEFT, padx=6, pady=6)
-        tk.Button(top, text="Сохранить", command=self._save_points).pack(side=tk.LEFT, padx=6, pady=6)
-        tk.Button(top, text="Начать анализ", command=self._start_analysis).pack(side=tk.LEFT, padx=10, pady=6)
+        ttk.Separator(toolbar, orient=tk.VERTICAL).grid(row=0, column=3, sticky="ns", padx=10, pady=4)
 
-        tk.Label(
-            top,
-            text="ЛКМ по центру: тянуть центр • Отпускание ЛКМ: кадр центрируется • ЛКМ по пустому месту: добавить точку • ПКМ по точке: удалить • СКМ по точке: подсказка • Shift+Drag: прямоугольник-удаление"
-        ).pack(side=tk.LEFT, padx=12)
+        help_button = ttk.Button(toolbar, text="?", width=3, command=self._toggle_help, style="Toolbutton")
+        help_button.grid(row=0, column=4, sticky="ne")
 
-        self.fig = plt.Figure(figsize=(9.4, 6.4)); self.ax = self.fig.add_subplot(111)
+        ttk.Separator(toolbar, orient=tk.HORIZONTAL).grid(row=1, column=0, columnspan=5, sticky="ew", pady=(8, 6))
+
+        file_group = ttk.Frame(toolbar)
+        file_group.grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Button(file_group, text="Открыть JSON…", command=self._open_json).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(file_group, text="Сохранить", command=self._save_points).pack(side=tk.LEFT, padx=(0, 6))
+
+        analysis_group = ttk.Frame(toolbar)
+        analysis_group.grid(row=2, column=2, sticky="w")
+        ttk.Button(analysis_group, text="Начать анализ", command=self._start_analysis).pack(side=tk.LEFT, padx=(0, 6))
+
+        toolbar.grid_rowconfigure(2, weight=0)
+
+        status_frame = ttk.Frame(self, padding=(16, 0, 16, 6))
+        status_frame.pack(side=tk.TOP, fill=tk.X)
+        self.status_label = ttk.Label(status_frame, anchor="w")
+        self.status_label.pack(fill=tk.X)
+
+        self.help_panel = ttk.LabelFrame(self, text="Подсказки", padding=(16, 12, 16, 12))
+        help_text = (
+            "ЛКМ по пустому месту — добавить точку\n"
+            "ЛКМ по центру — перетащить центр и пересчитать фильтры\n"
+            "ПКМ по точке — удалить\n"
+            "Средняя кнопка по точке — показать координаты и интенсивность\n"
+            "Shift + перетаскивание — прямоугольное удаление диапазона"
+        )
+        ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=780).pack(fill=tk.X)
+        self._help_visible = False
+
+        self.fig = plt.Figure(figsize=(9.4, 6.4));
+        self.ax = self.fig.add_subplot(111)
         self.ax.axis("off")
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -131,6 +169,34 @@ class PointEditor(tk.Frame):
         self.canvas.mpl_connect("button_release_event", self._on_up)
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
         self.canvas.mpl_connect("key_press_event", self._on_key)
+
+        self._default_status = "Режим: редактор точек"
+        self._status_message = ""
+        self._update_zoom_hint()
+        self._set_status(self._default_status)
+
+    def _toggle_help(self):
+        self._help_visible = not self._help_visible
+        if self._help_visible:
+            self.help_panel.pack(side=tk.TOP, fill=tk.X, padx=16, pady=(0, 8))
+            self._set_status("Подробные подсказки раскрыты")
+        else:
+            self.help_panel.pack_forget()
+
+    def _update_zoom_hint(self):
+        if hasattr(self, "zoom_hint"):
+            value = int(round(self.zoom_var.get())) if hasattr(self, "zoom_var") else self.zoom_val
+            self.zoom_hint.configure(text=f"Текущее увеличение: {value}% (0 = весь кадр)")
+
+    def _set_status(self, text: str):
+        self._status_message = text
+        if hasattr(self, "status_label"):
+            self.status_label.configure(text=text)
+        if self.controller is not None and hasattr(self.controller, "set_status"):
+            try:
+                self.controller.set_status(text)
+            except Exception:
+                pass
 
     # ---------- IO ----------
     def _open_json(self):
@@ -149,6 +215,8 @@ class PointEditor(tk.Frame):
             self.view_cy = None
         self._ensure_view_center()
         self._redraw()
+        self._update_zoom_hint()
+        self._set_status(f"Загружено: {path.name}")
 
     def _load_input_json(self, path: Path):
         try:
@@ -215,8 +283,10 @@ class PointEditor(tk.Frame):
             },
             "points": pts
         }
-        edited = self.image_path.with_name("saed_input.edited.json") if self.image_path else Path("saed_input.edited.json")
+        edited = self.image_path.with_name("saed_input.edited.json") if self.image_path else Path(
+            "saed_input.edited.json")
         edited.write_text(json.dumps(si, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._set_status(f"Точки сохранены: {base.name}")
         return base
 
     # ---------- Helpers ----------
@@ -401,8 +471,15 @@ class PointEditor(tk.Frame):
         self.ax.set_ylim(y1, y0)
 
     def _on_zoom_change(self, val):
-        try: self.zoom_val = int(float(val))
-        except Exception: self.zoom_val = 0
+        try:
+            self.zoom_val = int(float(val))
+        except Exception:
+            self.zoom_val = 0
+        if hasattr(self, "zoom_var"):
+            current = int(round(self.zoom_var.get()))
+            if current != self.zoom_val:
+                self.zoom_var.set(self.zoom_val)
+        self._update_zoom_hint()
         self._clear_tooltip()
         self._redraw()
 
@@ -541,6 +618,7 @@ class PointEditor(tk.Frame):
     # ---------- Анализ ----------
     def _start_analysis(self):
         saved = self._save_points()  # сохраняет текущие точки (и интенсивности) и возвращает путь к spots.json
+        self._set_status("Подготовка данных для анализа…")
 
         # payload для fibonachi_analysis
         payload_path = None
@@ -616,6 +694,7 @@ class PointEditor(tk.Frame):
             try:
 
                 self.controller.open_analysis(payload_path, self.image_path, saved)
+                self._set_status("Анализ открыт во вкладке")
 
                 used_controller = True
 
@@ -651,6 +730,7 @@ class PointEditor(tk.Frame):
                     cmd += ["--points", str(saved)]
 
                 subprocess.Popen(cmd, shell=False)
+                self._set_status("Запущен внешний анализ")
 
             except Exception as e:
 
@@ -684,6 +764,7 @@ class PointEditor(tk.Frame):
         txt.pack(fill=tk.BOTH, expand=True)
         txt.insert("1.0", text)
         txt.config(state=tk.DISABLED)
+        self._set_status("Сформирован отчёт по симметрии")
 
     class PointEditorApp(tk.Tk):
         """Standalone-обёртка, встраивающая редактор в корневое окно."""

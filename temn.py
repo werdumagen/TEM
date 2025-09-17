@@ -130,68 +130,180 @@ class SAEDLauncherFrame(ttk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        pad = {"padx":8, "pady":6}
-        frm = ttk.Frame(self)
-        frm.pack(fill=tk.BOTH, expand=True)
+        container = ttk.Frame(self, padding=(16, 16, 16, 12))
+        container.pack(fill=tk.BOTH, expand=True)
+        container.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(frm, text="Изображение:").grid(row=0, column=0, sticky="w", **pad)
-        self.ent_img = ttk.Entry(frm, width=68); self.ent_img.grid(row=0, column=1, sticky="we", **pad)
-        ttk.Button(frm, text="Обзор…", command=self._browse_img).grid(row=0, column=2, **pad)
+        data_box = ttk.LabelFrame(container, text="Исходные данные", padding=(12, 10, 12, 12))
+        data_box.grid(row=0, column=0, sticky="nsew")
+        for col in (0, 1, 2, 3):
+            weight = 1 if col == 1 else 0
+            data_box.grid_columnconfigure(col, weight=weight)
 
-        ttk.Label(frm, text="Папка вывода:").grid(row=1, column=0, sticky="w", **pad)
-        self.ent_out = ttk.Entry(frm, width=68); self.ent_out.insert(0, "saed_results")
-        self.ent_out.grid(row=1, column=1, sticky="we", **pad)
-        ttk.Button(frm, text="Выбрать…", command=self._browse_out).grid(row=1, column=2, **pad)
+        ttk.Label(data_box, text="Изображение:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        self.ent_img = ttk.Entry(data_box)
+        self.ent_img.grid(row=0, column=1, columnspan=2, sticky="we", padx=6, pady=4)
+        ttk.Button(data_box, text="Обзор…", command=self._browse_img).grid(row=0, column=3, sticky="ew", padx=6, pady=4)
 
-        # Центр (вручную — опционально)
-        ttk.Label(frm, text="Центр X (пусто = авто)").grid(row=2, column=0, sticky="w", **pad)
-        self.ent_cx = ttk.Entry(frm, width=12); self.ent_cx.grid(row=2, column=1, sticky="w", **pad)
-        ttk.Label(frm, text="Центр Y").grid(row=2, column=2, sticky="e", **pad)
-        self.ent_cy = ttk.Entry(frm, width=12); self.ent_cy.grid(row=2, column=3, sticky="w", **pad)
+        ttk.Label(data_box, text="Папка вывода:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        self.ent_out = ttk.Entry(data_box)
+        self.ent_out.insert(0, "saed_results")
+        self.ent_out.grid(row=1, column=1, columnspan=2, sticky="we", padx=6, pady=4)
+        ttk.Button(data_box, text="Выбрать…", command=self._browse_out).grid(row=1, column=3, sticky="ew", padx=6, pady=4)
 
-        row = 3
-        # ---- предобработка ----
-        ttk.Label(frm, text="Предобработка:").grid(row=row, column=0, sticky="w", **pad)
-        self.cmb_pre = ttk.Combobox(frm, values=["Стандартная", "Без сглаживания", "CLAHE"], state="readonly", width=20)
+        ttk.Label(data_box, text="Центр X (опционально):").grid(row=2, column=0, sticky="w", padx=6, pady=4)
+        self.ent_cx = ttk.Entry(data_box, width=12)
+        self.ent_cx.grid(row=2, column=1, sticky="w", padx=6, pady=4)
+        ttk.Label(data_box, text="Центр Y:").grid(row=2, column=2, sticky="w", padx=6, pady=4)
+        self.ent_cy = ttk.Entry(data_box, width=12)
+        self.ent_cy.grid(row=2, column=3, sticky="w", padx=6, pady=4)
+
+        ttk.Label(
+            data_box,
+            text="Если координаты оставить пустыми, программа найдёт центр автоматически.",
+            wraplength=520,
+            foreground="#555555"
+        ).grid(row=3, column=0, columnspan=4, sticky="we", padx=6, pady=(0, 4))
+
+        pre_box = ttk.LabelFrame(container, text="Предобработка", padding=(12, 10, 12, 12))
+        pre_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        pre_box.grid_columnconfigure(1, weight=1)
+
+        ttk.Label(pre_box, text="Режим:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        self.cmb_pre = ttk.Combobox(
+            pre_box,
+            values=["Стандартная", "Без сглаживания", "CLAHE"],
+            state="readonly",
+        )
         self.cmb_pre.current(0)
-        self.cmb_pre.grid(row=row, column=1, sticky="w", **pad)
+        self.cmb_pre.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         self.cmb_pre.bind("<<ComboboxSelected>>", self._on_preproc_change)
-        ttk.Label(frm, text="CLAHE clipLimit / tile:").grid(row=row, column=2, sticky="e", **pad)
-        self.ent_clip = ttk.Entry(frm, width=8); self.ent_clip.insert(0, "1.5"); self.ent_clip.grid(row=row, column=3, sticky="w", **pad)
-        self.ent_tile = ttk.Entry(frm, width=8); self.ent_tile.insert(0, "8");  self.ent_tile.grid(row=row, column=4, **pad)
-        row += 1
 
-        # ---- параметры детектора/уточнения ----
-        self.ent_perc   = self._param(frm, row,   "Процентиль детекции (perc)",  "99.0"); row+=1
-        self.ent_win    = self._param(frm, row,   "Окно лок. максимума (odd)",   "7");    row+=1
-        self.ent_minsep = self._param(frm, row,   "Мин. шаг между пиками (px)",  "5");    row+=1
-        self.ent_maxpts = self._param(frm, row,   "Макс. число пиков",           "6000"); row+=1
+        ttk.Label(pre_box, text="CLAHE clipLimit / tile:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        self.spn_clip = ttk.Spinbox(pre_box, from_=0.1, to=10.0, increment=0.1, width=8, justify="right")
+        self._set_spinbox_value(self.spn_clip, 1.5)
+        self.spn_clip.grid(row=1, column=1, sticky="w", padx=6, pady=4)
+        self.spn_tile = ttk.Spinbox(pre_box, from_=2, to=64, increment=1, width=8, justify="right")
+        self._set_spinbox_value(self.spn_tile, 8)
+        self.spn_tile.grid(row=1, column=2, sticky="w", padx=6, pady=4)
 
-        self.ent_iters  = self._param(frm, row,   "Итерации уточнения центра",   "4");    row+=1
-        self.ent_tolang = self._param(frm, row,   "Допуск антиподов (°)",        "8.0");  row+=1
-        self.ent_tolr   = self._param(frm, row,   "Допуск по радиусу (отн.)",    "0.06"); row+=1
+        ttk.Label(
+            pre_box,
+            text="Выберите CLAHE для снимков с сильными перепадами яркости. ClipLimit управляет контрастом, размер тайла — локаль"
+                 "ным радиусом обработки.",
+            wraplength=520,
+            foreground="#555555"
+        ).grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 0))
 
-        self.ent_dead   = self._param(frm, row,   "Мёртвая зона (px)",           "0");    row+=1
-        self.ent_search = self._param(frm, row,   "Радиус поиска (px, 0=без лимита)", "0"); row+=1
+        detect_box = ttk.LabelFrame(container, text="Детектор и уточнение", padding=(12, 10, 12, 12))
+        detect_box.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        detect_box.grid_columnconfigure(1, weight=1)
 
-        ttk.Button(frm, text="Перейти в редактор точек", command=self._go_editor).grid(row=row, column=0, columnspan=5, sticky="we", **pad)
+        ttk.Label(
+            detect_box,
+            text="Порог и окно поиска пиков",
+            font=("TkDefaultFont", 10, "bold")
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
+        self.spn_perc = self._spin_param(
+            detect_box, 1, "Процентиль детекции (%)", 99.0,
+            from_=80.0, to=100.0, increment=0.1, format_str="%.1f"
+        )
+        self.spn_win = self._spin_param(
+            detect_box, 2, "Размер окна локального максимума", 7,
+            from_=3, to=21, increment=2
+        )
+        self.spn_minsep = self._spin_param(
+            detect_box, 3, "Мин. расстояние между пиками (px)", 5,
+            from_=1, to=50, increment=1
+        )
+        self.spn_maxpts = self._spin_param(
+            detect_box, 4, "Максимум обнаруженных точек", 6000,
+            from_=100, to=20000, increment=100
+        )
 
-        for c in range(5): frm.grid_columnconfigure(c, weight=1)
+        ttk.Separator(detect_box).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 8))
+
+        ttk.Label(
+            detect_box,
+            text="Уточнение центра",
+            font=("TkDefaultFont", 10, "bold")
+        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
+        self.spn_iters = self._spin_param(
+            detect_box, 7, "Итерации уточнения центра", 4,
+            from_=0, to=10, increment=1
+        )
+        self.spn_tolang = self._spin_param(
+            detect_box, 8, "Допуск антиподов (°)", 8.0,
+            from_=1.0, to=30.0, increment=0.5, format_str="%.1f"
+        )
+        self.spn_tolr = self._spin_param(
+            detect_box, 9, "Допуск по радиусу (отн.)", 0.06,
+            from_=0.01, to=0.5, increment=0.01, format_str="%.2f"
+        )
+
+        ttk.Separator(detect_box).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(6, 8))
+
+        ttk.Label(
+            detect_box,
+            text="Геометрические фильтры",
+            font=("TkDefaultFont", 10, "bold")
+        ).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
+        self.spn_dead = self._spin_param(
+            detect_box, 12, "Мёртвая зона (px)", 0,
+            from_=0, to=500, increment=1
+        )
+        self.spn_search = self._spin_param(
+            detect_box, 13, "Радиус поиска (px, 0 = без лимита)", 0,
+            from_=0, to=10000, increment=25
+        )
+
+        ttk.Label(
+            detect_box,
+            text="Используйте мёртвую зону, чтобы отфильтровать пересвеченный центр. Радиус поиска ограничивает внешние кольца"
+                 " и ускоряет обработку.",
+            wraplength=520,
+            foreground="#555555"
+        ).grid(row=14, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))
+
+        action_box = ttk.Frame(container, padding=(0, 12, 0, 0))
+        action_box.grid(row=3, column=0, sticky="nsew")
+        action_box.grid_columnconfigure(0, weight=1)
+
+        ttk.Label(
+            action_box,
+            text="Проверьте параметры и нажмите кнопку ниже, чтобы перейти к интерактивному редактированию найденных точек.",
+            wraplength=540,
+            justify="left"
+        ).grid(row=0, column=0, sticky="we", padx=4, pady=(0, 8))
+
+        ttk.Button(action_box, text="Перейти в редактор точек", command=self._go_editor).grid(
+            row=1, column=0, sticky="ew", padx=4
+        )
+
         self._on_preproc_change(None)
 
     def _on_preproc_change(self, _evt):
         mode = self.cmb_pre.get()
         clahe_enabled = (mode == "CLAHE")
         state = "normal" if clahe_enabled else "disabled"
-        self.ent_clip.configure(state=state)
-        self.ent_tile.configure(state=state)
+        self.spn_clip.configure(state=state)
+        self.spn_tile.configure(state=state)
 
-    def _param(self, parent, row, label, default):
-        pad = {"padx":8, "pady":6}
-        ttk.Label(parent, text=label+":").grid(row=row, column=0, sticky="w", **pad)
-        e = ttk.Entry(parent, width=14); e.insert(0, str(default))
-        e.grid(row=row, column=1, sticky="w", **pad)
-        return e
+    def _spin_param(self, parent, row, label, default, *, from_, to, increment, format_str=None):
+        ttk.Label(parent, text=f"{label}:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+        spin = ttk.Spinbox(parent, from_=from_, to=to, increment=increment, width=10, justify="right")
+        if format_str:
+            spin.configure(format=format_str)
+        self._set_spinbox_value(spin, default)
+        spin.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+        return spin
+
+    def _set_spinbox_value(self, spinbox: ttk.Spinbox, value):
+        try:
+            spinbox.set(value)
+        except tk.TclError:
+            spinbox.delete(0, tk.END)
+            spinbox.insert(0, str(value))
 
     def _browse_img(self):
         p = filedialog.askopenfilename(title="Выберите изображение", filetypes=[("Images","*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp"),("All","*.*")])
@@ -208,15 +320,15 @@ class SAEDLauncherFrame(ttk.Frame):
                 messagebox.showerror("Ошибка", "Изображение не найдено"); return
             outdir = Path(self.ent_out.get()).expanduser(); outdir.mkdir(parents=True, exist_ok=True)
 
-            perc     = float(self.ent_perc.get())
-            win      = int(self.ent_win.get())
-            min_sep  = int(self.ent_minsep.get())
-            max_pts  = int(self.ent_maxpts.get())
-            iters    = int(self.ent_iters.get())
-            tol_ang  = float(self.ent_tolang.get())
-            tol_relr = float(self.ent_tolr.get())
-            dead_r   = float(self.ent_dead.get())
-            search_r = float(self.ent_search.get())
+            perc = float(self.spn_perc.get())
+            win = int(float(self.spn_win.get()))
+            min_sep = int(float(self.spn_minsep.get()))
+            max_pts = int(float(self.spn_maxpts.get()))
+            iters = int(float(self.spn_iters.get()))
+            tol_ang = float(self.spn_tolang.get())
+            tol_relr = float(self.spn_tolr.get())
+            dead_r = float(self.spn_dead.get())
+            search_r = float(self.spn_search.get())
 
             # --- предобработка ---
             pre_mode = self.cmb_pre.get()
@@ -228,8 +340,8 @@ class SAEDLauncherFrame(ttk.Frame):
                 arr = load_grayscale_with_preproc(image_path, mode)
             else:  # CLAHE
                 mode = "clahe"
-                clip = float(self.ent_clip.get())
-                tiles = int(self.ent_tile.get())
+                clip = float(self.spn_clip.get())
+                tiles = int(float(self.spn_tile.get()))
                 arr = load_grayscale_with_preproc(image_path, mode, clahe_clip=clip, clahe_tiles=tiles)
 
             # Центр: ручной приоритет, иначе геометрический
