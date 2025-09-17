@@ -52,9 +52,10 @@ else:
 class PipelineController:
     """Связывает вкладки и занимается переключением между этапами."""
 
-    def __init__(self, root: tk.Misc):
-        self.root = root
-        self.notebook = ttk.Notebook(root)
+    def __init__(self, parent: tk.Misc, *, status_callback=None):
+        self.parent = parent
+        self._status_callback = status_callback or (lambda _msg: None)
+        self.notebook = ttk.Notebook(parent)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
         self.launcher = SAEDLauncherFrame(self.notebook, controller=self)
@@ -64,8 +65,18 @@ class PipelineController:
         self.notebook.add(self.launcher, text="Лаунчер")
         self.notebook.add(self.editor, text="Редактор")
         self.notebook.add(self.analysis, text="Анализ")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     # --- вызовы из вкладок ---
+    def set_status(self, message: str) -> None:
+        self._status_callback(message)
+
+    def _on_tab_changed(self, _event) -> None:
+        current = self.notebook.select()
+        if current:
+            tab_text = self.notebook.tab(current, "text")
+            self.set_status(f"Открыта вкладка: {tab_text}")
+
     def open_editor(self, saed_json_path: Path | str) -> None:
         path = Path(saed_json_path)
         if not path.exists():
@@ -73,6 +84,7 @@ class PipelineController:
         try:
             self.editor.load_input_json(path, push_undo=False)
             self.notebook.select(self.editor)
+            self.set_status(f"Редактор: {path.name}")
         except Exception as exc:  # pragma: no cover - GUI fallback
             messagebox.showerror("Ошибка", f"Не удалось загрузить данные в редактор:\n{exc}")
 
@@ -88,6 +100,7 @@ class PipelineController:
         try:
             self.analysis.load_json(path)
             self.notebook.select(self.analysis)
+            self.set_status(f"Анализ: {path.name}")
         except Exception as exc:  # pragma: no cover - GUI fallback
             messagebox.showerror("Ошибка", f"Не удалось загрузить данные в анализатор:\n{exc}")
 
@@ -100,13 +113,63 @@ class TabbedPipelineApp(tk.Tk):
         self.title("SAED Symmetry — Комплекс")
         self.geometry("1520x980")
         self.resizable(True, True)
-        self.controller = PipelineController(self)
 
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Header.TLabel", font=("TkDefaultFont", 18, "bold"))
+        style.configure("Subheader.TLabel", font=("TkDefaultFont", 11))
+        style.configure("Byline.TLabel", font=("TkDefaultFont", 10, "italic"), foreground="#555555")
+        style.configure("Accent.TButton", font=("TkDefaultFont", 10, "bold"))
+        style.configure("TNotebook", padding=(12, 10))
+        style.configure("TNotebook.Tab", padding=(16, 8))
 
-def main() -> None:
-    app = TabbedPipelineApp()
-    app.mainloop()
+        header = ttk.Frame(self, padding=(20, 18, 20, 12))
+        header.pack(side=tk.TOP, fill=tk.X)
+        header.grid_columnconfigure(0, weight=1)
 
+        ttk.Label(header, text="SAED Symmetry — Комплекс", style="Header.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header,
+            text="Единый конвейер обработки электронограммы от загрузки до анализа.",
+            style="Subheader.TLabel",
+            wraplength=720,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-if __name__ == "__main__":
-    main()
+        ttk.Label(header, text="by Roynik 2025", style="Byline.TLabel").grid(
+            row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)
+        )
+        ttk.Button(header, text="Справка", command=self._show_help).grid(
+            row=0, column=2, rowspan=2, sticky="ne"
+        )
+
+        content = ttk.Frame(self, padding=(20, 0, 20, 12))
+        content.pack(fill=tk.BOTH, expand=True)
+
+        self.status_var = tk.StringVar(value="Готово")
+        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8))
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.controller = PipelineController(content, status_callback=self._update_status)
+        self.controller.set_status("Открыта вкладка: Лаунчер")
+
+    def _update_status(self, message: str) -> None:
+        self.status_var.set(message)
+
+    def _show_help(self) -> None:
+        message = (
+            "Во вкладке «Лаунчер» подготовьте изображение и параметры детектора. "
+            "«Редактор» позволит вручную уточнить точки и радиусы, а «Анализ» — построить отчёт "
+            "по симметрии и цепочкам Фибоначчи."
+        )
+        messagebox.showinfo("О приложении", message)
+
+        def main() -> None:
+            app = TabbedPipelineApp()
+            app.mainloop()
+
+        if __name__ == "__main__":
+            main()
