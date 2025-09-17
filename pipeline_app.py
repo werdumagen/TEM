@@ -14,6 +14,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+
+
 def _import_module(name: str):
     """Import helper that falls back to sibling files when bundlers miss them."""
 
@@ -31,7 +36,7 @@ def _import_module(name: str):
             if candidate.exists():
                 spec = importlib.util.spec_from_file_location(name, candidate)
                 if spec is None or spec.loader is None:  # pragma: no cover - importlib guard
-                    break
+                    continue
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[name] = module
                 spec.loader.exec_module(module)
@@ -167,9 +172,10 @@ class TabbedPipelineApp(tk.Tk):
         )
         messagebox.showinfo("О приложении", message)
 
-        def main() -> None:
-            app = TabbedPipelineApp()
-            app.mainloop()
+def main() -> None:
+    app = TabbedPipelineApp()
+    app.mainloop()
 
-        if __name__ == "__main__":
-            main()
+
+if __name__ == "__main__":
+    main()
