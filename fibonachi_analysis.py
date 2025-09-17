@@ -218,51 +218,70 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.list_index_map: Dict[int, Tuple] = {}
 
         # --- верхняя панель ---
-        top = tk.Frame(self); top.pack(side=tk.TOP, fill=tk.X)
-        tk.Button(top, text='Открыть JSON…', command=self.open_json).pack(side=tk.LEFT, padx=6, pady=6)
-        tk.Button(top, text='Начать анализ (ЛКМ-цепочка)', command=self.run_analysis).pack(side=tk.LEFT, padx=12, pady=6)
-        tk.Button(top, text='Сохранить PNG', command=self.save_png).pack(side=tk.LEFT, padx=6, pady=6)
-        tk.Button(top, text='Очистить выбор', command=self.clear_selection).pack(side=tk.LEFT, padx=12)
-        tk.Label(top, text='Толщина отбора (px):').pack(side=tk.LEFT, padx=(8, 2))
-        self.entBand = tk.Spinbox(top, from_=2, to=100, width=6, command=self._onBand)
-        self.entBand.delete(0, 'end'); self.entBand.insert(0, str(int(self.max_dist_line)))
-        self.entBand.pack(side=tk.LEFT)
-        self.status = tk.Label(top, text='', anchor='w'); self.status.pack(side=tk.LEFT, padx=12)
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
 
-        # --- центральная область ---
-        mid = tk.Frame(self); mid.pack(fill=tk.BOTH, expand=True)
-        left = tk.Frame(mid); left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        right = tk.Frame(mid, width=470); right.pack(side=tk.RIGHT, fill=tk.Y)
+        container = tk.Frame(self)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+        container.columnconfigure(1, weight=0)
+
+        left = tk.Frame(container)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=12)
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
+
+        right = tk.Frame(container, width=470)
+        right.grid(row=0, column=1, sticky="ns", pady=12)
+        right.columnconfigure(0, weight=1)
+
+        controls = tk.Frame(right)
+        controls.grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 10))
+        controls.columnconfigure(0, weight=1)
+        controls.columnconfigure(1, weight=1)
+
+        tk.Button(controls, text='Открыть JSON…', command=self.open_json).grid(row=0, column=0, sticky='ew', padx=4, pady=2)
+        tk.Button(controls, text='Начать анализ (ЛКМ-цепочка)', command=self.run_analysis).grid(row=0, column=1, sticky='ew', padx=4, pady=2)
+        tk.Button(controls, text='Сохранить PNG', command=self.save_png).grid(row=1, column=0, sticky='ew', padx=4, pady=2)
+        tk.Button(controls, text='Очистить выбор', command=self.clear_selection).grid(row=1, column=1, sticky='ew', padx=4, pady=2)
+        tk.Label(controls, text='Толщина отбора (px):').grid(row=2, column=0, sticky='w', padx=4, pady=(8, 2))
+        self.entBand = tk.Spinbox(controls, from_=2, to=100, width=6, command=self._onBand)
+        self.entBand.delete(0, 'end'); self.entBand.insert(0, str(int(self.max_dist_line)))
+        self.entBand.grid(row=2, column=1, sticky='ew', padx=4, pady=(8, 2))
+
+        self.status = tk.Label(right, text='', anchor='w')
+        self.status.grid(row=1, column=0, sticky='ew', padx=6, pady=(0, 10))
+
+        # заголовок списка (динамический)
+        self.lst_header = tk.Label(right, text='Найденные слова (подотрезки Фибоначчи)')
+        self.lst_header.grid(row=2, column=0, sticky='w', padx=6, pady=(0, 2))
+        self.lst = tk.Listbox(right, width=66, height=22)
+        self.lst.grid(row=3, column=0, sticky='nsew', padx=6)
+        right.rowconfigure(3, weight=1)
+        self.lst.bind('<<ListboxSelect>>', self._on_list_select)
+
+        # подписи со средними
+        self.lbl_ratio = tk.Label(right, text='Среднее L/S по цепочке: —')
+        self.lbl_ratio.grid(row=4, column=0, sticky='w', padx=6, pady=(6, 4))
+        self.lbl_ratio_neigh = tk.Label(right, text='Среднее отношение соседних сегментов: —')
+        self.lbl_ratio_neigh.grid(row=5, column=0, sticky='w', padx=6, pady=(2, 8))
+
+        # последовательность S/L (полная) + бинды инверсии
+        tk.Label(right, text='Последовательность S/L (полная):').grid(row=6, column=0, sticky='w', padx=6, pady=(4, 2))
+        self.txt_sl = tk.Text(right, height=6, wrap='word')
+        self.txt_sl.grid(row=7, column=0, sticky='ew', padx=6, pady=(0, 4))
+        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)
+
+        # префиксы «фиб-слова»
+        tk.Label(right, text='Префиксы "фиб-слова" (L→LS, S→L)').grid(row=8, column=0, sticky='w', padx=6, pady=(8, 2))
+        self.txt_words = tk.Text(right, height=10, state='disabled')
+        self.txt_words.grid(row=9, column=0, sticky='ew', padx=6, pady=(0, 8))
 
         self.fig = plt.Figure(figsize=(9.6, 6.6)); self.ax = self.fig.add_subplot(111)
         self.ax.axis('off')
         self.canvas = FigureCanvasTkAgg(self.fig, master=left)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-        # заголовок списка (динамический)
-        self.lst_header = tk.Label(right, text='Найденные слова (подотрезки Фибоначчи)')
-        self.lst_header.pack(anchor='w', padx=6, pady=(8, 2))
-        self.lst = tk.Listbox(right, width=66, height=22)
-        self.lst.pack(fill=tk.BOTH, expand=False, padx=6)
-        self.lst.bind('<<ListboxSelect>>', self._on_list_select)
-
-        # подписи со средними
-        self.lbl_ratio = tk.Label(right, text='Среднее L/S по цепочке: —')          # для режима S/L
-        self.lbl_ratio.pack(anchor='w', padx=6, pady=(6, 4))
-        self.lbl_ratio_neigh = tk.Label(right, text='Среднее отношение соседних сегментов: —')  # для режима ПКМ
-        self.lbl_ratio_neigh.pack(anchor='w', padx=6, pady=(2, 8))
-
-        # последовательность S/L (полная) + бинды инверсии
-        tk.Label(right, text='Последовательность S/L (полная):').pack(anchor='w', padx=6, pady=(4, 2))
-        self.txt_sl = tk.Text(right, height=6, wrap='word')
-        self.txt_sl.pack(fill=tk.X, padx=6, pady=(0, 4))
-        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)
-
-        # префиксы «фиб-слова»
-        tk.Label(right, text='Префиксы "фиб-слова" (L→LS, S→L)').pack(anchor='w', padx=6, pady=(8, 2))
-        self.txt_words = tk.Text(right, height=10, state='disabled')
-        self.txt_words.pack(fill=tk.X, padx=6, pady=(0, 8))
-
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky='nsew')
         # обработчики мыши и клавиш
         self.canvas.mpl_connect('button_press_event', self._on_click)
         self.canvas.mpl_connect('motion_notify_event', self._on_motion)
