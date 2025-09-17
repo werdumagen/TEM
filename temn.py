@@ -121,17 +121,18 @@ def refine_center_antipodal(center: Tuple[float,float], pts: np.ndarray, tol_ang
     return CenterResult(cy=cy, cx=cx, method="antipodal-refined")
 
 # -------------------------- GUI --------------------------
-class SAEDApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("SAED Symmetry – Launcher")
-        self.geometry("980x680")
-        self.resizable(True, False)
+class SAEDLauncherFrame(ttk.Frame):
+    """Вкладка-лаунчер, пригодная как для standalone-приложения, так и для notebook."""
+
+    def __init__(self, master: tk.Misc, controller=None):
+        super().__init__(master)
+        self.controller = controller
         self._build_ui()
 
     def _build_ui(self):
         pad = {"padx":8, "pady":6}
-        frm = ttk.Frame(self); frm.pack(fill=tk.BOTH, expand=True)
+        frm = ttk.Frame(self)
+        frm.pack(fill=tk.BOTH, expand=True)
 
         ttk.Label(frm, text="Изображение:").grid(row=0, column=0, sticky="w", **pad)
         self.ent_img = ttk.Entry(frm, width=68); self.ent_img.grid(row=0, column=1, sticky="we", **pad)
@@ -267,13 +268,19 @@ class SAEDApp(tk.Tk):
             saed_input_path.write_text(json.dumps(saed_input, ensure_ascii=False, indent=2), encoding="utf-8")
 
             # запуск редактора с одним входом
-            if getattr(sys, "frozen", False):
-                editor = Path(sys.executable).with_name("saed_editor.exe")
-                cmd = [str(editor), "--input", str(saed_input_path)]
+            if self.controller is not None:
+                try:
+                    self.controller.open_editor(saed_input_path)
+                except Exception as exc:
+                    messagebox.showerror("Ошибка", f"Не удалось открыть редактор: {exc}")
             else:
-                editor_py = Path(__file__).with_name("saed_editor.py")
-                cmd = [sys.executable, str(editor_py), "--input", str(saed_input_path)]
-            subprocess.Popen(cmd, shell=False)
+                if getattr(sys, "frozen", False):
+                    editor = Path(sys.executable).with_name("saed_editor.exe")
+                    cmd = [str(editor), "--input", str(saed_input_path)]
+                else:
+                    editor_py = Path(__file__).with_name("saed_editor.py")
+                    cmd = [sys.executable, str(editor_py), "--input", str(saed_input_path)]
+                subprocess.Popen(cmd, shell=False)
 
             # лог центра (служебный)
             (outdir/"center_init.json").write_text(json.dumps({
@@ -285,8 +292,27 @@ class SAEDApp(tk.Tk):
                 "image_size": {"H": int(arr.shape[0]), "W": int(arr.shape[1])}
             }, indent=2), encoding="utf-8")
 
+
         except Exception as e:
+
             messagebox.showerror("Ошибка", str(e))
 
-if __name__ == "__main__":
-    SAEDApp().mainloop()
+        class SAEDApp(tk.Tk):
+
+            """Backwards-compatible standalone приложение, использующее фрейм вкладки."""
+
+            def __init__(self):
+                super().__init__()
+
+                self.title("SAED Symmetry – Launcher")
+
+                self.geometry("980x680")
+
+                self.resizable(True, False)
+
+                frame = SAEDLauncherFrame(self)
+
+                frame.pack(fill=tk.BOTH, expand=True)
+
+        if __name__ == "__main__":
+            SAEDApp().mainloop()

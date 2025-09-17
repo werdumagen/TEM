@@ -13,6 +13,7 @@ SAED Editor + Analysis
 """
 import sys, json, subprocess
 from pathlib import Path
+from typing import Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import numpy as np
@@ -58,20 +59,19 @@ def symmetry_scores(angles, radii, ring_means, top_rings=3):
         out[f"{k}-fold"] = float(np.hypot(C, S))
     return out
 
-class PointEditor(tk.Tk):
-    def __init__(self, input_json: str | None = None):
-        super().__init__()
-        self.title("SAED Editor + Analysis")
-        self.geometry("1100x800")
-
-        # данные
-        self.points = np.zeros((0, 2), float)   # [y, x]
-        self.values = np.zeros((0,), float)     # интенсивности (параллельно points)
+class PointEditor(tk.Frame):
+    def __init__(self, master: tk.Misc, controller=None,
+                 input_json: str | None = None, auto_load: bool = True):
+        super().__init__(master)
+        self.controller = controller
+        # данные␊
+        self.points = np.zeros((0, 2), float)   # [y, x]␊
+        self.values = np.zeros((0,), float)     # интенсивности (параллельно points)␊
         self.rect_start = None
         self.rect_artist = None
-        self.overlay = None  # {center:{x,y}, dead_radius, search_radius}
-        self.image_path = None
-        self.img_arr = None
+        self.overlay = None  # {center:{x,y}, dead_radius, search_radius}␊
+        self.image_path: Optional[Path] = None
+        self.img_arr: Optional[np.ndarray] = None
 
         # Undo/Redo
         self._undo = []
@@ -94,10 +94,11 @@ class PointEditor(tk.Tk):
         self._build_ui()
 
         # первичная загрузка
-        if input_json:
-            self._load_input_json(Path(input_json))
-        self._ensure_view_center()
-        self._redraw()
+        if auto_load and input_json:
+            self.load_input_json(Path(input_json), push_undo=False)
+        else:
+            self._ensure_view_center()
+            self._redraw()
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -135,12 +136,19 @@ class PointEditor(tk.Tk):
     def _open_json(self):
         p = filedialog.askopenfilename(filetypes=[("SAED Input JSON","*saed_input.json;*.json"), ("All","*.*")])
         if p:
+            self.load_input_json(Path(p), push_undo=True)
+
+    def load_input_json(self, path: Path, *, push_undo: bool = False, reset_view: bool = True):
+        """Публичный метод загрузки JSON, используется и контроллером вкладок."""
+        if push_undo:
             self._push_undo()
-            self._load_input_json(Path(p))
-            self._clear_tooltip()
-            self.view_cx = self.view_cy = None
-            self._ensure_view_center()
-            self._redraw()
+        self._load_input_json(path)
+        self._clear_tooltip()
+        if reset_view:
+            self.view_cx = None
+            self.view_cy = None
+        self._ensure_view_center()
+        self._redraw()
 
     def _load_input_json(self, path: Path):
         try:
@@ -592,28 +600,63 @@ class PointEditor(tk.Tk):
                             else Path("fibo_input.json"))
             payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+
         except Exception as e:
+
+            payload_path = None
+
             messagebox.showerror("Ошибка подготовки данных",
+
                                  f"Не удалось подготовить данные для fibonachi_analysis:\n{e}")
 
-        # запуск fibonachi_analysis.exe (совместимость со старыми ключами сохранена)
-        try:
-            if getattr(sys, "frozen", False):
-                fibexe = Path(sys.executable).with_name("fibonachi_analysis.exe")
-            else:
-                fibexe = Path(__file__).with_name("fibonachi_analysis.exe")
+        used_controller = False
 
-            cmd = [str(fibexe)]
-            if payload_path is not None:
-                cmd += ["--payload", str(payload_path)]
-            if self.image_path is not None:
-                cmd += ["--image", str(self.image_path)]
-            if saved is not None:
-                cmd += ["--points", str(saved)]
-            subprocess.Popen(cmd, shell=False)
-        except Exception as e:
-            messagebox.showerror("Ошибка запуска",
-                                 f"Не удалось запустить fibonachi_analysis.exe:\n{e}")
+        if self.controller is not None and payload_path is not None:
+
+            try:
+
+                self.controller.open_analysis(payload_path, self.image_path, saved)
+
+                used_controller = True
+
+            except Exception as e:
+
+                messagebox.showerror("Ошибка запуска",
+
+                                     f"Не удалось переключиться к анализатору:\n{e}")
+
+        if not used_controller:
+
+            # запуск fibonachi_analysis.exe (совместимость со старыми ключами сохранена)
+
+            try:
+
+                if getattr(sys, "frozen", False):
+
+                    fibexe = Path(sys.executable).with_name("fibonachi_analysis.exe")
+
+                else:
+
+                    fibexe = Path(__file__).with_name("fibonachi_analysis.exe")
+
+                cmd = [str(fibexe)]
+
+                if payload_path is not None:
+                    cmd += ["--payload", str(payload_path)]
+
+                if self.image_path is not None:
+                    cmd += ["--image", str(self.image_path)]
+
+                if saved is not None:
+                    cmd += ["--points", str(saved)]
+
+                subprocess.Popen(cmd, shell=False)
+
+            except Exception as e:
+
+                messagebox.showerror("Ошибка запуска",
+
+                                     f"Не удалось запустить fibonachi_analysis.exe:\n{e}")
 
         # быстрый отчёт (как раньше)
         if self.img_arr is None or len(self.points) == 0:
@@ -642,14 +685,25 @@ class PointEditor(tk.Tk):
         txt.insert("1.0", text)
         txt.config(state=tk.DISABLED)
 
-# -------- CLI ---------
-def _parse_args(argv):
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--input", type=str, required=False, help="Путь к saed_input.json")
-    return p.parse_args(argv)
+    class PointEditorApp(tk.Tk):
+        """Standalone-обёртка, встраивающая редактор в корневое окно."""
 
-if __name__ == "__main__":
-    args = _parse_args(sys.argv[1:])
-    app = PointEditor(args.input)
-    app.mainloop()
+        def __init__(self, input_json: str | None = None):
+            super().__init__()
+            self.title("SAED Editor + Analysis")
+            self.geometry("1100x800")
+            self.resizable(True, True)
+            self.editor = PointEditor(self, input_json=input_json)
+            self.editor.pack(fill=tk.BOTH, expand=True)
+
+    # -------- CLI ---------
+    def _parse_args(argv):
+        import argparse
+        p = argparse.ArgumentParser()
+        p.add_argument("--input", type=str, required=False, help="Путь к saed_input.json")
+        return p.parse_args(argv)
+
+    if __name__ == "__main__":
+        args = _parse_args(sys.argv[1:])
+        root = PointEditorApp(args.input)
+        root.mainloop()

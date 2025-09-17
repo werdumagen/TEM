@@ -182,11 +182,10 @@ def gen_fibonacci_words(max_len: int, start: str = "L") -> List[str]:
 
 # ---------------- GUI ----------------
 
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title('fibonachi_analysis')
-        self.geometry('1520x980')
+class FibonacciAnalysisFrame(tk.Frame):
+    def __init__(self, master: tk.Misc, controller=None, auto_load: bool = True):
+        super().__init__(master)
+        self.controller = controller
 
         # Данные
         self.img_path: Optional[Path] = None
@@ -270,17 +269,20 @@ class App(tk.Tk):
         self.bind('<Escape>', lambda e: self.clear_selection())
 
         # автозагрузка
-        base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) if getattr(sys, 'frozen', False) else Path(__file__).parent
-        auto = find_default_json(base)
-        if auto:
-            try:
-                self.load_json(auto)
-                self.status.config(text=f'Загружен: {auto.name}')
-            except Exception as e:
-                messagebox.showerror('Ошибка загрузки', str(e))
+        if auto_load:
+            base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) if getattr(sys, 'frozen', False) else Path(
+                __file__).parent
+            auto = find_default_json(base)
+            if auto:
+                try:
+                    self.load_json(auto)
+                    self.status.config(text=f'Загружен: {auto.name}')
+                except Exception as e:
+                    messagebox.showerror('Ошибка загрузки', str(e))
+            else:
+                self.status.config(text='JSON не найден. Выберите файл вручную.')
         else:
-            self.status.config(text='JSON не найден. Выберите файл вручную.')
-
+            self.status.config(text='JSON не загружен. Используйте «Открыть JSON…».')
     # ---------------- callbacks ----------------
 
     def _onBand(self):
@@ -723,6 +725,19 @@ class App(tk.Tk):
 
         # не трогаем S/L-поля (оставляем как были)
         self.status.config(text=f'Выбрано точек (ПКМ): {len(chain)}. Сегментов: {len(seg)}. Отношений: {len(ratios)}.')
+
+class App(tk.Tk):
+    """Standalone-обёртка, совместимая с предыдущим CLI."""
+
+    def __init__(self):
+        super().__init__()
+        self.title('fibonachi_analysis')
+        self.geometry('1520x980')
+        self.resizable(True, True)
+        frame = FibonacciAnalysisFrame(self)
+        frame.pack(fill=tk.BOTH, expand=True)
+        self.frame = frame
+
 
 # ---- запуск ----
 if __name__ == '__main__':
