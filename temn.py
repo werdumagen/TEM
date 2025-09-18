@@ -311,8 +311,13 @@ class SAEDLauncherFrame(ttk.Frame):
         ).grid(row=0, column=0, sticky="we", padx=4, pady=(0, 8))
 
         ttk.Button(action_box, text="Перейти в редактор точек", command=self._go_editor).grid(
-            row=1, column=0, sticky="ew", padx=4
+            row=1, column=0, sticky="ew", padx=4, pady=(0, 12)
         )
+
+        filler_bg = ttk.Style().lookup("TFrame", "background") or self.winfo_toplevel().cget("background")
+        bottom_filler = tk.Frame(scrollable, height=56, bg=filler_bg)
+        bottom_filler.grid(row=2, column=0, sticky="ew")
+        bottom_filler.grid_propagate(False)
 
         self._on_preproc_change(None)
 

@@ -49,9 +49,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from saed_editor import PointEditor
     from fibonachi_analysis import FibonacciAnalysisFrame
 else:
-    SAEDLauncherFrame = _import_module("temn").SAEDLauncherFrame
-    PointEditor = _import_module("saed_editor").PointEditor
-    FibonacciAnalysisFrame = _import_module("fibonachi_analysis").FibonacciAnalysisFrame
+    try:
+        from temn import SAEDLauncherFrame
+        from saed_editor import PointEditor
+        from fibonachi_analysis import FibonacciAnalysisFrame
+    except ModuleNotFoundError:
+        SAEDLauncherFrame = _import_module("temn").SAEDLauncherFrame
+        PointEditor = _import_module("saed_editor").PointEditor
+        FibonacciAnalysisFrame = _import_module("fibonachi_analysis").FibonacciAnalysisFrame
 
 
 class PipelineController:
