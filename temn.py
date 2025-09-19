@@ -89,11 +89,69 @@ def detect_spots(arr: np.ndarray, perc: float=99.0, win: int=7, min_sep: int=5, 
             kept.append((y, x, v))
         if len(kept) >= max_spots:
             break
-    return np.array(kept, dtype=float) if kept else np.zeros((0,3), dtype=float)
+        return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)
 
-def geometric_midpoint(arr: np.ndarray) -> CenterResult:
-    H, W = arr.shape
-    return CenterResult(cy=(H-1)/2.0, cx=(W-1)/2.0, method="midpoint")
+        def merge_spots_by_intensity(pts: np.ndarray, radius: float, tol_percent: float) -> np.ndarray:
+            """Сливает близко расположенные точки со схожей интенсивностью.
+
+            radius: радиус поиска соседей в пикселях.
+            tol_percent: относительный допуск по интенсивности, задаётся в процентах
+                         от более яркой из сравниваемых точек.
+            """
+            if pts.size == 0:
+                return pts
+            radius = float(radius)
+            tol = max(0.0, float(tol_percent) / 100.0)
+            if radius <= 0.0:
+                return pts
+
+            pts = np.asarray(pts, dtype=float)
+            rad2 = radius * radius
+            used = np.zeros(len(pts), dtype=bool)
+            order = np.argsort(-pts[:, 2])  # начинаем с самых ярких
+            merged = []
+
+            for idx in order:
+                if used[idx]:
+                    continue
+
+                base_y, base_x, base_v = pts[idx]
+                agg_y, agg_x, agg_v = base_y, base_x, base_v
+                used[idx] = True
+
+                neighbors = []
+                for j in range(len(pts)):
+                    if used[j] or j == idx:
+                        continue
+                    dy = pts[j, 0] - base_y
+                    dx = pts[j, 1] - base_x
+                    if dy * dy + dx * dx <= rad2:
+                        neighbors.append(j)
+
+                neighbors.sort(key=lambda j: pts[j, 2])
+
+                for j in neighbors:
+                    if used[j]:
+                        continue
+                    vy = pts[j, 2]
+                    hi = max(agg_v, vy)
+                    if hi == 0.0:
+                        rel_diff = 0.0 if abs(agg_v - vy) == 0.0 else float("inf")
+                    else:
+                        rel_diff = abs(agg_v - vy) / hi
+                    if rel_diff <= tol:
+                        agg_y = 0.5 * (agg_y + pts[j, 0])
+                        agg_x = 0.5 * (agg_x + pts[j, 1])
+                        agg_v = 0.5 * (agg_v + vy)
+                        used[j] = True
+
+                merged.append((agg_y, agg_x, agg_v))
+
+            return np.array(merged, dtype=float)
+
+        def geometric_midpoint(arr: np.ndarray) -> CenterResult:
+            H, W = arr.shape
+            return CenterResult(cy=(H - 1) / 2.0, cx=(W - 1) / 2.0, method="midpoint")
 
 def refine_center_antipodal(center: Tuple[float,float], pts: np.ndarray, tol_ang_deg: float=8.0, tol_rel_r: float=0.06, iters: int=3) -> CenterResult:
     cy, cx = float(center[0]), float(center[1])
@@ -242,52 +300,56 @@ class SAEDLauncherFrame(ttk.Frame):
             detect_box, 1, "Процентиль детекции (%)", 99.0,
             from_=80.0, to=100.0, increment=0.1, format_str="%.1f"
         )
-        self.spn_win = self._spin_param(
-            detect_box, 2, "Размер окна локального максимума", 7,
-            from_=3, to=21, increment=2
+        self.spn_merge_rad = self._spin_param(
+            detect_box, 2, "Радиус объединения пиков (px)", 6,
+            from_=0, to=50, increment=1
+        )
+        self.spn_merge_tol = self._spin_param(
+            detect_box, 3, "Допуск схожести интенсивности (%)", 10.0,
+            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"
         )
         self.spn_minsep = self._spin_param(
-            detect_box, 3, "Мин. расстояние между пиками (px)", 5,
+            detect_box, 4, "Мин. расстояние между пиками (px)", 5,
             from_=1, to=50, increment=1
         )
         self.spn_maxpts = self._spin_param(
-            detect_box, 4, "Максимум обнаруженных точек", 6000,
+            detect_box, 5, "Максимум обнаруженных точек", 6000,
             from_=100, to=20000, increment=100
         )
 
-        ttk.Separator(detect_box).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 8))
+        ttk.Separator(detect_box).grid(row=6, column=0, columnspan=2, sticky="ew", pady=(6, 8))
 
         ttk.Label(
             detect_box,
             text="Уточнение центра",
             font=("TkDefaultFont", 10, "bold")
-        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
+        ).grid(row=7, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
         self.spn_iters = self._spin_param(
-            detect_box, 7, "Итерации уточнения центра", 4,
+            detect_box, 8, "Итерации уточнения центра", 4,
             from_=0, to=10, increment=1
         )
         self.spn_tolang = self._spin_param(
-            detect_box, 8, "Допуск антиподов (°)", 8.0,
+            detect_box, 9, "Допуск антиподов (°)", 8.0,
             from_=1.0, to=30.0, increment=0.5, format_str="%.1f"
         )
         self.spn_tolr = self._spin_param(
-            detect_box, 9, "Допуск по радиусу (отн.)", 0.06,
+            detect_box, 10, "Допуск по радиусу (отн.)", 0.06,
             from_=0.01, to=0.5, increment=0.01, format_str="%.2f"
         )
 
-        ttk.Separator(detect_box).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(6, 8))
+        ttk.Separator(detect_box).grid(row=11, column=0, columnspan=2, sticky="ew", pady=(6, 8))
 
         ttk.Label(
             detect_box,
             text="Геометрические фильтры",
             font=("TkDefaultFont", 10, "bold")
-        ).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
+        ).grid(row=12, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
         self.spn_dead = self._spin_param(
-            detect_box, 12, "Мёртвая зона (px)", 0,
+            detect_box, 13, "Мёртвая зона (px)", 0,
             from_=0, to=500, increment=1
         )
         self.spn_search = self._spin_param(
-            detect_box, 13, "Радиус поиска (px, 0 = без лимита)", 0,
+            detect_box, 14, "Радиус поиска (px, 0 = без лимита)", 0,
             from_=0, to=10000, increment=25
         )
 
@@ -297,7 +359,7 @@ class SAEDLauncherFrame(ttk.Frame):
                  " и ускоряет обработку.",
             wraplength=520,
             foreground="#555555"
-        ).grid(row=14, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))
+        ).grid(row=15, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))
 
         action_box = ttk.Frame(scrollable, padding=(0, 12, 0, 0))
         action_box.grid(row=1, column=0, sticky="nsew")
@@ -384,7 +446,8 @@ class SAEDLauncherFrame(ttk.Frame):
             outdir = Path(self.ent_out.get()).expanduser(); outdir.mkdir(parents=True, exist_ok=True)
 
             perc = float(self.spn_perc.get())
-            win = int(float(self.spn_win.get()))
+            merge_radius = float(self.spn_merge_rad.get())
+            merge_tol = float(self.spn_merge_tol.get())
             min_sep = int(float(self.spn_minsep.get()))
             max_pts = int(float(self.spn_maxpts.get()))
             iters = int(float(self.spn_iters.get()))
@@ -415,19 +478,25 @@ class SAEDLauncherFrame(ttk.Frame):
                 center0 = geometric_midpoint(arr)
 
             # Детекция пиков и уточнение центра
-            pts = detect_spots(arr, perc=perc, win=win, min_sep=min_sep, max_spots=max_pts)
+            loc_win = 7  # базовый размер окна локального максимума
+            pts = detect_spots(arr, perc=perc, win=loc_win, min_sep=min_sep, max_spots=max_pts)
             if len(pts) < 120:
-                pts = detect_spots(arr, perc=max(97.5, perc-1.0), win=win, min_sep=min_sep, max_spots=max_pts)
+                pts = detect_spots(arr, perc=max(97.5, perc - 1.0), win=loc_win, min_sep=min_sep, max_spots=max_pts)
 
             center = refine_center_antipodal((center0.cy, center0.cx), pts, tol_ang_deg=tol_ang, tol_rel_r=tol_relr, iters=iters)
 
             # Геометрические фильтры
             if (dead_r > 0 or search_r > 0) and len(pts):
-                dy = pts[:,0]-center.cy; dx = pts[:,1]-center.cx; r = np.hypot(dx, dy)
+                dy = pts[:, 0] - center.cy;
+                dx = pts[:, 1] - center.cx;
+                r = np.hypot(dx, dy)
                 mask = np.ones(len(pts), dtype=bool)
                 if dead_r > 0:   mask &= (r >= dead_r)
                 if search_r > 0: mask &= (r <= search_r)
                 pts = pts[mask]
+
+            if len(pts):
+                pts = merge_spots_by_intensity(pts, radius=merge_radius, tol_percent=merge_tol)
 
             # --- saed_input.json (единый файл для редактора) ---
             # pts: ndarray [y, x, v]; сохраняем v как интенсивность
