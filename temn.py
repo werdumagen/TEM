@@ -35,7 +35,13 @@ class CenterResult:
     cx: float
     method: str
 
-def detect_spots(arr: np.ndarray, perc: float=99.0, win: int=7, min_sep: int=5, max_spots: int=6000) -> np.ndarray
+def detect_spots(
+    arr: np.ndarray,
+    perc: float = 99.0,
+    win: int = 7,
+    min_sep: int = 5,
+    max_spots: int = 6000,
+) -> np.ndarray:
     H, W = arr.shape
     rad = max(1, win // 2)
     th = float(np.percentile(arr, perc))
