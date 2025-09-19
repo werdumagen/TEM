@@ -11,13 +11,13 @@ SAED Editor + Analysis
 
 Остальной функционал редактора сохранён.
 """
-import sys, json, subprocess
-from pathlib import Path
-from typing import Optional
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import numpy as np
-from PIL import Image
+import sys, json, subprocess␊
+from pathlib import Path␊
+from typing import Optional␊
+import tkinter as tk␊
+from tkinter import ttk, filedialog, messagebox␊
+import numpy as np␊
+from preproc import PreprocSettings, load_grayscale_with_preproc
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -72,6 +72,7 @@ class PointEditor(tk.Frame):
         self.overlay = None  # {center:{x,y}, dead_radius, search_radius}␊
         self.image_path: Optional[Path] = None
         self.img_arr: Optional[np.ndarray] = None
+        self._preproc_settings: PreprocSettings = PreprocSettings(mode="raw")
 
         # Undo/Redo
         self._undo = []
@@ -244,8 +245,17 @@ class PointEditor(tk.Frame):
             messagebox.showerror("Ошибка", "В JSON отсутствует поле 'image'.")
             return
         self.image_path = Path(img_path)
-        img = Image.open(self.image_path).convert("L")
-        self.img_arr = np.array(img, float)
+        fallback_mode = data.get("preproc_mode")
+        if not isinstance(fallback_mode, str):
+            fallback_mode = None
+        self._preproc_settings = PreprocSettings.from_json(
+            data.get("preproc"), fallback_mode=fallback_mode
+        )
+        try:
+            self.img_arr = load_grayscale_with_preproc(self.image_path, self._preproc_settings)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось подготовить изображение:\n{e}")
+            return
 
         # overlay: центр и радиусы
         c = data.get("center") or {}
@@ -289,6 +299,8 @@ class PointEditor(tk.Frame):
         # также пересохраним обновлённый saed_input
         si = {
             "image": str(self.image_path) if self.image_path else None,
+            "preproc_mode": self._preproc_settings.mode,
+            "preproc": self._preproc_settings.to_json(),
             "center": (self.overlay.get("center") if self.overlay else None),
             "radii": {
                 "dead": float(self.overlay.get("dead_radius") or 0.0) if self.overlay else 0.0,
@@ -675,6 +687,8 @@ class PointEditor(tk.Frame):
 
             payload = {
                 "image": str(self.image_path) if self.image_path else None,
+                "preproc_mode": self._preproc_settings.mode,
+                "preproc": self._preproc_settings.to_json(),
                 "points": points_list,
                 "centers": {
                     "geometric": {"x": float(geo_cx), "y": float(geo_cy)} if geo_cx is not None else None,
