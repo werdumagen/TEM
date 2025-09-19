@@ -90,8 +90,7 @@ def detect_spots(arr: np.ndarray, perc: float=99.0, win: int=7, min_sep: int=5, 
         if len(kept) >= max_spots:
             break
         return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)
-
-        def merge_spots_by_intensity(pts: np.ndarray, radius: float, tol_percent: float) -> np.ndarray:
+    def merge_spots_by_intensity (pts: np.ndarray, radius: float, tol_percent: float) -> np.ndarray:
             """Сливает близко расположенные точки со схожей интенсивностью.
 
             radius: радиус поиска соседей в пикселях.
