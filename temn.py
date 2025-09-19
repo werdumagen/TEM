@@ -22,13 +22,8 @@ from dataclasses import dataclass
 from typing import Tuple
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
 
-# opencv нужен только если выбран режим CLAHE
-try:
-    import cv2  # type: ignore
-except Exception:
-    cv2 = None  # сообщим пользователю при выборе CLAHE
+from preproc import PreprocSettings, load_grayscale_with_preproc
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -40,36 +35,7 @@ class CenterResult:
     cx: float
     method: str
 
-def load_grayscale_with_preproc(path: Path, mode: str,
-                                clahe_clip: float = 1.5,
-                                clahe_tiles: int = 8) -> np.ndarray:
-    """
-    mode: 'standard' | 'raw' | 'clahe'
-    """
-    if mode == 'clahe':
-        if cv2 is None:
-            raise RuntimeError("Для режима CLAHE требуется пакет opencv-python (или opencv-python-headless).")
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            raise RuntimeError("Не удалось прочитать изображение через OpenCV.")
-        clip = max(0.1, float(clahe_clip))
-        tiles = max(2, int(clahe_tiles))
-        clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(tiles, tiles))
-        img = clahe.apply(img)
-        return img.astype(np.float32)
-
-    # PIL пути (standard/raw)
-    pil = Image.open(path).convert("L")
-    if mode == 'standard':
-        pil = ImageOps.equalize(pil)
-        pil = pil.filter(ImageFilter.GaussianBlur(radius=0.8))
-    elif mode == 'raw':
-        pass  # только grayscale
-    else:
-        raise ValueError(f"Unknown preproc mode: {mode}")
-    return np.array(pil, dtype=np.float32)
-
-def detect_spots(arr: np.ndarray, perc: float=99.0, win: int=7, min_sep: int=5, max_spots: int=6000) -> np.ndarray:
+def detect_spots(arr: np.ndarray, perc: float=99.0, win: int=7, min_sep: int=5, max_spots: int=6000) -> np.ndarray
     H, W = arr.shape
     rad = max(1, win // 2)
     th = float(np.percentile(arr, perc))
@@ -489,16 +455,17 @@ class SAEDLauncherFrame(ttk.Frame):
             # --- предобработка ---
             pre_mode = self.cmb_pre.get()
             if pre_mode == "Стандартная":
-                mode = "standard"
-                arr = load_grayscale_with_preproc(image_path, mode)
+                settings = PreprocSettings(mode="standard")
             elif pre_mode == "Без сглаживания":
-                mode = "raw"
-                arr = load_grayscale_with_preproc(image_path, mode)
+                settings = PreprocSettings(mode="raw")
             else:  # CLAHE
-                mode = "clahe"
                 clip = float(self.spn_clip.get())
                 tiles = int(float(self.spn_tile.get()))
-                arr = load_grayscale_with_preproc(image_path, mode, clahe_clip=clip, clahe_tiles=tiles)
+                settings = PreprocSettings(mode="clahe", clahe_clip=clip, clahe_tiles=tiles)
+
+            arr = load_grayscale_with_preproc(image_path, settings)
+            mode = settings.mode
+            preproc_payload = settings.to_json()
 
             # Центр: ручной приоритет, иначе геометрический
             cx_txt = self.ent_cx.get().strip(); cy_txt = self.ent_cy.get().strip()
@@ -542,6 +509,7 @@ class SAEDLauncherFrame(ttk.Frame):
             saed_input = {
                 "image": str(image_path),
                 "preproc_mode": mode,
+                "preproc": preproc_payload,
                 "center": {"x": float(center.cx), "y": float(center.cy), "method": center.method},
                 "radii": {"dead": float(dead_r), "search": float(search_r)},
                 "points": points
@@ -571,6 +539,7 @@ class SAEDLauncherFrame(ttk.Frame):
                 "dead_zone_px": dead_r,
                 "search_radius_px": search_r,
                 "preproc_mode": mode,
+                "preproc": preproc_payload,
                 "image_size": {"H": int(arr.shape[0]), "W": int(arr.shape[1])}
             }, indent=2), encoding="utf-8")
 
