@@ -92,63 +92,87 @@ def detect_spots(arr: np.ndarray, perc: float=99.0, win: int=7, min_sep: int=5, 
     return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)
 
 
-def merge_spots_by_intensity(pts: np.ndarray, radius: float, tol_percent: float) -> np.ndarray:
+def merge_spots_by_intensity(
+    pts: np.ndarray,
+    radius: float,
+    tol_percent: float,
+    *,
+    min_intensity: float | None = None,
+) -> np.ndarray:
     """Сливает близко расположенные точки со схожей интенсивностью.
 
     radius: радиус поиска соседей в пикселях.
     tol_percent: относительный допуск по интенсивности, задаётся в процентах
                  от более яркой из сравниваемых точек.
+    min_intensity: если задан, объединение применяется только к точкам с
+                   интенсивностью не ниже этого порога. Остальные точки
+                   возвращаются без изменений.
     """
     if pts.size == 0:
         return pts
     radius = float(radius)
     tol = max(0.0, float(tol_percent) / 100.0)
     if radius <= 0.0:
-        return pts
+        return np.asarray(pts, dtype=float)
 
     pts = np.asarray(pts, dtype=float)
+    if min_intensity is not None:
+        mask = pts[:, 2] >= float(min_intensity)
+    else:
+        mask = np.ones(len(pts), dtype=bool)
+
+    to_merge = pts[mask]
+    untouched = pts[~mask]
+    if to_merge.size == 0:
+        return pts
+
     rad2 = radius * radius
-    used = np.zeros(len(pts), dtype=bool)
-    order = np.argsort(-pts[:, 2])  # начинаем с самых ярких
+    used = np.zeros(len(to_merge), dtype=bool)
+    order = np.argsort(-to_merge[:, 2])  # начинаем с самых ярких
     merged = []
 
     for idx in order:
         if used[idx]:
             continue
 
-        base_y, base_x, base_v = pts[idx]
+        base_y, base_x, base_v = to_merge[idx]
         agg_y, agg_x, agg_v = base_y, base_x, base_v
         used[idx] = True
 
         neighbors = []
-        for j in range(len(pts)):
+        for j in range(len(to_merge)):
             if used[j] or j == idx:
                 continue
-            dy = pts[j, 0] - base_y
-            dx = pts[j, 1] - base_x
+            dy = to_merge[j, 0] - base_y
+            dx = to_merge[j, 1] - base_x
             if dy * dy + dx * dx <= rad2:
                 neighbors.append(j)
 
-        neighbors.sort(key=lambda j: pts[j, 2])
+        neighbors.sort(key=lambda j: to_merge[j, 2])
 
         for j in neighbors:
             if used[j]:
                 continue
-            vy = pts[j, 2]
+            vy = to_merge[j, 2]
             hi = max(agg_v, vy)
             if hi == 0.0:
                 rel_diff = 0.0 if abs(agg_v - vy) == 0.0 else float("inf")
             else:
                 rel_diff = abs(agg_v - vy) / hi
             if rel_diff <= tol:
-                agg_y = 0.5 * (agg_y + pts[j, 0])
-                agg_x = 0.5 * (agg_x + pts[j, 1])
+                agg_y = 0.5 * (agg_y + to_merge[j, 0])
+                agg_x = 0.5 * (agg_x + to_merge[j, 1])
                 agg_v = 0.5 * (agg_v + vy)
                 used[j] = True
 
         merged.append((agg_y, agg_x, agg_v))
 
-    return np.array(merged, dtype=float)
+    merged = np.array(merged, dtype=float)
+    if untouched.size == 0:
+        return merged
+    if merged.size == 0:
+        return untouched
+    return np.vstack((merged, untouched))
 
 
 def geometric_midpoint(arr: np.ndarray) -> CenterResult:
@@ -301,56 +325,60 @@ class SAEDLauncherFrame(ttk.Frame):
             detect_box, 1, "Процентиль детекции (%)", 99.0,
             from_=80.0, to=100.0, increment=0.1, format_str="%.1f"
         )
+        self.spn_merge_perc = self._spin_param(
+            detect_box, 2, "Процентиль интенсивности для объединения (%)", 95.0,
+            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"
+        )
         self.spn_merge_rad = self._spin_param(
-            detect_box, 2, "Радиус объединения пиков (px)", 6,
+            detect_box, 3, "Радиус объединения пиков (px)", 6,
             from_=0, to=50, increment=1
         )
         self.spn_merge_tol = self._spin_param(
-            detect_box, 3, "Допуск схожести интенсивности (%)", 10.0,
+            detect_box, 4, "Допуск схожести интенсивности (%)", 10.0,
             from_=0.0, to=100.0, increment=0.5, format_str="%.1f"
         )
         self.spn_minsep = self._spin_param(
-            detect_box, 4, "Мин. расстояние между пиками (px)", 5,
+            detect_box, 5, "Мин. расстояние между пиками (px)", 5,
             from_=1, to=50, increment=1
         )
         self.spn_maxpts = self._spin_param(
-            detect_box, 5, "Максимум обнаруженных точек", 6000,
+            detect_box, 6, "Максимум обнаруженных точек", 6000,
             from_=100, to=20000, increment=100
         )
 
-        ttk.Separator(detect_box).grid(row=6, column=0, columnspan=2, sticky="ew", pady=(6, 8))
+        ttk.Separator(detect_box).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(6, 8))
 
         ttk.Label(
             detect_box,
             text="Уточнение центра",
             font=("TkDefaultFont", 10, "bold")
-        ).grid(row=7, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
+        ).grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
         self.spn_iters = self._spin_param(
-            detect_box, 8, "Итерации уточнения центра", 4,
+            detect_box, 9, "Итерации уточнения центра", 4,
             from_=0, to=10, increment=1
         )
         self.spn_tolang = self._spin_param(
-            detect_box, 9, "Допуск антиподов (°)", 8.0,
+            detect_box, 10, "Допуск антиподов (°)", 8.0,
             from_=1.0, to=30.0, increment=0.5, format_str="%.1f"
         )
         self.spn_tolr = self._spin_param(
-            detect_box, 10, "Допуск по радиусу (отн.)", 0.06,
+            detect_box, 11, "Допуск по радиусу (отн.)", 0.06,
             from_=0.01, to=0.5, increment=0.01, format_str="%.2f"
         )
 
-        ttk.Separator(detect_box).grid(row=11, column=0, columnspan=2, sticky="ew", pady=(6, 8))
+        ttk.Separator(detect_box).grid(row=12, column=0, columnspan=2, sticky="ew", pady=(6, 8))
 
         ttk.Label(
             detect_box,
             text="Геометрические фильтры",
             font=("TkDefaultFont", 10, "bold")
-        ).grid(row=12, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
+        ).grid(row=13, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
         self.spn_dead = self._spin_param(
-            detect_box, 13, "Мёртвая зона (px)", 0,
+            detect_box, 14, "Мёртвая зона (px)", 0,
             from_=0, to=500, increment=1
         )
         self.spn_search = self._spin_param(
-            detect_box, 14, "Радиус поиска (px, 0 = без лимита)", 0,
+            detect_box, 15, "Радиус поиска (px, 0 = без лимита)", 0,
             from_=0, to=10000, increment=25
         )
 
@@ -360,7 +388,7 @@ class SAEDLauncherFrame(ttk.Frame):
                  " и ускоряет обработку.",
             wraplength=520,
             foreground="#555555"
-        ).grid(row=15, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))
+        ).grid(row=16, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))
 
         action_box = ttk.Frame(scrollable, padding=(0, 12, 0, 0))
         action_box.grid(row=1, column=0, sticky="nsew")
@@ -447,6 +475,7 @@ class SAEDLauncherFrame(ttk.Frame):
             outdir = Path(self.ent_out.get()).expanduser(); outdir.mkdir(parents=True, exist_ok=True)
 
             perc = float(self.spn_perc.get())
+            merge_apply_perc = float(self.spn_merge_perc.get())
             merge_radius = float(self.spn_merge_rad.get())
             merge_tol = float(self.spn_merge_tol.get())
             min_sep = int(float(self.spn_minsep.get()))
@@ -497,7 +526,15 @@ class SAEDLauncherFrame(ttk.Frame):
                 pts = pts[mask]
 
             if len(pts):
-                pts = merge_spots_by_intensity(pts, radius=merge_radius, tol_percent=merge_tol)
+                merge_threshold = None
+                if merge_apply_perc > 0.0:
+                    merge_threshold = float(np.percentile(pts[:, 2], merge_apply_perc))
+                pts = merge_spots_by_intensity(
+                    pts,
+                    radius=merge_radius,
+                    tol_percent=merge_tol,
+                    min_intensity=merge_threshold,
+                )
 
             # --- saed_input.json (единый файл для редактора) ---
             # pts: ndarray [y, x, v]; сохраняем v как интенсивность
