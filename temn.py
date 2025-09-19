@@ -85,73 +85,75 @@ def detect_spots(arr: np.ndarray, perc: float=99.0, win: int=7, min_sep: int=5, 
     kept = []
     msep2 = float(min_sep)**2
     for (y, x, v) in cand:
-        if all((y-y0)**2 + (x-x0)**2 >= msep2 for (y0, x0, _) in kept):
+        if all((y - y0) ** 2 + (x - x0) ** 2 >= msep2 for (y0, x0, _) in kept):
             kept.append((y, x, v))
         if len(kept) >= max_spots:
             break
-        return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)
-    def merge_spots_by_intensity (pts: np.ndarray, radius: float, tol_percent: float) -> np.ndarray:
-            """Сливает близко расположенные точки со схожей интенсивностью.
+    return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)
 
-            radius: радиус поиска соседей в пикселях.
-            tol_percent: относительный допуск по интенсивности, задаётся в процентах
-                         от более яркой из сравниваемых точек.
-            """
-            if pts.size == 0:
-                return pts
-            radius = float(radius)
-            tol = max(0.0, float(tol_percent) / 100.0)
-            if radius <= 0.0:
-                return pts
 
-            pts = np.asarray(pts, dtype=float)
-            rad2 = radius * radius
-            used = np.zeros(len(pts), dtype=bool)
-            order = np.argsort(-pts[:, 2])  # начинаем с самых ярких
-            merged = []
+def merge_spots_by_intensity(pts: np.ndarray, radius: float, tol_percent: float) -> np.ndarray:
+    """Сливает близко расположенные точки со схожей интенсивностью.
 
-            for idx in order:
-                if used[idx]:
-                    continue
+    radius: радиус поиска соседей в пикселях.
+    tol_percent: относительный допуск по интенсивности, задаётся в процентах
+                 от более яркой из сравниваемых точек.
+    """
+    if pts.size == 0:
+        return pts
+    radius = float(radius)
+    tol = max(0.0, float(tol_percent) / 100.0)
+    if radius <= 0.0:
+        return pts
 
-                base_y, base_x, base_v = pts[idx]
-                agg_y, agg_x, agg_v = base_y, base_x, base_v
-                used[idx] = True
+    pts = np.asarray(pts, dtype=float)
+    rad2 = radius * radius
+    used = np.zeros(len(pts), dtype=bool)
+    order = np.argsort(-pts[:, 2])  # начинаем с самых ярких
+    merged = []
 
-                neighbors = []
-                for j in range(len(pts)):
-                    if used[j] or j == idx:
-                        continue
-                    dy = pts[j, 0] - base_y
-                    dx = pts[j, 1] - base_x
-                    if dy * dy + dx * dx <= rad2:
-                        neighbors.append(j)
+    for idx in order:
+        if used[idx]:
+            continue
 
-                neighbors.sort(key=lambda j: pts[j, 2])
+        base_y, base_x, base_v = pts[idx]
+        agg_y, agg_x, agg_v = base_y, base_x, base_v
+        used[idx] = True
 
-                for j in neighbors:
-                    if used[j]:
-                        continue
-                    vy = pts[j, 2]
-                    hi = max(agg_v, vy)
-                    if hi == 0.0:
-                        rel_diff = 0.0 if abs(agg_v - vy) == 0.0 else float("inf")
-                    else:
-                        rel_diff = abs(agg_v - vy) / hi
-                    if rel_diff <= tol:
-                        agg_y = 0.5 * (agg_y + pts[j, 0])
-                        agg_x = 0.5 * (agg_x + pts[j, 1])
-                        agg_v = 0.5 * (agg_v + vy)
-                        used[j] = True
+        neighbors = []
+        for j in range(len(pts)):
+            if used[j] or j == idx:
+                continue
+            dy = pts[j, 0] - base_y
+            dx = pts[j, 1] - base_x
+            if dy * dy + dx * dx <= rad2:
+                neighbors.append(j)
 
-                merged.append((agg_y, agg_x, agg_v))
+        neighbors.sort(key=lambda j: pts[j, 2])
 
-            return np.array(merged, dtype=float)
+        for j in neighbors:
+            if used[j]:
+                continue
+            vy = pts[j, 2]
+            hi = max(agg_v, vy)
+            if hi == 0.0:
+                rel_diff = 0.0 if abs(agg_v - vy) == 0.0 else float("inf")
+            else:
+                rel_diff = abs(agg_v - vy) / hi
+            if rel_diff <= tol:
+                agg_y = 0.5 * (agg_y + pts[j, 0])
+                agg_x = 0.5 * (agg_x + pts[j, 1])
+                agg_v = 0.5 * (agg_v + vy)
+                used[j] = True
 
-        def geometric_midpoint(arr: np.ndarray) -> CenterResult:
-            H, W = arr.shape
-            return CenterResult(cy=(H - 1) / 2.0, cx=(W - 1) / 2.0, method="midpoint")
+        merged.append((agg_y, agg_x, agg_v))
 
+    return np.array(merged, dtype=float)
+
+
+def geometric_midpoint(arr: np.ndarray) -> CenterResult:
+    H, W = arr.shape
+    return CenterResult(cy=(H - 1) / 2.0, cx=(W - 1) / 2.0, method="midpoint")
 def refine_center_antipodal(center: Tuple[float,float], pts: np.ndarray, tol_ang_deg: float=8.0, tol_rel_r: float=0.06, iters: int=3) -> CenterResult:
     cy, cx = float(center[0]), float(center[1])
     if len(pts) < 4:
