@@ -969,10 +969,11 @@ class PointEditor(tk.Frame):
             # Перетаскивание центра — оставить
             if self.center_dragging and pos is not None:
                 y, x = pos
-                if self.overlay is None: self.overlay = {}}
-            self.overlay["center"] = {"x": float(x), "y": float(y)}
-            self._redraw()
-            return
+                if self.overlay is None:
+                    self.overlay = {}
+                self.overlay["center"] = {"x": float(x), "y": float(y)}
+                self._redraw()
+                return
 
         if self._measure_active:
             self._update_measurement_preview(pos)
