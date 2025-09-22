@@ -73,6 +73,8 @@ def merge_spots_by_intensity(
     tol_percent: float,
     *,
     min_intensity: float | None = None,
+    line_image: np.ndarray | None = None,
+    percentile_map: np.ndarray | None = None,
 ) -> np.ndarray:
     """Сливает близко расположенные точки со схожей интенсивностью.
 
@@ -84,6 +86,13 @@ def merge_spots_by_intensity(
     min_intensity: если задан, объединение применяется только к точкам с␊
                    интенсивностью не ниже этого порога (также в процентах).
                    Остальные точки возвращаются без изменений.
+    line_image: исходное изображение (до перевода в процентили), используется
+                для проверки провалов интенсивности на прямой между точками.
+                Если передан ``percentile_map``, ``line_image`` игнорируется.
+    percentile_map: карта интенсивностей в шкале 0..100, соответствует
+                    ``line_image``. Если не задана, будет вычислена из
+                    ``line_image``. Если и ``line_image`` не задано, проверка
+                    прямой отключается.
     """
     if pts.size == 0:
         return pts
@@ -103,6 +112,15 @@ def merge_spots_by_intensity(
     if to_merge.size == 0:
         return pts
 
+    intensity_map: np.ndarray | None
+    if percentile_map is not None:
+        intensity_map = np.asarray(percentile_map, dtype=float)
+    elif line_image is not None:
+        percent, _, _ = compute_percentile_map(np.asarray(line_image, dtype=float))
+        intensity_map = percent
+    else:
+        intensity_map = None
+
     rad2 = radius * radius
     used = np.zeros(len(to_merge), dtype=bool)
     order = np.argsort(-to_merge[:, 2])  # начинаем с самых ярких
@@ -113,6 +131,55 @@ def merge_spots_by_intensity(
         if hi == 0.0:
             return abs(a - b) == 0.0
         return abs(a - b) <= tol * hi + 1e-12
+
+    H = W = None
+    if intensity_map is not None and intensity_map.ndim == 2:
+        H, W = intensity_map.shape
+    else:
+        intensity_map = None
+
+    def clamp_round(val: float, hi: int) -> int:
+        return int(min(max(round(float(val)), 0), hi))
+
+    def bresenham_line(y0: int, x0: int, y1: int, x1: int) -> list[tuple[int, int]]:
+        points: list[tuple[int, int]] = []
+        dy = abs(y1 - y0)
+        dx = abs(x1 - x0)
+        sy = 1 if y0 < y1 else -1
+        sx = 1 if x0 < x1 else -1
+        err = dx - dy
+        while True:
+            points.append((y0, x0))
+            if y0 == y1 and x0 == x1:
+                break
+            e2 = err * 2
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+        return points
+
+    def has_intensity_dip(idx_a: int, idx_b: int) -> bool:
+        if intensity_map is None or H is None or W is None:
+            return False
+        base_val = min(float(to_merge[idx_a, 2]), float(to_merge[idx_b, 2]))
+        if base_val <= 0.0:
+            return False
+        y0 = clamp_round(to_merge[idx_a, 0], H - 1)
+        x0 = clamp_round(to_merge[idx_a, 1], W - 1)
+        y1 = clamp_round(to_merge[idx_b, 0], H - 1)
+        x1 = clamp_round(to_merge[idx_b, 1], W - 1)
+        pixels = bresenham_line(y0, x0, y1, x1)
+        if len(pixels) <= 2:
+            return False
+        limit = base_val * (1.0 - tol)
+        for (yy, xx) in pixels[1:-1]:
+            if 0 <= yy < H and 0 <= xx < W:
+                if float(intensity_map[yy, xx]) + 1e-9 < limit:
+                    return True
+        return False
 
     for idx in order:
         if used[idx]:
@@ -138,6 +205,8 @@ def merge_spots_by_intensity(
 
         for j in neighbors:
             if used[j]:
+                continue
+            if any(has_intensity_dip(existing, j) for existing in cluster):
                 continue
             cand_v = float(to_merge[j, 2])
             new_count = len(cluster) + 1
@@ -536,6 +605,7 @@ class SAEDLauncherFrame(ttk.Frame):
                     radius=merge_radius,
                     tol_percent=merge_tol,
                     min_intensity=merge_threshold,
+                    line_image=arr,
                 )
 
             # --- saed_input.json (единый файл для редактора) ---

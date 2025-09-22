@@ -95,6 +95,16 @@ class PointEditor(tk.Frame):
         self._tooltip = None          # matplotlib.text.Annotation
         self._tooltip_idx = None
 
+        # Измерение расстояний между точками
+        self._measure_active = False
+        self._measure_start_idx: Optional[int] = None
+        self._measure_start_point: Optional[tuple[float, float]] = None
+        self._measure_preview_end: Optional[tuple[float, float]] = None
+        self._measure_preview_artist = None
+        self._measure_line_artist = None
+        self._measure_annotation = None
+        self._measurement: Optional[dict[str, object]] = None
+
         self._build_ui()
 
         # первичная загрузка
@@ -159,6 +169,7 @@ class PointEditor(tk.Frame):
             "ЛКМ по центру — перетащить центр и пересчитать фильтры\n"
             "ПКМ по точке — удалить\n"
             "Средняя кнопка по точке — показать координаты и интенсивность\n"
+            "Зажатая ЛКМ от точки до точки — измерить расстояние\n"
             "Shift + перетаскивание — прямоугольное удаление диапазона"
         )
         ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=780).pack(fill=tk.X)
@@ -390,8 +401,146 @@ class PointEditor(tk.Frame):
         self.points = self.points[mask]
         self.values = self.values[mask] if len(self.values)==len(mask) else self._sample_intensities(self.points)
 
-    # ---------- Tooltip ----------
-    def _clear_tooltip(self):
+    # ---------- Tooltip и измерения ----------
+    def _remove_measure_preview_artist(self) -> bool:
+        if self._measure_preview_artist is not None:
+            try:
+                self._measure_preview_artist.remove()
+            except Exception:
+                pass
+            self._measure_preview_artist = None
+            return True
+        return False
+
+    def _remove_measurement_artists(self) -> bool:
+        removed = False
+        if self._measure_line_artist is not None:
+            try:
+                self._measure_line_artist.remove()
+            except Exception:
+                pass
+            self._measure_line_artist = None
+            removed = True
+        if self._measure_annotation is not None:
+            try:
+                self._measure_annotation.remove()
+            except Exception:
+                pass
+            self._measure_annotation = None
+            removed = True
+        return removed
+
+    def _cancel_measurement_preview(self) -> bool:
+        removed = self._remove_measure_preview_artist()
+        has_state = (
+            self._measure_active
+            or self._measure_start_point is not None
+            or self._measure_preview_end is not None
+        )
+        removed = removed or has_state
+        self._measure_active = False
+        self._measure_start_idx = None
+        self._measure_start_point = None
+        self._measure_preview_end = None
+        return removed
+
+    def _clear_measurement_result(self) -> bool:
+        removed = self._measurement is not None
+        removed = self._remove_measurement_artists() or removed
+        self._measurement = None
+        return removed
+
+    def _start_measurement(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self.points):
+            return
+        self._measure_active = True
+        self._measure_start_idx = idx
+        y0, x0 = self.points[idx]
+        self._measure_start_point = (float(y0), float(x0))
+        self._measure_preview_end = None
+        self._remove_measure_preview_artist()
+
+    def _update_measurement_preview(self, pos: Optional[tuple[float, float]]) -> None:
+        if not self._measure_active or self._measure_start_point is None:
+            return
+        if pos is None:
+            self._measure_preview_end = None
+            if self._remove_measure_preview_artist():
+                if hasattr(self, "canvas"):
+                    self.canvas.draw_idle()
+            return
+        y1, x1 = pos
+        self._measure_preview_end = (float(y1), float(x1))
+        y0, x0 = self._measure_start_point
+        if self._measure_preview_artist is None:
+            (line,) = self.ax.plot(
+                [x0, x1], [y0, y1], color="#ffcc33", linewidth=1.6, linestyle="--", alpha=0.9
+            )
+            self._measure_preview_artist = line
+        else:
+            self._measure_preview_artist.set_data([x0, x1], [y0, y1])
+        if hasattr(self, "canvas"):
+            self.canvas.draw_idle()
+
+    def _finalize_measurement(self, end_idx: Optional[int]) -> None:
+        if not self._measure_active or self._measure_start_point is None:
+            self._cancel_measurement_preview()
+            return
+        if end_idx is None or end_idx == self._measure_start_idx or end_idx < 0 or end_idx >= len(self.points):
+            if self._cancel_measurement_preview() and hasattr(self, "canvas"):
+                self.canvas.draw_idle()
+            return
+        start_y, start_x = self._measure_start_point
+        end_y, end_x = map(float, self.points[end_idx])
+        length = float(np.hypot(end_x - start_x, end_y - start_y))
+        self._measurement = {
+            "start": (start_y, start_x),
+            "end": (end_y, end_x),
+            "length": length,
+        }
+        self._cancel_measurement_preview()
+        self._redraw()
+
+    def _draw_measurement_overlays(self) -> None:
+        self._measure_line_artist = None
+        self._measure_annotation = None
+        self._measure_preview_artist = None
+
+        if self._measurement is not None:
+            start_y, start_x = self._measurement["start"]
+            end_y, end_x = self._measurement["end"]
+            length = float(self._measurement.get("length", 0.0))
+            (line,) = self.ax.plot(
+                [start_x, end_x], [start_y, end_y], color="#ffcc33", linewidth=1.8, alpha=0.95
+            )
+            self._measure_line_artist = line
+            mid_x = (start_x + end_x) / 2.0
+            mid_y = (start_y + end_y) / 2.0
+            txt = f"L = {length:.1f} px"
+            self._measure_annotation = self.ax.annotate(
+                txt,
+                xy=(mid_x, mid_y),
+                xytext=(0, -14),
+                textcoords="offset points",
+                ha="center",
+                bbox=dict(boxstyle="round", fc="white", ec="black", alpha=0.9),
+                fontsize=9,
+            )
+
+        if (
+            self._measure_active
+            and self._measure_start_point is not None
+            and self._measure_preview_end is not None
+        ):
+            y0, x0 = self._measure_start_point
+            y1, x1 = self._measure_preview_end
+            (pline,) = self.ax.plot(
+                [x0, x1], [y0, y1], color="#ffcc33", linewidth=1.6, linestyle="--", alpha=0.9
+            )
+            self._measure_preview_artist = pline
+
+    def _clear_tooltip(self, *, keep_measure: bool = False, keep_preview: bool = False):
+        removed = False
         if self._tooltip is not None:
             try:
                 self._tooltip.remove()
@@ -399,6 +548,14 @@ class PointEditor(tk.Frame):
                 pass
             self._tooltip = None
             self._tooltip_idx = None
+            removed = True
+        if not keep_preview:
+            if self._cancel_measurement_preview():
+                removed = True
+        if not keep_measure:
+            if self._clear_measurement_result():
+                removed = True
+        if removed and hasattr(self, "canvas"):
             self.canvas.draw_idle()
 
     def _show_tooltip_for_idx(self, idx):
@@ -588,7 +745,9 @@ class PointEditor(tk.Frame):
                 self.points = np.vstack([self.points, [y, x]])
                 self.values = np.append(self.values, self._sample_intensities(np.array([[y, x]]))[0])
                 self._redo.clear()
-            # если кликнули по существующей точке — ничего не делаем (перемещение запрещено)
+            else:
+                self._start_measurement(i)
+            # если кликнули по существующей точке — перемещение запрещено (используем для измерения)
 
         elif e.button == 3:
             if pos is None: return
@@ -610,7 +769,8 @@ class PointEditor(tk.Frame):
     def _on_move(self, e):
         pos = self._img_xy(e)
         # любое движение закрывает tooltip
-        self._clear_tooltip()
+        keep = self._measure_active
+        self._clear_tooltip(keep_measure=keep, keep_preview=keep)
 
         # Перетаскивание центра — оставить
         if self.center_dragging and pos is not None:
@@ -618,6 +778,10 @@ class PointEditor(tk.Frame):
             if self.overlay is None: self.overlay = {}
             self.overlay["center"] = {"x": float(x), "y": float(y)}
             self._redraw()
+            return
+
+        if self._measure_active:
+            self._update_measurement_preview(pos)
             return
 
         # Прямоугольник выделения для удаления
@@ -632,7 +796,8 @@ class PointEditor(tk.Frame):
 
     def _on_up(self, e):
         # любое действие закрывает tooltip
-        self._clear_tooltip()
+        keep = self._measure_active
+        self._clear_tooltip(keep_measure=keep, keep_preview=keep)
 
         # Завершение перетаскивания центра
         if self.center_dragging:
@@ -642,6 +807,14 @@ class PointEditor(tk.Frame):
                 self.view_cx = float(self.overlay["center"]["x"])
                 self.view_cy = float(self.overlay["center"]["y"])
             self._redraw()
+            return
+
+        if self._measure_active:
+            pos = self._img_xy(e)
+            end_idx = None
+            if pos is not None:
+                end_idx = self._near_idx(pos[0], pos[1])
+            self._finalize_measurement(end_idx)
             return
 
         # Завершение прямоугольника удаления
@@ -679,6 +852,7 @@ class PointEditor(tk.Frame):
             self.ax.scatter(self.points[:,1], self.points[:,0],
                             s=22, alpha=0.9, marker="o", linewidths=0.5, edgecolors="black")
 
+        self._draw_measurement_overlays()
         self._apply_zoom()
         self.canvas.draw_idle()
 
