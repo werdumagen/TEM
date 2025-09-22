@@ -1038,7 +1038,7 @@ class PointEditor(tk.Frame):
             self.rect_start = None
             if self.rect_artist is not None:
                 self.rect_artist.remove(); self.rect_artist = None
-            self._redraw(
+            self._redraw()
 
     # ---------- Draw ----------
     def _redraw(self):
