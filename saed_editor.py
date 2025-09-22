@@ -17,7 +17,8 @@ from typing import Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import numpy as np
-from PIL import Image
+from percentile_utils import compute_percentile_map, map_values_to_percent
+from preproc import PreprocSettings, load_grayscale_with_preproc
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -64,14 +65,17 @@ class PointEditor(tk.Frame):
                  input_json: str | None = None, auto_load: bool = True):
         super().__init__(master)
         self.controller = controller
-        # данные␊
-        self.points = np.zeros((0, 2), float)   # [y, x]␊
-        self.values = np.zeros((0,), float)     # интенсивности (параллельно points)␊
+        # данные
+        self.points = np.zeros((0, 2), float)   # [y, x]
+        self.values = np.zeros((0,), float)     # интенсивности (параллельно points)
         self.rect_start = None
         self.rect_artist = None
-        self.overlay = None  # {center:{x,y}, dead_radius, search_radius}␊
+        self.overlay = None  # {center:{x,y}, dead_radius, search_radius}
         self.image_path: Optional[Path] = None
         self.img_arr: Optional[np.ndarray] = None
+        self._percent_map: Optional[np.ndarray] = None
+        self._percent_lookup: Optional[tuple[np.ndarray, np.ndarray]] = None
+        self._preproc_settings: PreprocSettings = PreprocSettings(mode="raw")
 
         # Undo/Redo
         self._undo = []
@@ -238,14 +242,29 @@ class PointEditor(tk.Frame):
             messagebox.showerror("Ошибка", f"Не удалось прочитать JSON:\n{e}")
             return
 
+        self._percent_map = None
+        self._percent_lookup = None
+
         # загрузка изображения по пути из JSON
         img_path = data.get("image")
         if not img_path:
             messagebox.showerror("Ошибка", "В JSON отсутствует поле 'image'.")
             return
         self.image_path = Path(img_path)
-        img = Image.open(self.image_path).convert("L")
-        self.img_arr = np.array(img, float)
+        fallback_mode = data.get("preproc_mode")
+        if not isinstance(fallback_mode, str):
+            fallback_mode = None
+        self._preproc_settings = PreprocSettings.from_json(
+            data.get("preproc"), fallback_mode=fallback_mode
+        )
+        try:
+            self.img_arr = load_grayscale_with_preproc(self.image_path, self._preproc_settings)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось подготовить изображение:\n{e}")
+            return
+
+        self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
+        self._percent_lookup = (uniq_vals, uniq_perc)
 
         # overlay: центр и радиусы
         c = data.get("center") or {}
@@ -263,11 +282,16 @@ class PointEditor(tk.Frame):
             yy = [float(p.get("y")) for p in pts]
             xx = [float(p.get("x")) for p in pts]
             self.points = np.column_stack([yy, xx]).astype(float)
-            if any("intensity" in p for p in pts):
-                vv = [float(p.get("intensity", 0.0)) for p in pts]
-                self.values = np.array(vv, float)
-            else:
+            if self._percent_map is not None:
                 self.values = self._sample_intensities(self.points)
+            elif any("intensity" in p for p in pts):
+                vv = np.array([float(p.get("intensity", 0.0)) for p in pts], dtype=float)
+                if self._percent_lookup is not None:
+                    self.values = map_values_to_percent(vv, *self._percent_lookup)
+                else:
+                    self.values = vv
+            else:
+                self.values = np.zeros((len(self.points),), float)
         else:
             self.points = np.zeros((0,2), float)
             self.values = np.zeros((0,), float)
@@ -281,7 +305,10 @@ class PointEditor(tk.Frame):
         base = self.image_path.with_name("spots.json") if self.image_path else Path("spots.json")
         pts = []
         # пересэмплируем интенсивности в текущих координатах
-        vals = self._sample_intensities(self.points) if self.img_arr is not None else self.values
+        if self._percent_map is not None or self.img_arr is not None:
+            vals = self._sample_intensities(self.points)
+        else:
+            vals = self.values
         for (y, x), v in zip(self.points, vals):
             pts.append({"y": float(y), "x": float(x), "intensity": float(v)})
         base.write_text(json.dumps({"points": pts}, indent=2), encoding="utf-8")
@@ -289,6 +316,8 @@ class PointEditor(tk.Frame):
         # также пересохраним обновлённый saed_input
         si = {
             "image": str(self.image_path) if self.image_path else None,
+            "preproc_mode": self._preproc_settings.mode,
+            "preproc": self._preproc_settings.to_json(),
             "center": (self.overlay.get("center") if self.overlay else None),
             "radii": {
                 "dead": float(self.overlay.get("dead_radius") or 0.0) if self.overlay else 0.0,
@@ -304,15 +333,32 @@ class PointEditor(tk.Frame):
 
     # ---------- Helpers ----------
     def _sample_intensities(self, pts_yx: np.ndarray) -> np.ndarray:
-        if self.img_arr is None or len(pts_yx) == 0:
+        if len(pts_yx) == 0:
+            return np.zeros((0,), float)
+
+        if self._percent_map is not None:
+            src = self._percent_map
+            H, W = src.shape[:2]
+            out = []
+            for y, x in pts_yx:
+                yi = int(round(y)); xi = int(round(x))
+                yi = max(0, min(H - 1, yi)); xi = max(0, min(W - 1, xi))
+                out.append(float(src[yi, xi]))
+            return np.array(out, float)
+
+        if self.img_arr is None:
             return np.zeros((len(pts_yx),), float)
+
         H, W = self.img_arr.shape[:2]
-        out = []
+        raw = []
         for y, x in pts_yx:
             yi = int(round(y)); xi = int(round(x))
-            yi = max(0, min(H-1, yi)); xi = max(0, min(W-1, xi))
-            out.append(float(self.img_arr[yi, xi]))
-        return np.array(out, float)
+            yi = max(0, min(H - 1, yi)); xi = max(0, min(W - 1, xi))
+            raw.append(float(self.img_arr[yi, xi]))
+        raw = np.array(raw, float)
+        if self._percent_lookup is not None:
+            return map_values_to_percent(raw, *self._percent_lookup)
+        return raw
 
     def _img_xy(self, e):
         return None if (e.xdata is None or e.ydata is None) else (e.ydata, e.xdata)
@@ -360,19 +406,27 @@ class PointEditor(tk.Frame):
             return
         y, x = self.points[idx]
         # intensity по текущему изображению/values
-        if self.img_arr is not None:
+        inten = float(self.values[idx]) if idx < len(self.values) else 0.0
+        if self._percent_map is not None:
+            H, W = self._percent_map.shape[:2]
+            yi = max(0, min(H - 1, int(round(y))))
+            xi = max(0, min(W - 1, int(round(x))))
+            inten = float(self._percent_map[yi, xi])
+        elif self.img_arr is not None:
             H, W = self.img_arr.shape[:2]
-            yi = max(0, min(H-1, int(round(y))))
-            xi = max(0, min(W-1, int(round(x))))
-            inten = float(self.img_arr[yi, xi])
-        else:
-            inten = float(self.values[idx]) if idx < len(self.values) else 0.0
+            yi = max(0, min(H - 1, int(round(y))))
+            xi = max(0, min(W - 1, int(round(x))))
+            raw_val = float(self.img_arr[yi, xi])
+            if self._percent_lookup is not None:
+                inten = float(map_values_to_percent(np.array([raw_val], dtype=float), *self._percent_lookup)[0])
+            else:
+                inten = raw_val
 
         # удалить предыдущую подсказку
         self._clear_tooltip()
 
         # создать аннотацию возле точки
-        txt = f"x={x:.1f}, y={y:.1f}, I={inten:.1f}"
+        txt = f"x={x:.1f}, y={y:.1f}, I={inten:.1f}%"
         self._tooltip = self.ax.annotate(
             txt, xy=(x, y), xytext=(10, 10), textcoords="offset points",
             bbox=dict(boxstyle="round", fc="white", ec="black", alpha=0.9),
@@ -645,17 +699,31 @@ class PointEditor(tk.Frame):
             # актуальные точки (после правок) + интенсивности из текущего изображения
             points_list = []
             if len(self.points):
-                if self.img_arr is not None:
+                if self._percent_map is not None:
+                    H, W = self._percent_map.shape[:2]
+                elif self.img_arr is not None:
                     H, W = self.img_arr.shape[:2]
                 else:
                     H = W = None
-                for (y, x) in self.points.tolist():
-                    if self.img_arr is not None:
+                for idx, (y, x) in enumerate(self.points.tolist()):
+                    inten = None
+                    if H is not None:
                         yi = max(0, min(H - 1, int(round(y))))
                         xi = max(0, min(W - 1, int(round(x))))
-                        inten = float(self.img_arr[yi, xi])
-                    else:
-                        inten = None
+                        if self._percent_map is not None:
+                            inten = float(self._percent_map[yi, xi])
+                        elif self.img_arr is not None:
+                            raw_val = float(self.img_arr[yi, xi])
+                            if self._percent_lookup is not None:
+                                inten = float(
+                                    map_values_to_percent(
+                                        np.array([raw_val], dtype=float), *self._percent_lookup
+                                    )[0]
+                                )
+                            else:
+                                inten = raw_val
+                    if inten is None and idx < len(self.values):
+                        inten = float(self.values[idx])
                     points_list.append({"x": float(x), "y": float(y), "intensity": inten})
 
             # актуальный центр из overlay
@@ -675,6 +743,8 @@ class PointEditor(tk.Frame):
 
             payload = {
                 "image": str(self.image_path) if self.image_path else None,
+                "preproc_mode": self._preproc_settings.mode,
+                "preproc": self._preproc_settings.to_json(),
                 "points": points_list,
                 "centers": {
                     "geometric": {"x": float(geo_cx), "y": float(geo_cy)} if geo_cx is not None else None,
@@ -779,25 +849,28 @@ class PointEditor(tk.Frame):
         txt.config(state=tk.DISABLED)
         self._set_status("Сформирован отчёт по симметрии")
 
-    class PointEditorApp(tk.Tk):
-        """Standalone-обёртка, встраивающая редактор в корневое окно."""
+class PointEditorApp(tk.Tk):
+    """Standalone-обёртка, встраивающая редактор в корневое окно."""
 
-        def __init__(self, input_json: str | None = None):
-            super().__init__()
-            self.title("SAED Editor + Analysis")
-            self.geometry("1100x800")
-            self.resizable(True, True)
-            self.editor = PointEditor(self, input_json=input_json)
-            self.editor.pack(fill=tk.BOTH, expand=True)
+    def __init__(self, input_json: str | None = None):
+        super().__init__()
+        self.title("SAED Editor + Analysis")
+        self.geometry("1100x800")
+        self.resizable(True, True)
+        self.editor = PointEditor(self, input_json=input_json)
+        self.editor.pack(fill=tk.BOTH, expand=True)
 
-    # -------- CLI ---------
-    def _parse_args(argv):
-        import argparse
-        p = argparse.ArgumentParser()
-        p.add_argument("--input", type=str, required=False, help="Путь к saed_input.json")
-        return p.parse_args(argv)
 
-    if __name__ == "__main__":
-        args = _parse_args(sys.argv[1:])
-        root = PointEditorApp(args.input)
-        root.mainloop()
+# -------- CLI ---------
+def _parse_args(argv):
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--input", type=str, required=False, help="Путь к saed_input.json")
+    return p.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = _parse_args(sys.argv[1:])
+    root = PointEditorApp(args.input)
+    root.mainloop()
