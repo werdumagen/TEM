@@ -24,24 +24,43 @@ def _import_module(name: str):
 
     try:
         return importlib.import_module(name)
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as exc:
         base_candidates = []
         frozen_base = getattr(sys, "_MEIPASS", None)
         if frozen_base is not None:
             base_candidates.append(Path(frozen_base))
         base_candidates.append(Path(__file__).resolve().parent)
 
+        def _attempt_load(module_path: Path, *, package_dir: Path | None = None):
+            spec_kwargs = {}
+            if package_dir is not None:
+                spec_kwargs["submodule_search_locations"] = [str(package_dir)]
+            spec = importlib.util.spec_from_file_location(name, module_path, **spec_kwargs)
+            if spec is None or spec.loader is None:  # pragma: no cover - importlib guard
+                return None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
+            return module
+
         for base in base_candidates:
-            candidate = base / f"{name}.py"
-            if candidate.exists():
-                spec = importlib.util.spec_from_file_location(name, candidate)
-                if spec is None or spec.loader is None:  # pragma: no cover - importlib guard
-                    continue
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[name] = module
-                spec.loader.exec_module(module)
-                return module
-        raise
+            for suffix in (".py", ".pyc"):
+                candidate = base / f"{name}{suffix}"
+                if candidate.exists():
+                    module = _attempt_load(candidate)
+                    if module is not None:
+                        return module
+
+            package_dir = base / name
+            if package_dir.is_dir():
+                for suffix in (".py", ".pyc"):
+                    init_file = package_dir / f"__init__{suffix}"
+                    if init_file.exists():
+                        module = _attempt_load(init_file, package_dir=package_dir)
+                        if module is not None:
+                            return module
+
+        raise exc
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
