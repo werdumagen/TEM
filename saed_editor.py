@@ -902,86 +902,90 @@ class PointEditor(tk.Frame):
                 self._show_tooltip_for_idx(idx)
             return  # не считаем это добавлением/редактированием
 
-            if e.button == 1 and not (e.key and "shift" in e.key):
-                if pos is None: return
-                y, x = pos
-                # Перетаскивание центра — оставить
-                if self._center_hit(y, x):
-                    self._clear_merge_seed()
-                    self._push_undo()
-                    self.center_dragging = True
-                    self._redo.clear()
-                    return
-
-                # Добавление новой точки по клику в пустое место (без последующего перетаскивания!)
-                i = self._near_idx(y, x)
-                if i is None:
-                    self._clear_merge_seed()
-                    self._push_undo()
-                    self.points = np.vstack([self.points, [y, x]])
-                    self.values = np.append(self.values, self._sample_intensities(np.array([[y, x]]))[0])
-                    self._redo.clear()
-                else:
-                    self._select_merge_seed(i)
-                    self._start_measurement(i)
-                # если кликнули по существующей точке — перемещение запрещено (используем для измерения)
-
-            elif e.button == 3:
-                if pos is None: return
-                y, x = pos
-                i = self._near_idx(y, x)
-                if i is not None:
-                    self._push_undo()
-                    self.points = np.delete(self.points, i, axis=0)
-                    self.values = np.delete(self.values, i, axis=0)
-                    if self._merge_seed_idx is not None:
-                        if i == self._merge_seed_idx:
-                            self._clear_merge_seed()
-                        elif i < self._merge_seed_idx:
-                            self._merge_seed_idx -= 1
-                            if 0 <= self._merge_seed_idx < len(self.points):
-                                self._merge_seed_origin = (
-                                    float(self.points[self._merge_seed_idx, 0]),
-                                    float(self.points[self._merge_seed_idx, 1]),
-                                )
-                    self._redo.clear()
-
-            elif e.button == 1 and e.key and "shift" in e.key:
-                if pos is not None:
-                    self._last_cursor_pos = (float(pos[0]), float(pos[1]))
+        if e.button == 1 and not (e.key and "shift" in e.key):
+            if pos is None:
+                return
+            y, x = pos
+            # Перетаскивание центра — оставить
+            if self._center_hit(y, x):
+                self._clear_merge_seed()
                 self._push_undo()
-                self.rect_start = pos
+                self.center_dragging = True
+                self._redo.clear()
+                return
+
+            # Добавление новой точки по клику в пустое место (без последующего перетаскивания!)
+            i = self._near_idx(y, x)
+            if i is None:
+                self._clear_merge_seed()
+                self._push_undo()
+                self.points = np.vstack([self.points, [y, x]])
+                sampled = self._sample_intensities(np.array([[y, x]]))[0]
+                self.values = np.append(self.values, sampled)
+                self._redo.clear()
+            else:
+                self._select_merge_seed(i)
+                self._start_measurement(i)
+            # если кликнули по существующей точке — перемещение запрещено (используем для измерения)
+
+        elif e.button == 3:
+            if pos is None:
+                return
+            y, x = pos
+            i = self._near_idx(y, x)
+            if i is not None:
+                self._push_undo()
+                self.points = np.delete(self.points, i, axis=0)
+                self.values = np.delete(self.values, i, axis=0)
+                if self._merge_seed_idx is not None:
+                    if i == self._merge_seed_idx:
+                        self._clear_merge_seed()
+                    elif i < self._merge_seed_idx:
+                        self._merge_seed_idx -= 1
+                        if 0 <= self._merge_seed_idx < len(self.points):
+                            self._merge_seed_origin = (
+                                float(self.points[self._merge_seed_idx, 0]),
+                                float(self.points[self._merge_seed_idx, 1]),
+                            )
                 self._redo.clear()
 
-            self._redraw()
-
-        def _on_move(self, e):
-            pos = self._img_xy(e)
-            # любое движение закрывает tooltip
-            keep = self._measure_active
-            self._clear_tooltip(keep_measure=keep, keep_preview=keep)
-
+        elif e.button == 1 and e.key and "shift" in e.key:
             if pos is not None:
                 self._last_cursor_pos = (float(pos[0]), float(pos[1]))
-            else:
-                self._last_cursor_pos = None
+            self._push_undo()
+            self.rect_start = pos
+            self._redo.clear()
 
-            # Перетаскивание центра — оставить
-            if self.center_dragging and pos is not None:
-                y, x = pos
-                if self.overlay is None:
-                    self.overlay = {}
-                self.overlay["center"] = {"x": float(x), "y": float(y)}
-                self._redraw()
-                return
+        self._redraw()
+
+    def _on_move(self, e):
+        pos = self._img_xy(e)
+        # любое движение закрывает tooltip
+        keep = self._measure_active
+        self._clear_tooltip(keep_measure=keep, keep_preview=keep)
+
+        if pos is not None:
+            self._last_cursor_pos = (float(pos[0]), float(pos[1]))
+        else:
+            self._last_cursor_pos = None
+
+        # Перетаскивание центра — оставить
+        if self.center_dragging and pos is not None:
+            y, x = pos
+            if self.overlay is None:
+                self.overlay = {}
+            self.overlay["center"] = {"x": float(x), "y": float(y)}
+            self._redraw()
+            return
 
         if self._measure_active:
             self._update_measurement_preview(pos)
             return
 
         # Прямоугольник выделения для удаления
-        if self.rect_start and e.xdata and e.ydata:
-            y0, x0 = self.rect_start; y1, x1 = e.ydata, e.xdata
+        if self.rect_start and e.xdata is not None and e.ydata is not None:
+            y0, x0 = self.rect_start
+            y1, x1 = e.ydata, e.xdata
             self._redraw()
             self.rect_artist = self.ax.add_patch(
                 plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec="red", ls="--", lw=1.5)
