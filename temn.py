@@ -261,7 +261,7 @@ class SAEDLauncherFrame(ttk.Frame):
         ttk.Label(pre_box, text="Режим:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
         self.cmb_pre = ttk.Combobox(
             pre_box,
-            values=["Стандартная", "Без сглаживания", "CLAHE"],
+            values=["Без сглаживания","Стандартная", "CLAHE"],
             state="readonly",
         )
         self.cmb_pre.current(0)
