@@ -106,43 +106,67 @@ def merge_spots_by_intensity(
     rad2 = radius * radius
     used = np.zeros(len(to_merge), dtype=bool)
     order = np.argsort(-to_merge[:, 2])  # начинаем с самых ярких
-    merged = []
+    merged: list[tuple[float, float, float]] = []
+
+    def within_tol(a: float, b: float) -> bool:
+        hi = max(a, b)
+        if hi == 0.0:
+            return abs(a - b) == 0.0
+        return abs(a - b) <= tol * hi + 1e-12
 
     for idx in order:
         if used[idx]:
             continue
 
-        base_y, base_x, base_v = to_merge[idx]
-        agg_y, agg_x, agg_v = base_y, base_x, base_v
-        used[idx] = True
+        cluster = [idx]
+        sum_y = float(to_merge[idx, 0])
+        sum_x = float(to_merge[idx, 1])
+        intensities = [float(to_merge[idx, 2])]
+        sum_v = intensities[0]
 
         neighbors = []
+        base_y, base_x = to_merge[idx, 0], to_merge[idx, 1]
         for j in range(len(to_merge)):
-            if used[j] or j == idx:
+            if j == idx or used[j]:
                 continue
             dy = to_merge[j, 0] - base_y
             dx = to_merge[j, 1] - base_x
             if dy * dy + dx * dx <= rad2:
                 neighbors.append(j)
 
-        neighbors.sort(key=lambda j: to_merge[j, 2])
+        neighbors.sort(key=lambda j: abs(to_merge[j, 2] - intensities[0]))
 
         for j in neighbors:
             if used[j]:
                 continue
-            vy = to_merge[j, 2]
-            hi = max(agg_v, vy)
-            if hi == 0.0:
-                rel_diff = 0.0 if abs(agg_v - vy) == 0.0 else float("inf")
-            else:
-                rel_diff = abs(agg_v - vy) / hi
-            if rel_diff <= tol:
-                agg_y = 0.5 * (agg_y + to_merge[j, 0])
-                agg_x = 0.5 * (agg_x + to_merge[j, 1])
-                agg_v = 0.5 * (agg_v + vy)
-                used[j] = True
+            cand_v = float(to_merge[j, 2])
+            new_count = len(cluster) + 1
+            new_avg_v = (sum_v + cand_v) / new_count
+            if all(within_tol(new_avg_v, val) for val in (*intensities, cand_v)):
+                cluster.append(j)
+                intensities.append(cand_v)
+                sum_y += float(to_merge[j, 0])
+                sum_x += float(to_merge[j, 1])
+                sum_v += cand_v
 
-        merged.append((agg_y, agg_x, agg_v))
+        if len(cluster) > 1:
+            new_count = len(cluster)
+            new_y = sum_y / new_count
+            new_x = sum_x / new_count
+            new_v = sum_v / new_count
+            if (min_intensity is None or new_v >= min_intensity) and all(
+                within_tol(new_v, val) for val in intensities
+            ):
+                merged.append((new_y, new_x, new_v))
+                for j in cluster:
+                    used[j] = True
+                continue
+
+        # либо кластер из одной точки, либо итоговая интенсивность вышла из допуска
+        for j in cluster:
+            if not used[j]:
+                merged.append(tuple(to_merge[j]))
+                used[j] = True
 
     merged = np.array(merged, dtype=float)
     if untouched.size == 0:
