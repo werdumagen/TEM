@@ -6,7 +6,7 @@ SAED Symmetry – Launcher
 Новое:
   • Переключатель предобработки:
       - «Стандартная» (equalize + GaussianBlur)
-      - «Без сглаживания» (сырой grayscale)
+      - «Без обработки» (сырой grayscale)
       - «CLAHE» (локальное выравнивание) с настраиваемым clipLimit и размером тайла.
   • Весь препроцесс выполняется ТОЛЬКО здесь, редактор изображение не трогает.
 Остальной функционал без изменений: ручной/автоцентр, уточнение по антиподам, мёртвая зона, радиус поиска, запуск редактора.
@@ -400,7 +400,7 @@ class SAEDLauncherFrame(ttk.Frame):
             from_=0.0, to=100.0, increment=0.5, format_str="%.1f"
         )
         self.spn_merge_rad = self._spin_param(
-            detect_box, 3, "Радиус объединения пиков (px)", 6,
+            detect_box, 3, "Радиус объединения пиков (px)", 0,
             from_=0, to=50, increment=1
         )
         self.spn_merge_tol = self._spin_param(
@@ -558,10 +558,10 @@ class SAEDLauncherFrame(ttk.Frame):
 
             # --- предобработка ---
             pre_mode = self.cmb_pre.get()
-            if pre_mode == "Стандартная":
-                settings = PreprocSettings(mode="standard")
-            elif pre_mode == "Без сглаживания":
+            if pre_mode == "Без сглаживания":
                 settings = PreprocSettings(mode="raw")
+            elif pre_mode == "Стандартная":
+                settings = PreprocSettings(mode="standard")
             else:  # CLAHE
                 clip = float(self.spn_clip.get())
                 tiles = int(float(self.spn_tile.get()))
@@ -596,7 +596,7 @@ class SAEDLauncherFrame(ttk.Frame):
                 if search_r > 0: mask &= (r <= search_r)
                 pts = pts[mask]
 
-            if len(pts):
+            if len(pts) and merge_radius > 0:
                 merge_threshold = None
                 if merge_apply_perc > 0.0:
                     merge_threshold = float(np.percentile(pts[:, 2], merge_apply_perc))

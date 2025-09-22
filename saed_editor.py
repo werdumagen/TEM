@@ -105,6 +105,11 @@ class PointEditor(tk.Frame):
         self._measure_annotation = None
         self._measurement: Optional[dict[str, object]] = None
 
+        # Объединение точек по радиусу от выбранной
+        self._merge_seed_idx: Optional[int] = None
+        self._merge_seed_origin: Optional[tuple[float, float]] = None
+        self._last_cursor_pos: Optional[tuple[float, float]] = None
+
         self._build_ui()
 
         # первичная загрузка
@@ -169,6 +174,7 @@ class PointEditor(tk.Frame):
             "ЛКМ по центру — перетащить центр и пересчитать фильтры\n"
             "ПКМ по точке — удалить\n"
             "Средняя кнопка по точке — показать координаты и интенсивность\n"
+            "ЛКМ по точке — выделить; переместите курсор и нажмите Enter для объединения соседних точек\n"
             "Зажатая ЛКМ от точки до точки — измерить расстояние\n"
             "Shift + перетаскивание — прямоугольное удаление диапазона"
         )
@@ -398,8 +404,164 @@ class PointEditor(tk.Frame):
         mask = np.ones(len(self.points), dtype=bool)
         if dead > 0: mask &= (r >= dead)
         if sr   > 0: mask &= (r <= sr)
+        if self._merge_seed_idx is not None:
+            if self._merge_seed_idx >= len(mask) or not mask[self._merge_seed_idx]:
+                self._clear_merge_seed()
+            else:
+                new_idx = int(np.count_nonzero(mask[: self._merge_seed_idx + 1]) - 1)
+                self._merge_seed_idx = new_idx
         self.points = self.points[mask]
-        self.values = self.values[mask] if len(self.values)==len(mask) else self._sample_intensities(self.points)
+        if len(self.values)==len(mask):
+            self.values = self.values[mask]
+        else:
+            self.values = self._sample_intensities(self.points)
+        if self._merge_seed_idx is not None and self._merge_seed_idx < len(self.points):
+            self._merge_seed_origin = (
+                float(self.points[self._merge_seed_idx, 0]),
+                float(self.points[self._merge_seed_idx, 1]),
+            )
+
+    # ---------- Объединение точек ----------
+    def _clear_merge_seed(self, *, keep_status: bool = False) -> bool:
+        cleared = self._merge_seed_idx is not None
+        self._merge_seed_idx = None
+        self._merge_seed_origin = None
+        if cleared and not keep_status:
+            self._set_status(self._default_status)
+        return cleared
+
+    def _select_merge_seed(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self.points):
+            self._clear_merge_seed()
+            return
+        self._merge_seed_idx = int(idx)
+        y, x = self.points[idx]
+        self._merge_seed_origin = (float(y), float(x))
+        self._set_status(
+            "Выбрана точка для объединения. Переместите курсор и нажмите Enter, чтобы задать радиус."
+        )
+
+    def _merge_selected_with_radius(self) -> bool:
+        if self._merge_seed_idx is None:
+            return False
+        if len(self.points) == 0:
+            self._clear_merge_seed()
+            return False
+
+        idx = int(self._merge_seed_idx)
+        if idx < 0 or idx >= len(self.points):
+            self._clear_merge_seed()
+            self._set_status("Выбранная точка недоступна. Выберите точку снова.")
+            return False
+
+        if self._last_cursor_pos is None:
+            self._set_status("Переместите курсор внутри изображения, чтобы задать радиус объединения.")
+            return False
+
+        base_cur_y, base_cur_x = map(float, self.points[idx])
+        cur_y, cur_x = self._last_cursor_pos
+        radius = float(np.hypot(cur_x - base_cur_x, cur_y - base_cur_y))
+        if radius <= 0.0:
+            self._set_status("Радиус слишком мал. Сдвиньте курсор и нажмите Enter снова.")
+            return False
+
+        origin = self._merge_seed_origin or (base_cur_y, base_cur_x)
+        distances = np.hypot(self.points[:, 1] - origin[1], self.points[:, 0] - origin[0])
+        candidate_indices = [int(i) for i, dist in enumerate(distances) if dist <= radius + 1e-6]
+        if idx not in candidate_indices:
+            candidate_indices.append(idx)
+            candidate_indices.sort()
+
+        if len(candidate_indices) <= 1:
+            self._set_status("Других точек в выбранном радиусе не найдено.")
+            return False
+
+        self._push_undo()
+        self._cancel_measurement_preview()
+        self._clear_measurement_result()
+
+        if len(self.values) != len(self.points):
+            self.values = self._sample_intensities(self.points)
+
+        old_points = self.points.copy()
+        old_values = self.values.copy()
+        use_values = len(old_values) == len(old_points)
+
+        local_points = old_points[candidate_indices]
+        local_values = old_values[candidate_indices] if use_values else None
+
+        base_subset_idx = candidate_indices.index(idx)
+        new_point = local_points[base_subset_idx].astype(float)
+        new_value = float(local_values[base_subset_idx]) if use_values else None
+
+        order = [i for i in range(len(candidate_indices)) if i != base_subset_idx]
+        order.sort(
+            key=lambda local_idx: float(
+                np.hypot(
+                    local_points[local_idx, 1] - origin[1],
+                    local_points[local_idx, 0] - origin[0],
+                )
+            )
+        )
+
+        for local_idx in order:
+            new_point = (new_point + local_points[local_idx]) / 2.0
+            if use_values and new_value is not None and local_values is not None:
+                new_value = (new_value + float(local_values[local_idx])) / 2.0
+
+        candidate_set = set(candidate_indices)
+        candidate_set.discard(idx)
+        new_points_list: list[list[float]] = []
+        new_values_list: list[float] = []
+        inserted = False
+        new_index = None
+
+        for old_idx, pt in enumerate(old_points):
+            if old_idx == idx:
+                new_points_list.append([float(new_point[0]), float(new_point[1])])
+                if use_values and new_value is not None:
+                    new_values_list.append(float(new_value))
+                inserted = True
+                new_index = len(new_points_list) - 1
+                continue
+            if old_idx in candidate_set:
+                continue
+            new_points_list.append([float(pt[0]), float(pt[1])])
+            if use_values:
+                new_values_list.append(float(old_values[old_idx]))
+
+        if not inserted:
+            new_index = len(new_points_list)
+            new_points_list.append([float(new_point[0]), float(new_point[1])])
+            if use_values and new_value is not None:
+                new_values_list.append(float(new_value))
+
+        if new_points_list:
+            self.points = np.array(new_points_list, dtype=float)
+        else:
+            self.points = np.zeros((0, 2), dtype=float)
+
+        if use_values:
+            self.values = np.array(new_values_list, dtype=float)
+        else:
+            self.values = self._sample_intensities(self.points)
+
+        self._merge_seed_idx = new_index if new_index is not None else None
+        if self._merge_seed_idx is not None:
+            self._merge_seed_origin = (
+                float(self.points[self._merge_seed_idx, 0]),
+                float(self.points[self._merge_seed_idx, 1]),
+            )
+        else:
+            self._merge_seed_origin = None
+
+        self._last_cursor_pos = None
+
+        merged_count = len(candidate_indices)
+        self._set_status(
+            f"Объединено {merged_count} точек в радиусе {radius:.1f} px."
+        )
+        return True
 
     # ---------- Tooltip и измерения ----------
     def _remove_measure_preview_artist(self) -> bool:
@@ -619,6 +781,8 @@ class PointEditor(tk.Frame):
             except Exception: pass
             self.rect_artist = None
         self.rect_start = None
+        self._clear_merge_seed(keep_status=True)
+        self._last_cursor_pos = None
 
         self.points = snap["points"].copy()
         self.values = snap["values"].copy()
@@ -710,13 +874,23 @@ class PointEditor(tk.Frame):
     # ---------- Mouse / Keyboard events ----------
     def _on_key(self, e):
         # закрыть tooltip по Esc
-        if e.key == 'escape':
+        if e.key == "escape":
             self._clear_tooltip()
+            if self._merge_seed_idx is not None:
+                self._clear_merge_seed()
+        elif e.key in {"enter", "return"}:
+            if self._merge_selected_with_radius():
+                self._redraw()
 
     def _on_down(self, e):
         pos = self._img_xy(e)
         # любое действие закрывает tooltip
         self._clear_tooltip()
+
+        if pos is not None:
+            self._last_cursor_pos = (float(pos[0]), float(pos[1]))
+        else:
+            self._last_cursor_pos = None
 
         # Средняя кнопка: только подсказка, если попали в точку
         if e.button == 2:
@@ -728,54 +902,74 @@ class PointEditor(tk.Frame):
                 self._show_tooltip_for_idx(idx)
             return  # не считаем это добавлением/редактированием
 
-        if e.button == 1 and not (e.key and "shift" in e.key):
-            if pos is None: return
-            y, x = pos
-            # Перетаскивание центра — оставить
-            if self._center_hit(y, x):
-                self._push_undo()
-                self.center_dragging = True
-                self._redo.clear()
-                return
+            if e.button == 1 and not (e.key and "shift" in e.key):
+                if pos is None: return
+                y, x = pos
+                # Перетаскивание центра — оставить
+                if self._center_hit(y, x):
+                    self._clear_merge_seed()
+                    self._push_undo()
+                    self.center_dragging = True
+                    self._redo.clear()
+                    return
 
-            # Добавление новой точки по клику в пустое место (без последующего перетаскивания!)
-            i = self._near_idx(y, x)
-            if i is None:
+                # Добавление новой точки по клику в пустое место (без последующего перетаскивания!)
+                i = self._near_idx(y, x)
+                if i is None:
+                    self._clear_merge_seed()
+                    self._push_undo()
+                    self.points = np.vstack([self.points, [y, x]])
+                    self.values = np.append(self.values, self._sample_intensities(np.array([[y, x]]))[0])
+                    self._redo.clear()
+                else:
+                    self._select_merge_seed(i)
+                    self._start_measurement(i)
+                # если кликнули по существующей точке — перемещение запрещено (используем для измерения)
+
+            elif e.button == 3:
+                if pos is None: return
+                y, x = pos
+                i = self._near_idx(y, x)
+                if i is not None:
+                    self._push_undo()
+                    self.points = np.delete(self.points, i, axis=0)
+                    self.values = np.delete(self.values, i, axis=0)
+                    if self._merge_seed_idx is not None:
+                        if i == self._merge_seed_idx:
+                            self._clear_merge_seed()
+                        elif i < self._merge_seed_idx:
+                            self._merge_seed_idx -= 1
+                            if 0 <= self._merge_seed_idx < len(self.points):
+                                self._merge_seed_origin = (
+                                    float(self.points[self._merge_seed_idx, 0]),
+                                    float(self.points[self._merge_seed_idx, 1]),
+                                )
+                    self._redo.clear()
+
+            elif e.button == 1 and e.key and "shift" in e.key:
+                if pos is not None:
+                    self._last_cursor_pos = (float(pos[0]), float(pos[1]))
                 self._push_undo()
-                self.points = np.vstack([self.points, [y, x]])
-                self.values = np.append(self.values, self._sample_intensities(np.array([[y, x]]))[0])
+                self.rect_start = pos
                 self._redo.clear()
+
+            self._redraw()
+
+        def _on_move(self, e):
+            pos = self._img_xy(e)
+            # любое движение закрывает tooltip
+            keep = self._measure_active
+            self._clear_tooltip(keep_measure=keep, keep_preview=keep)
+
+            if pos is not None:
+                self._last_cursor_pos = (float(pos[0]), float(pos[1]))
             else:
-                self._start_measurement(i)
-            # если кликнули по существующей точке — перемещение запрещено (используем для измерения)
+                self._last_cursor_pos = None
 
-        elif e.button == 3:
-            if pos is None: return
-            y, x = pos
-            i = self._near_idx(y, x)
-            if i is not None:
-                self._push_undo()
-                self.points = np.delete(self.points, i, axis=0)
-                self.values = np.delete(self.values, i, axis=0)
-                self._redo.clear()
-
-        elif e.button == 1 and e.key and "shift" in e.key:
-            self._push_undo()
-            self.rect_start = pos
-            self._redo.clear()
-
-        self._redraw()
-
-    def _on_move(self, e):
-        pos = self._img_xy(e)
-        # любое движение закрывает tooltip
-        keep = self._measure_active
-        self._clear_tooltip(keep_measure=keep, keep_preview=keep)
-
-        # Перетаскивание центра — оставить
-        if self.center_dragging and pos is not None:
-            y, x = pos
-            if self.overlay is None: self.overlay = {}
+            # Перетаскивание центра — оставить
+            if self.center_dragging and pos is not None:
+                y, x = pos
+                if self.overlay is None: self.overlay = {}}
             self.overlay["center"] = {"x": float(x), "y": float(y)}
             self._redraw()
             return
@@ -824,12 +1018,26 @@ class PointEditor(tk.Frame):
                 ymin, ymax = sorted([y0, y1]); xmin, xmax = sorted([x0, x1])
                 mask = ~((self.points[:,0] >= ymin) & (self.points[:,0] <= ymax) &
                          (self.points[:,1] >= xmin) & (self.points[:,1] <= xmax))
+                if self._merge_seed_idx is not None:
+                    if self._merge_seed_idx >= len(mask) or not mask[self._merge_seed_idx]:
+                        self._clear_merge_seed()
+                    else:
+                        new_idx = int(np.count_nonzero(mask[: self._merge_seed_idx + 1]) - 1)
+                        self._merge_seed_idx = new_idx
                 self.points = self.points[mask]
-                self.values = self.values[mask]
+                if len(self.values) == len(mask):
+                    self.values = self.values[mask]
+                else:
+                    self.values = self._sample_intensities(self.points)
+                if self._merge_seed_idx is not None and self._merge_seed_idx < len(self.points):
+                    self._merge_seed_origin = (
+                        float(self.points[self._merge_seed_idx, 0]),
+                        float(self.points[self._merge_seed_idx, 1]),
+                    )
             self.rect_start = None
             if self.rect_artist is not None:
                 self.rect_artist.remove(); self.rect_artist = None
-            self._redraw()
+            self._redraw(
 
     # ---------- Draw ----------
     def _redraw(self):
@@ -849,8 +1057,44 @@ class PointEditor(tk.Frame):
                     self.ax.add_patch(Circle((cx, cy), R, fill=False, ls="--", lw=2.0, ec="red"))
 
         if len(self.points):
-            self.ax.scatter(self.points[:,1], self.points[:,0],
-                            s=22, alpha=0.9, marker="o", linewidths=0.5, edgecolors="black")
+            if (
+                self._merge_seed_idx is not None
+                and 0 <= self._merge_seed_idx < len(self.points)
+            ):
+                mask = np.ones(len(self.points), dtype=bool)
+                mask[self._merge_seed_idx] = False
+                if np.any(mask):
+                    self.ax.scatter(
+                        self.points[mask, 1],
+                        self.points[mask, 0],
+                        s=22,
+                        alpha=0.9,
+                        marker="o",
+                        linewidths=0.5,
+                        edgecolors="black",
+                    )
+                seed_y = float(self.points[self._merge_seed_idx, 0])
+                seed_x = float(self.points[self._merge_seed_idx, 1])
+                self.ax.scatter(
+                    [seed_x],
+                    [seed_y],
+                    s=38,
+                    alpha=0.95,
+                    marker="o",
+                    linewidths=0.8,
+                    edgecolors="black",
+                    c="#ffd34d",
+                )
+            else:
+                self.ax.scatter(
+                    self.points[:, 1],
+                    self.points[:, 0],
+                    s=22,
+                    alpha=0.9,
+                    marker="o",
+                    linewidths=0.5,
+                    edgecolors="black",
+                )
 
         self._draw_measurement_overlays()
         self._apply_zoom()
