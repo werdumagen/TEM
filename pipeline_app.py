@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
+import webbrowser
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -189,13 +190,39 @@ class TabbedPipelineApp(tk.Tk):
         self.status_var.set(message)
 
     def _show_help(self) -> None:
+        help_window = tk.Toplevel(self)
+        help_window.title("О приложении")
+        help_window.transient(self)
+        help_window.grab_set()
+        help_window.resizable(False, False)
+
+        frame = ttk.Frame(help_window, padding=(20, 16))
+        frame.pack(fill=tk.BOTH, expand=True)
+
         message = (
             "Во вкладке «Лаунчер» подготовьте изображение и параметры детектора. "
-            "«Редактор» позволит вручную уточнить точки и радиусы, а «Анализ» — построить отчёт "
-            "по симметрии и цепочкам Фибоначчи."
-            "\n\nДонат автору: https://donatello.to/Roynik"
+            "«Редактор» позволит вручную уточнить точки и радиусы, а «Анализ» — построить "
+            "отчёт по симметрии и цепочкам Фибоначчи."
         )
-        messagebox.showinfo("О приложении", message)
+        ttk.Label(frame, text=message, justify="left", wraplength=480).pack(anchor="w")
+
+        ttk.Label(frame, text="Поддержать проект:", padding=(0, 12, 0, 0)).pack(anchor="w")
+
+        donation_link = "https://donatello.to/Roynik"
+        link_label = tk.Label(
+            frame,
+            text=donation_link,
+            fg="#1a0dab",
+            cursor="hand2",
+            font=("TkDefaultFont", 10, "underline"),
+            justify="left",
+        )
+        link_label.pack(anchor="w")
+        link_label.bind("<Button-1>", lambda _event: webbrowser.open_new_tab(donation_link))
+
+        ttk.Button(frame, text="Закрыть", command=help_window.destroy).pack(
+            anchor="e", pady=(20, 0)
+        )
         messagebox.showinfo("О приложении", message)
 
 def main() -> None:
