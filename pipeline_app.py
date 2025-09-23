@@ -223,7 +223,6 @@ class TabbedPipelineApp(tk.Tk):
         ttk.Button(frame, text="Закрыть", command=help_window.destroy).pack(
             anchor="e", pady=(20, 0)
         )
-        messagebox.showinfo("О приложении", message)
 
 def main() -> None:
     app = TabbedPipelineApp()
