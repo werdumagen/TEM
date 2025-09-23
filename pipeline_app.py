@@ -193,7 +193,9 @@ class TabbedPipelineApp(tk.Tk):
             "Во вкладке «Лаунчер» подготовьте изображение и параметры детектора. "
             "«Редактор» позволит вручную уточнить точки и радиусы, а «Анализ» — построить отчёт "
             "по симметрии и цепочкам Фибоначчи."
+            "\n\nДонат автору: https://donatello.to/Roynik"
         )
+        messagebox.showinfo("О приложении", message)
         messagebox.showinfo("О приложении", message)
 
 def main() -> None:
