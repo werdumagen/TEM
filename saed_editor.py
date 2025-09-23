@@ -644,13 +644,24 @@ class PointEditor(tk.Frame):
         y1, x1 = pos
         self._measure_preview_end = (float(y1), float(x1))
         y0, x0 = self._measure_start_point
+        current_xlim = self.ax.get_xlim()
+        current_ylim = self.ax.get_ylim()
         if self._measure_preview_artist is None:
             (line,) = self.ax.plot(
-                [x0, x1], [y0, y1], color="#ffcc33", linewidth=1.6, linestyle="--", alpha=0.9
+                [x0, x1],
+                [y0, y1],
+                color="#ffcc33",
+                linewidth=1.6,
+                linestyle="--",
+                alpha=0.9,
+                scalex=False,
+                scaley=False,
             )
             self._measure_preview_artist = line
         else:
             self._measure_preview_artist.set_data([x0, x1], [y0, y1])
+        self.ax.set_xlim(current_xlim)
+        self.ax.set_ylim(current_ylim)
         if hasattr(self, "canvas"):
             self.canvas.draw_idle()
 
@@ -683,7 +694,13 @@ class PointEditor(tk.Frame):
             end_y, end_x = self._measurement["end"]
             length = float(self._measurement.get("length", 0.0))
             (line,) = self.ax.plot(
-                [start_x, end_x], [start_y, end_y], color="#ffcc33", linewidth=1.8, alpha=0.95
+                [start_x, end_x],
+                [start_y, end_y],
+                color="#ffcc33",
+                linewidth=1.8,
+                alpha=0.95,
+                scalex=False,
+                scaley=False,
             )
             self._measure_line_artist = line
             mid_x = (start_x + end_x) / 2.0
@@ -707,7 +724,14 @@ class PointEditor(tk.Frame):
             y0, x0 = self._measure_start_point
             y1, x1 = self._measure_preview_end
             (pline,) = self.ax.plot(
-                [x0, x1], [y0, y1], color="#ffcc33", linewidth=1.6, linestyle="--", alpha=0.9
+                [x0, x1],
+                [y0, y1],
+                color="#ffcc33",
+                linewidth=1.6,
+                linestyle="--",
+                alpha=0.9,
+                scalex=False,
+                scaley=False,
             )
             self._measure_preview_artist = pline
 
