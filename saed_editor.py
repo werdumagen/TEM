@@ -186,8 +186,18 @@ class PointEditor(tk.Frame):
 
         status_frame = ttk.Frame(side_panel, padding=(0, 0, 0, 0))
         status_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
-        self.status_label = ttk.Label(status_frame, anchor="w")
+        self.status_label = ttk.Label(status_frame, anchor="w", justify="left")
         self.status_label.pack(fill=tk.X)
+
+        def _status_wrap(event, label=self.status_label):
+            if not label.winfo_exists():
+                return
+            new_wrap = max(int(event.width) - 8, 120)
+            current_wrap = int(label.cget("wraplength") or 0)
+            if new_wrap != current_wrap:
+                label.configure(wraplength=new_wrap)
+
+        self.status_label.bind("<Configure>", _status_wrap)
 
         canvas_frame = ttk.Frame(self, padding=(0, 16, 16, 16))
         canvas_frame.grid(row=0, column=1, sticky="nsew")
