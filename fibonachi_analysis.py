@@ -442,8 +442,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             self._highlight_ratio_pair(chain, k-1, k)
         self.canvas.draw_idle()
 
-    # ---------------- файлы/рисование ----------------
-
+    # ---------------- файлы/рисование ----------------#
     def open_json(self):
         p = filedialog.askopenfilename(filetypes=[('JSON', '*.json'), ('All', '*.*')])
         if not p: return
