@@ -221,6 +221,14 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.rubber_line_ratio = None
         self.ratio_selected_idx: List[int] = []
 
+        # Режим 3 (СКМ): построение многоугольников
+        self.polygon_current_idx: List[int] = []
+        self.polygons_idx: List[List[int]] = []
+        self.polygon_rubber_line = None
+
+        # Последний активный режим анализа (для перерисовки поверх полигонов)
+        self._last_analysis_mode: Optional[str] = None
+
         # Маппинг строк Listbox -> объект подсветки
         # для S/L: ('sl', i0, n) ; для отношений: ('ratio', k) где k — индекс отношения (сегменты k-1 и k)
         self.list_index_map: Dict[int, Tuple] = {}
@@ -294,6 +302,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.canvas.mpl_connect('button_press_event', self._on_click)
         self.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.bind('<Escape>', lambda e: self.clear_selection())
+        self.bind_all('<Return>', self._on_enter_key)
 
         # автозагрузка
         if auto_load:
@@ -354,13 +363,17 @@ class FibonacciAnalysisFrame(tk.Frame):
                 self.ratio_selected_idx = self._collect_points_along_segment(i0, i1, self.max_dist_line)
                 self.ratio_anchor_idx = None
                 self._clear_rubber_ratio()
-                self.draw_base(); self._draw_selection(self.ratio_selected_idx)
+                self.draw_base();
+                self._draw_selection(self.ratio_selected_idx)
                 self.run_ratio_analysis()  # посчитать отношения соседних сегментов
+        elif event.button == 2:
+            # --- РЕЖИМ 3 (многоугольники) ---
+            self._handle_polygon_click(j)
 
     def _on_motion(self, event):
         if event.xdata is None or event.ydata is None or self.points is None:
             return
-        # ЛКМ-резинка
+            # ЛКМ-резинка
         if self.anchor_idx is not None:
             ax = self.points[self.anchor_idx, 1]
             ay = self.points[self.anchor_idx, 0]
@@ -375,10 +388,23 @@ class FibonacciAnalysisFrame(tk.Frame):
             ax = self.points[self.ratio_anchor_idx, 1]
             ay = self.points[self.ratio_anchor_idx, 0]
             bx = float(event.xdata); by = float(event.ydata)
-            if self.rubber_line_ratio is None:
-                (self.rubber_line_ratio,) = self.ax.plot([ax, bx], [ay, by], color='yellow', lw=2.0, alpha=0.9)
+        if self.rubber_line_ratio is None:
+            (self.rubber_line_ratio,) = self.ax.plot([ax, bx], [ay, by], color='yellow', lw=2.0, alpha=0.9)
+        else:
+            self.rubber_line_ratio.set_data([ax, bx], [ay, by])
+        self.canvas.draw_idle()
+        # СКМ-резинка (последнее ребро полигона)
+        if self.polygon_current_idx:
+            last_idx = self.polygon_current_idx[-1]
+            ax = self.points[last_idx, 1]
+            ay = self.points[last_idx, 0]
+            bx = float(event.xdata);
+            by = float(event.ydata)
+            if self.polygon_rubber_line is None:
+                (self.polygon_rubber_line,) = self.ax.plot([ax, bx], [ay, by], color='orange', lw=2.0, alpha=0.8,
+                                                           zorder=3.4)
             else:
-                self.rubber_line_ratio.set_data([ax, bx], [ay, by])
+                self.polygon_rubber_line.set_data([ax, bx], [ay, by])
             self.canvas.draw_idle()
 
     def _on_list_select(self, event):
@@ -462,6 +488,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             if self.srch and self.srch > 0:
                 self.ax.add_patch(Circle((cx, cy), self.srch, fill=False, ec='red', ls=':', lw=1.0))
         self.ax.axis('off')
+        self._draw_polygons()
         self.canvas.draw_idle()
 
     def _draw_anchor(self, idx: int):
@@ -495,6 +522,13 @@ class FibonacciAnalysisFrame(tk.Frame):
             self.rubber_line_ratio = None
             self.canvas.draw_idle()
 
+    def _clear_polygon_rubber(self):
+        if self.polygon_rubber_line is not None:
+            try: self.polygon_rubber_line.remove()
+            except Exception: pass
+            self.polygon_rubber_line = None
+            self.canvas.draw_idle()
+
     def clear_selection(self, redraw: bool=True):
         # Режим S/L
         self.selected_idx.clear()
@@ -508,6 +542,11 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.ratio_selected_idx.clear()
         self.ratio_anchor_idx = None
         self._clear_rubber_ratio()
+        # Режим многоугольников
+        self.polygon_current_idx.clear()
+        self.polygons_idx.clear()
+        self._clear_polygon_rubber()
+        self._last_analysis_mode = None
         # UI
         self.lst.delete(0, tk.END)
         self.list_index_map.clear()
@@ -601,6 +640,7 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         self._set_sl_text(''.join(SL))
         self._recompute_words_and_redraw()
+        self._last_analysis_mode = 'sl'
 
     def _recompute_words_from_manual_SL(self):
         if self.curr_chain is None or self.curr_seg is None:
@@ -746,8 +786,8 @@ class FibonacciAnalysisFrame(tk.Frame):
             self.lst.insert(tk.END, 'Недостаточно сегментов для отношений.')
         else:
             for i, r in enumerate(ratios, start=2):
-                self.lst.insert(tk.END, f'  ({i+1}-{i}) / ({i}-{i-1})  ≈  {r:.6g}')
-                k = i-1
+                self.lst.insert(tk.END, f'  ({i + 1}-{i}) / ({i}-{i - 1})  ≈  {r:.6g}')
+                k = i - 1
                 self.list_index_map[row] = ('ratio', k)  # подсветим сегменты k-1 и k
                 row += 1
 
@@ -761,6 +801,138 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         # не трогаем S/L-поля (оставляем как были)
         self.status.config(text=f'Выбрано точек (ПКМ): {len(chain)}. Сегментов: {len(seg)}. Отношений: {len(ratios)}.')
+        self._last_analysis_mode = 'ratio'
+
+    # ---------------- анализ: Режим 3 (полигоны) ----------------
+
+    def _draw_polygons(self):
+        """Нарисовать завершённые и текущий многоугольники."""
+        if self.points is None or (not self.polygons_idx and not self.polygon_current_idx):
+            return
+
+        # Завершённые полигоны
+        for num, idxs in enumerate(self.polygons_idx, start=1):
+            if len(idxs) < 3:
+                continue
+            pts = self.points[idxs]
+            xs = pts[:, 1]
+            ys = pts[:, 0]
+            self.ax.fill(xs, ys, facecolor='deepskyblue', alpha=0.25,
+                         edgecolor='blue', linewidth=1.4, zorder=1.5)
+            cx = float(np.mean(xs))
+            cy = float(np.mean(ys))
+            self.ax.text(cx, cy, f'P{num}', color='navy', fontsize=9,
+                         ha='center', va='center', zorder=1.6)
+
+        # Текущий строящийся полигон
+        if self.polygon_current_idx:
+            pts_cur = self.points[self.polygon_current_idx]
+            xs = pts_cur[:, 1]
+            ys = pts_cur[:, 0]
+            self.ax.plot(xs, ys, color='orange', lw=2.2, zorder=3.1)
+            self.ax.scatter(xs, ys, s=46, c='orange', edgecolors='k', linewidths=0.6, zorder=3.2)
+            first_x, first_y = xs[0], ys[0]
+            self.ax.scatter([first_x], [first_y], s=70, facecolors='none', edgecolors='orange',
+                            linewidths=1.5, zorder=3.3)
+            if len(xs) >= 2:
+                self.ax.plot([xs[-1], first_x], [ys[-1], first_y], color='orange', lw=1.2, ls=':', zorder=3.0)
+            for idx, (xv, yv) in enumerate(zip(xs, ys), start=1):
+                self.ax.text(xv, yv, str(idx), color='orange', fontsize=8,
+                             ha='right', va='bottom', zorder=3.4)
+
+    def _handle_polygon_click(self, point_idx: int):
+        """Обработка щелчка средней кнопкой мыши для построения многоугольника."""
+        if point_idx < 0 or point_idx >= len(self.points):
+            return
+
+        if not self.polygon_current_idx:
+            self.polygon_current_idx.append(point_idx)
+            self._refresh_canvas_after_polygon()
+            self.status.config(text=f'Построение полигона: выбрана первая вершина (#{point_idx + 1}).')
+            return
+
+        first_idx = self.polygon_current_idx[0]
+        if point_idx == first_idx:
+            if len(self.polygon_current_idx) < 3:
+                self.status.config(text='Для полигона необходимо ≥ 3 уникальные точки.')
+                return
+            # Завершить полигон
+            self.polygons_idx.append(self.polygon_current_idx.copy())
+            poly_num = len(self.polygons_idx)
+            vertex_count = len(self.polygon_current_idx)
+            self.polygon_current_idx.clear()
+            self._clear_polygon_rubber()
+            self._refresh_canvas_after_polygon()
+            self.status.config(text=f'Полигон #{poly_num} замкнут. Вершин: {vertex_count}.')
+            return
+
+        if point_idx in self.polygon_current_idx:
+            self.status.config(text='Вершина уже добавлена. Выберите другую точку или замкните полигон.')
+            return
+
+        self.polygon_current_idx.append(point_idx)
+        self._refresh_canvas_after_polygon()
+        self.status.config(text=f'Построение полигона: всего вершин {len(self.polygon_current_idx)}.')
+
+    def _refresh_canvas_after_polygon(self):
+        """Перерисовать изображение, учитывая текущее состояние режимов и полигонов."""
+        if self._last_analysis_mode == 'sl' and self.curr_chain is not None:
+            self._recompute_words_and_redraw()
+        elif self._last_analysis_mode == 'ratio' and len(self.ratio_selected_idx) >= 3:
+            self.run_ratio_analysis()
+        else:
+            self.draw_base()
+        self.polygon_rubber_line = None
+
+    def _polygon_area(self, idxs: List[int]) -> float:
+        if self.points is None or len(idxs) < 3:
+            return 0.0
+        pts = self.points[idxs]
+        xs = pts[:, 1]
+        ys = pts[:, 0]
+        shifted_x = np.roll(xs, -1)
+        shifted_y = np.roll(ys, -1)
+        area = 0.5 * abs(float(np.dot(xs, shifted_y) - np.dot(ys, shifted_x)))
+        return area
+
+    def _on_enter_key(self, event):
+        """Вычислить площади выбранных полигонов и их отношения по Enter."""
+        # Не мешаем виджетам ввода обрабатывать Enter
+        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+            return
+
+        if self.polygon_current_idx:
+            messagebox.showinfo('Полигоны', 'Завершите текущий полигон (вернитесь к первой точке).')
+            return
+        if len(self.polygons_idx) < 2:
+            messagebox.showinfo('Полигоны', 'Нужно минимум два завершённых полигона.')
+            return
+
+        areas = [self._polygon_area(poly) for poly in self.polygons_idx]
+        self.lst.delete(0, tk.END)
+        self.list_index_map.clear()
+        self.lst_header.config(text='Полигоны (СКМ) — площади и отношения')
+
+        for i, area in enumerate(areas, start=1):
+            self.lst.insert(tk.END, f'Площадь полигона {i}: {area:.6g}')
+
+        self.lst.insert(tk.END, '')
+        lines_added = False
+        for idx in range(len(areas), 1, -1):
+            prev_area = areas[idx - 2]
+            curr_area = areas[idx - 1]
+            if prev_area == 0:
+                ratio_text = 'не определено (предыдущая площадь = 0)'
+            else:
+                ratio = curr_area / prev_area
+                ratio_text = f'{ratio:.6g}'
+            self.lst.insert(tk.END, f'Отношение площадей {idx} и {idx - 1}: {ratio_text}')
+            lines_added = True
+
+        if not lines_added:
+            self.lst.insert(tk.END, 'Недостаточно полигонов для отношений.')
+
+        self.status.config(text=f'Площадей вычислено: {len(areas)}. См. список справа.')
 
 class App(tk.Tk):
     """Standalone-обёртка, совместимая с предыдущим CLI."""
