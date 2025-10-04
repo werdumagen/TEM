@@ -225,6 +225,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.polygon_current_idx: List[int] = []
         self.polygons_idx: List[List[int]] = []
         self.polygon_rubber_line = None
+        self._polygon_history: List[Tuple[List[int], List[List[int]]]] = []
+        self._polygon_redo: List[Tuple[List[int], List[List[int]]]] = []
 
         # Последний активный режим анализа (для перерисовки поверх полигонов)
         self._last_analysis_mode: Optional[str] = None
@@ -303,6 +305,12 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.bind('<Escape>', lambda e: self.clear_selection())
         self.bind_all('<Return>', self._on_enter_key)
+        self.bind_all('<z>', self._on_polygon_undo)
+        self.bind_all('<z>', self._on_polygon_undo)
+        self.bind_all('<y>', self._on_polygon_redo)
+        self.bind_all('<y>', self._on_polygon_redo)
+
+        self._reset_polygon_history()
 
         # автозагрузка
         if auto_load:
@@ -545,6 +553,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.polygon_current_idx.clear()
         self.polygons_idx.clear()
         self._clear_polygon_rubber()
+        self._reset_polygon_history()
         self._last_analysis_mode = None
         # UI
         self.lst.delete(0, tk.END)
@@ -553,8 +562,58 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.lbl_ratio.config(text='Среднее L/S по цепочке: —')
         self.lbl_ratio_neigh.config(text='Среднее отношение соседних сегментов: —')
         self.txt_sl.delete('1.0', tk.END)
-        self.txt_words.configure(state='normal'); self.txt_words.delete('1.0', tk.END); self.txt_words.configure(state='disabled')
+        self.txt_words.configure(state='normal');
+        self.txt_words.delete('1.0', tk.END);
+        self.txt_words.configure(state='disabled')
         if redraw: self.draw_base()
+
+    def _capture_polygon_state(self) -> Tuple[List[int], List[List[int]]]:
+        return (
+            list(self.polygon_current_idx),
+            [list(poly) for poly in self.polygons_idx],
+        )
+
+    def _reset_polygon_history(self) -> None:
+        self._polygon_history = [self._capture_polygon_state()]
+        self._polygon_redo.clear()
+
+    def _record_polygon_state(self) -> None:
+        state = self._capture_polygon_state()
+        if self._polygon_history and state == self._polygon_history[-1]:
+            return
+        self._polygon_history.append(state)
+        self._polygon_redo.clear()
+
+    def _restore_polygon_state(self, state: Tuple[List[int], List[List[int]]]) -> None:
+        current, finished = state
+        self.polygon_current_idx = list(current)
+        self.polygons_idx = [list(poly) for poly in finished]
+        self._clear_polygon_rubber()
+
+    def _on_polygon_undo(self, event):
+        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+            return
+        if len(self._polygon_history) <= 1:
+            return "break"
+        state = self._polygon_history.pop()
+        self._polygon_redo.append(state)
+        prev_state = self._polygon_history[-1]
+        self._restore_polygon_state(prev_state)
+        self._refresh_canvas_after_polygon()
+        self.status.config(text='Последнее действие построения полигона отменено.')
+        return "break"
+
+    def _on_polygon_redo(self, event):
+        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+            return
+        if not self._polygon_redo:
+            return "break"
+        state = self._polygon_redo.pop()
+        self._polygon_history.append(state)
+        self._restore_polygon_state(state)
+        self._refresh_canvas_after_polygon()
+        self.status.config(text='Действие построения полигона повторено.')
+        return "break"
 
     # ---------------- геометрия ----------------
 
@@ -848,6 +907,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             self.polygon_current_idx.append(point_idx)
             self._refresh_canvas_after_polygon()
             self.status.config(text=f'Построение полигона: выбрана первая вершина (#{point_idx + 1}).')
+            self._record_polygon_state()
             return
 
         first_idx = self.polygon_current_idx[0]
@@ -863,6 +923,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             self._clear_polygon_rubber()
             self._refresh_canvas_after_polygon()
             self.status.config(text=f'Полигон #{poly_num} замкнут. Вершин: {vertex_count}.')
+            self._record_polygon_state()
             return
 
         if point_idx in self.polygon_current_idx:
@@ -872,6 +933,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.polygon_current_idx.append(point_idx)
         self._refresh_canvas_after_polygon()
         self.status.config(text=f'Построение полигона: всего вершин {len(self.polygon_current_idx)}.')
+        self._record_polygon_state()
 
     def _refresh_canvas_after_polygon(self):
         """Перерисовать изображение, учитывая текущее состояние режимов и полигонов."""
