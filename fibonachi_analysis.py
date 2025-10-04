@@ -923,9 +923,9 @@ class FibonacciAnalysisFrame(tk.Frame):
             if prev_area == 0:
                 ratio_text = 'не определено (предыдущая площадь = 0)'
             else:
-                ratio = curr_area / prev_area
+                ratio = math.sqrt(curr_area / prev_area)
                 ratio_text = f'{ratio:.6g}'
-            self.lst.insert(tk.END, f'Отношение площадей {idx} и {idx - 1}: {ratio_text}')
+            self.lst.insert(tk.END, f'Отношение размеров {idx} и {idx - 1}: {ratio_text}')
             lines_added = True
 
         if not lines_added:
