@@ -1003,7 +1003,7 @@ class App(tk.Tk):  # 995
         frame = FibonacciAnalysisFrame(self)  # 1003
         frame.pack(fill=tk.BOTH, expand=True)  # 1004
         self.frame = frame  # 1005
-# 1006
+# 1006 .
 # 1007
 # ---- запуск ----  # 1008
 if __name__ == '__main__':  # 1009
