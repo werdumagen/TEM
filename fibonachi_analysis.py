@@ -33,7 +33,93 @@ import matplotlib.pyplot as plt  # 1
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # 2
 from matplotlib.patches import Circle  # 4
 # 2
-from preproc import PreprocSettings, load_grayscale_with_preproc  # 5
+from preproc import PreprocSettings, load_grayscale_with_preproc  # 36
+
+
+class _Tooltip:  # 0
+    def __init__(self, widget: tk.Widget, text: str, *, delay: int = 400):  # 0
+        self.widget = widget  # 0
+        self.text = text  # 0
+        self.delay = max(0, int(delay))  # 0
+        self._after_id: Optional[str] = None  # 0
+        self._tip_window: Optional[tk.Toplevel] = None  # 0
+        self._last_pointer: Optional[tuple[int, int]] = None  # 0
+        widget.bind("<Enter>", self._on_enter, add="+")  # 0
+        widget.bind("<Leave>", self._on_leave, add="+")  # 0
+        widget.bind("<Motion>", self._on_motion, add="+")  # 0
+
+    def _on_enter(self, event):  # 0
+        self._last_pointer = (event.x_root, event.y_root)  # 0
+        self._schedule()  # 0
+
+    def _on_leave(self, _event):  # 0
+        self._cancel()  # 0
+        self._hide()  # 0
+
+    def _on_motion(self, event):  # 0
+        self._last_pointer = (event.x_root, event.y_root)  # 0
+        self._position()  # 0
+
+    def _schedule(self):  # 0
+        self._cancel()  # 0
+        self._after_id = self.widget.after(self.delay, self._show)  # 0
+
+    def _cancel(self):  # 0
+        if self._after_id is not None:  # 0
+            self.widget.after_cancel(self._after_id)  # 0
+            self._after_id = None  # 0
+
+    def _show(self):  # 0
+        if self._tip_window is not None or not self.text:  # 0
+            return  # 0
+        tip = tk.Toplevel(self.widget)  # 0
+        tip.wm_overrideredirect(True)  # 0
+        tip.wm_attributes("-topmost", True)  # 0
+        label = tk.Label(  # 0
+            tip,  # 0
+            text=self.text,  # 0
+            justify="left",  # 0
+            background="#ffffe0",  # 0
+            relief="solid",  # 0
+            borderwidth=1,  # 0
+            wraplength=360,  # 0
+        )  # 0
+        label.pack(ipadx=8, ipady=4)  # 0
+        self._tip_window = tip  # 0
+        self._position()  # 0
+
+    def _hide(self):  # 0
+        if self._tip_window is not None:  # 0
+            self._tip_window.destroy()  # 0
+            self._tip_window = None  # 0
+
+    def _position(self):  # 0
+        if self._tip_window is None:  # 0
+            return  # 0
+        tip = self._tip_window  # 0
+        tip.update_idletasks()  # 0
+        width = tip.winfo_reqwidth()  # 0
+        height = tip.winfo_reqheight()  # 0
+        if self._last_pointer is not None:  # 0
+            x, y = self._last_pointer  # 0
+        else:  # 0
+            x = self.widget.winfo_rootx() + self.widget.winfo_width()  # 0
+            y = self.widget.winfo_rooty() + self.widget.winfo_height()  # 0
+        x += 12  # 0
+        y += 10  # 0
+        root = self.widget.winfo_toplevel()  # 0
+        root.update_idletasks()  # 0
+        left = root.winfo_rootx()  # 0
+        top = root.winfo_rooty()  # 0
+        right = left + root.winfo_width()  # 0
+        bottom = top + root.winfo_height()  # 0
+        if x + width > right - 4:  # 0
+            x = right - width - 4  # 0
+        if y + height > bottom - 4:  # 0
+            y = bottom - height - 4  # 0
+        x = max(x, left + 4)  # 0
+        y = max(y, top + 4)  # 0
+        tip.wm_geometry(f"+{int(x)}+{int(y)}")  # 0
 # 5
 
 
@@ -253,47 +339,62 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
 # 2
         # 4
         self.pick_tol = 10.0  # 1
-        self.max_dist_line = 12.0  # 3
-# 4
-        # 5
-        self.selected_idx: List[int] = []  # 5
-        self.anchor_idx: Optional[int] = None  # 3
-        self.rubber_line = None  # 1
-        # 3
-        self.curr_chain: Optional[np.ndarray] = None  # 2
-        self.curr_seg: Optional[np.ndarray] = None  # 5
-        self.curr_labels: Optional[List[str]] = None  # 5
-        self.curr_ratio: float = float('nan')  # 3
-# 2
-        # 1
-        self.ratio_anchor_idx: Optional[int] = None  # 4
-        self.rubber_line_ratio = None  # 2
-        self.ratio_selected_idx: List[int] = []  # 1
-# 4
-        # 3
-        self.polygon_current_idx: List[int] = []  # 5
-        self.polygons_idx: List[List[int]] = []  # 3
-        self.polygon_rubber_line = None  # 3
-        self._polygon_history: List[Tuple[List[int], List[List[int]]]] = []  # 2
-        self._polygon_redo: List[Tuple[List[int], List[List[int]]]] = []  # 2
-# 2
-        # 3
-        self._last_analysis_mode: Optional[str] = None  # 4
-        self.analysis_mode: str = 'sl'  # 5
-        self.mode_buttons: Dict[str, tk.Button] = {}  # 3
-        self._mode_tooltips: List[HoverTooltip] = []  # 4
-# 1
-        # 3
-        # 4
-        self.list_index_map: Dict[int, Tuple] = {}  # 1
-# 4
-        # 3
-        self.rowconfigure(0, weight=1)  # 2
-        self.columnconfigure(0, weight=1)  # 1
-# 2
-        container = tk.Frame(self)  # 4
-        container.grid(row=0, column=0, sticky="nsew")  # 5
-        container.rowconfigure(0, weight=1)  # 1
+        controls = tk.Frame(right)  # 0
+        controls.grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 10))  # 0
+        controls.columnconfigure(0, weight=1)  # 0
+        controls.columnconfigure(1, weight=1)  # 0
+        tk.Button(controls, text='Open JSON…', command=self.open_json).grid(row=0, column=0, sticky='ew', padx=4, pady=2)  # 0
+        tk.Button(controls, text='Start analysis (LMB chain)', command=self.run_analysis).grid(row=0, column=1, sticky='ew', padx=4, pady=2)  # 0
+        tk.Button(controls, text='Save PNG', command=self.save_png).grid(row=1, column=0, sticky='ew', padx=4, pady=2)  # 0
+        tk.Button(controls, text='Clear selection', command=self.clear_selection).grid(row=1, column=1, sticky='ew', padx=4, pady=2)  # 0
+        tk.Label(controls, text='Selection thickness (px):').grid(row=2, column=0, sticky='w', padx=4, pady=(8, 2))  # 0
+        self.entBand = tk.Spinbox(controls, from_=2, to=100, width=6, command=self._onBand)  # 0
+        self.entBand.delete(0, 'end'); self.entBand.insert(0, str(int(self.max_dist_line)))  # 0
+        self.entBand.grid(row=2, column=1, sticky='ew', padx=4, pady=(8, 2))  # 0
+
+        mode_frame = tk.LabelFrame(right, text='Analysis modes')  # 0
+        mode_frame.grid(row=2, column=0, sticky='ew', padx=6, pady=(0, 8))  # 0
+        for col in range(3):  # 0
+            mode_frame.columnconfigure(col, weight=1)  # 0
+        btn_mode_sl = tk.Button(mode_frame, text='Mode 1: S/L (LMB)', command=lambda: self._set_mode_hint_status('sl'))  # 0
+        btn_mode_sl.grid(row=0, column=0, sticky='ew', padx=4, pady=4)  # 0
+        btn_mode_ratio = tk.Button(mode_frame, text='Mode 2: Ratios (RMB)', command=lambda: self._set_mode_hint_status('ratio'))  # 0
+        btn_mode_ratio.grid(row=0, column=1, sticky='ew', padx=4, pady=4)  # 0
+        btn_mode_poly = tk.Button(mode_frame, text='Mode 3: Polygons (MMB)', command=lambda: self._set_mode_hint_status('polygon'))  # 0
+        btn_mode_poly.grid(row=0, column=2, sticky='ew', padx=4, pady=4)  # 0
+        self._mode_tooltips = [  # 0
+            _Tooltip(btn_mode_sl, 'Left mouse button: first click anchors the chain, the second finalizes it. The collected segments are split into S/L with Fibonacci windows listed on the right. Esc resets the selection.'),  # 0
+            _Tooltip(btn_mode_ratio, 'Right mouse button: anchor with the first click and close with the second to analyze neighboring segment ratios. The list highlights segment pairs; Esc clears the mode.'),  # 0
+            _Tooltip(btn_mode_poly, 'Middle mouse button: build polygons vertex by vertex. Click the first vertex to close, use Z/Y to undo or redo and press Enter to compute areas and ratios.'),  # 0
+        ]  # 0
+
+        self.status = tk.Label(right, text='', anchor='w')  # 0
+        self.status.grid(row=1, column=0, sticky='ew', padx=6, pady=(0, 10))  # 0
+
+        # заголовок списка (динамический)  # 273
+        self.lst_header = tk.Label(right, text='Found words (Fibonacci subsegments)')  # 0
+        self.lst_header.grid(row=3, column=0, sticky='w', padx=6, pady=(0, 2))  # 0
+        self.lst = tk.Listbox(right, width=66, height=22)  # 0
+        self.lst.grid(row=4, column=0, sticky='nsew', padx=6)  # 0
+        right.rowconfigure(4, weight=1)  # 0
+        self.lst.bind('<<ListboxSelect>>', self._on_list_select)  # 0
+
+        # подписи со средними  # 281
+        self.lbl_ratio = tk.Label(right, text='Average L/S along chain: —')  # 0
+        self.lbl_ratio.grid(row=5, column=0, sticky='w', padx=6, pady=(6, 4))  # 0
+        self.lbl_ratio_neigh = tk.Label(right, text='Average neighboring segment ratio: —')  # 0
+        self.lbl_ratio_neigh.grid(row=6, column=0, sticky='w', padx=6, pady=(2, 8))  # 0
+
+        # последовательность S/L (полная) + бинды инверсии  # 287
+        tk.Label(right, text='S/L sequence (full):').grid(row=7, column=0, sticky='w', padx=6, pady=(4, 2))  # 0
+        self.txt_sl = tk.Text(right, height=6, wrap='word')  # 0
+        self.txt_sl.grid(row=8, column=0, sticky='ew', padx=6, pady=(0, 4))  # 0
+        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # 0
+
+        # префиксы «фиб-слова»  # 293
+        tk.Label(right, text='Prefixes of "fib-words" (L→LS, S→L)').grid(row=9, column=0, sticky='w', padx=6, pady=(8, 2))  # 0
+        self.txt_words = tk.Text(right, height=10, state='disabled')  # 0
+        self.txt_words.grid(row=10, column=0, sticky='ew', padx=6, pady=(0, 8))  # 0
         container.columnconfigure(0, weight=1)  # 5
         container.columnconfigure(1, weight=0)  # 3
 # 3
@@ -328,11 +429,25 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
 
         self.mode_buttons['polygon'] = tk.Button(mode_switch, text='🔺 Polygon', command=lambda: self._set_analysis_mode('polygon'))  # 2
         self.mode_buttons['polygon'].grid(row=0, column=2, sticky='ew', padx=(2, 0))  # 4
-        self._mode_tooltips.append(HoverTooltip(self.mode_buttons['polygon'], 'Polygon builder: use Left Click while this mode is active.'))  # 5
 
-        self._set_analysis_mode(self.analysis_mode)  # 3
+        def _onBand(self):  # 331
+            try:  # 332
+                self.max_dist_line = max(2.0, float(self.entBand.get()))  # 333
+            except Exception:  # 334
+                pass  # 335
 
-        tk.Button(controls, text='Save PNG', command=self.save_png).grid(row=1, column=0, sticky='ew', padx=4, pady=2)  # 5
+        def _set_mode_hint_status(self, mode: str) -> None:  # 0
+            hints = {  # 0
+                'sl': 'Mode 1 — LMB: anchor two peaks to analyze the chain with S/L clustering and Fibonacci windows.',
+                # 0
+                'ratio': 'Mode 2 — RMB: collect a chain to inspect neighboring segment ratios; list rows highlight segment pairs.',
+                # 0
+                'polygon': 'Mode 3 — MMB: add vertices to build polygons, close on the first point, use Z/Y to undo or redo.',
+                # 0
+            }  # 0
+            text = hints.get(mode)  # 0
+            if text:  # 0
+                self.status.config(text=text)  # 0
         tk.Button(controls, text='Clear selection', command=self.clear_selection).grid(row=1, column=1, sticky='ew', padx=4, pady=2)  # 3
         tk.Label(controls, text='Selection thickness (px):').grid(row=2, column=0, sticky='w', padx=4, pady=(8, 2))  # 4
         self.entBand = tk.Spinbox(controls, from_=2, to=100, width=6, command=self._onBand)  # 2
