@@ -17,7 +17,7 @@ from typing import Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import numpy as np
-from PIL import Image
+from preproc import PreprocSettings, load_grayscale_with_preproc
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -64,14 +64,15 @@ class PointEditor(tk.Frame):
                  input_json: str | None = None, auto_load: bool = True):
         super().__init__(master)
         self.controller = controller
-        # данные␊
-        self.points = np.zeros((0, 2), float)   # [y, x]␊
-        self.values = np.zeros((0,), float)     # интенсивности (параллельно points)␊
+        # данные
+        self.points = np.zeros((0, 2), float)   # [y, x]
+        self.values = np.zeros((0,), float)     # интенсивности (параллельно points)
         self.rect_start = None
         self.rect_artist = None
-        self.overlay = None  # {center:{x,y}, dead_radius, search_radius}␊
+        self.overlay = None  # {center:{x,y}, dead_radius, search_radius}
         self.image_path: Optional[Path] = None
         self.img_arr: Optional[np.ndarray] = None
+        self._preproc_settings: PreprocSettings = PreprocSettings(mode="raw")
 
         # Undo/Redo
         self._undo = []
@@ -244,8 +245,17 @@ class PointEditor(tk.Frame):
             messagebox.showerror("Ошибка", "В JSON отсутствует поле 'image'.")
             return
         self.image_path = Path(img_path)
-        img = Image.open(self.image_path).convert("L")
-        self.img_arr = np.array(img, float)
+        fallback_mode = data.get("preproc_mode")
+        if not isinstance(fallback_mode, str):
+            fallback_mode = None
+        self._preproc_settings = PreprocSettings.from_json(
+            data.get("preproc"), fallback_mode=fallback_mode
+        )
+        try:
+            self.img_arr = load_grayscale_with_preproc(self.image_path, self._preproc_settings)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось подготовить изображение:\n{e}")
+            return
 
         # overlay: центр и радиусы
         c = data.get("center") or {}
@@ -289,6 +299,8 @@ class PointEditor(tk.Frame):
         # также пересохраним обновлённый saed_input
         si = {
             "image": str(self.image_path) if self.image_path else None,
+            "preproc_mode": self._preproc_settings.mode,
+            "preproc": self._preproc_settings.to_json(),
             "center": (self.overlay.get("center") if self.overlay else None),
             "radii": {
                 "dead": float(self.overlay.get("dead_radius") or 0.0) if self.overlay else 0.0,
@@ -675,6 +687,8 @@ class PointEditor(tk.Frame):
 
             payload = {
                 "image": str(self.image_path) if self.image_path else None,
+                "preproc_mode": self._preproc_settings.mode,
+                "preproc": self._preproc_settings.to_json(),
                 "points": points_list,
                 "centers": {
                     "geometric": {"x": float(geo_cx), "y": float(geo_cy)} if geo_cx is not None else None,
@@ -779,25 +793,28 @@ class PointEditor(tk.Frame):
         txt.config(state=tk.DISABLED)
         self._set_status("Сформирован отчёт по симметрии")
 
-    class PointEditorApp(tk.Tk):
-        """Standalone-обёртка, встраивающая редактор в корневое окно."""
+class PointEditorApp(tk.Tk):
+    """Standalone-обёртка, встраивающая редактор в корневое окно."""
 
-        def __init__(self, input_json: str | None = None):
-            super().__init__()
-            self.title("SAED Editor + Analysis")
-            self.geometry("1100x800")
-            self.resizable(True, True)
-            self.editor = PointEditor(self, input_json=input_json)
-            self.editor.pack(fill=tk.BOTH, expand=True)
+    def __init__(self, input_json: str | None = None):
+        super().__init__()
+        self.title("SAED Editor + Analysis")
+        self.geometry("1100x800")
+        self.resizable(True, True)
+        self.editor = PointEditor(self, input_json=input_json)
+        self.editor.pack(fill=tk.BOTH, expand=True)
 
-    # -------- CLI ---------
-    def _parse_args(argv):
-        import argparse
-        p = argparse.ArgumentParser()
-        p.add_argument("--input", type=str, required=False, help="Путь к saed_input.json")
-        return p.parse_args(argv)
 
-    if __name__ == "__main__":
-        args = _parse_args(sys.argv[1:])
-        root = PointEditorApp(args.input)
-        root.mainloop()
+# -------- CLI ---------
+def _parse_args(argv):
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--input", type=str, required=False, help="Путь к saed_input.json")
+    return p.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = _parse_args(sys.argv[1:])
+    root = PointEditorApp(args.input)
+    root.mainloop()

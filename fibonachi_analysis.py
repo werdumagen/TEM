@@ -34,6 +34,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Circle
 
+from preproc import PreprocSettings, load_grayscale_with_preproc
+
 # ---------------- загрузка ----------------
 
 def _parse_cli(argv=None):
@@ -132,7 +134,11 @@ def load_input(json_path: Path):
     if isinstance(d.get('radii'), dict):
         if d['radii'].get('dead') is not None:  dead = float(d['radii']['dead'])
         if d['radii'].get('search') is not None: srch = float(d['radii']['search'])
-    return img, pts, center, dead, srch
+    fallback_mode = d.get('preproc_mode')
+    if not isinstance(fallback_mode, str):
+        fallback_mode = None
+    preproc = PreprocSettings.from_json(d.get('preproc'), fallback_mode=fallback_mode)
+    return img, pts, center, dead, srch, preproc
 
 # ---------------- анализ S/L ----------------
 
@@ -193,6 +199,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.center: Optional[Tuple[float, float]] = None
         self.dead: float = 0.0
         self.srch: float = 0.0
+        self.preproc: PreprocSettings = PreprocSettings(mode="raw")
+        self.img_arr: Optional[np.ndarray] = None
 
         # Общие параметры
         self.pick_tol = 10.0
@@ -416,7 +424,14 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.load_json(Path(p))
 
     def load_json(self, json_path: Path):
-        self.img_path, self.points, self.center, self.dead, self.srch = load_input(json_path)
+        self.img_path, self.points, self.center, self.dead, self.srch, self.preproc = load_input(json_path)
+        self.img_arr = None
+        if self.img_path is not None:
+            try:
+                self.img_arr = load_grayscale_with_preproc(self.img_path, self.preproc)
+            except Exception as exc:
+                messagebox.showerror('Ошибка', f'Не удалось подготовить изображение:\n{exc}')
+                self.img_arr = None
         self.clear_selection(redraw=False)
         self.draw_base()
         self.status.config(text=f'Загружен: {json_path.name}')
@@ -431,7 +446,9 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def draw_base(self):
         self.ax.clear()
-        if self.img_path:
+        if self.img_arr is not None:
+            self.ax.imshow(self.img_arr, cmap='gray', interpolation='nearest')
+        elif self.img_path:
             im = Image.open(self.img_path).convert('L')
             self.ax.imshow(np.array(im), cmap='gray', interpolation='nearest')
         if self.points is not None and len(self.points):
