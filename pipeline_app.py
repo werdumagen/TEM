@@ -1,232 +1,240 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Объединённое окно с вкладками лаунчера, редактора и анализатора."""
-
-from __future__ import annotations
-
-import importlib
-import importlib.util
-import sys
-import webbrowser
-from pathlib import Path
-from typing import Optional, TYPE_CHECKING
-
-import tkinter as tk
-from tkinter import ttk, messagebox
-
-
-MODULE_DIR = Path(__file__).resolve().parent
-if str(MODULE_DIR) not in sys.path:
-    sys.path.insert(0, str(MODULE_DIR))
-
-
-def _import_module(name: str):
-    """Import helper that falls back to sibling files when bundlers miss them."""
-
-    try:
-        return importlib.import_module(name)
-    except ModuleNotFoundError as exc:
-        base_candidates = []
-        frozen_base = getattr(sys, "_MEIPASS", None)
-        if frozen_base is not None:
-            base_candidates.append(Path(frozen_base))
-        base_candidates.append(Path(__file__).resolve().parent)
-
-        def _attempt_load(module_path: Path, *, package_dir: Path | None = None):
-            spec_kwargs = {}
-            if package_dir is not None:
-                spec_kwargs["submodule_search_locations"] = [str(package_dir)]
-            spec = importlib.util.spec_from_file_location(name, module_path, **spec_kwargs)
-            if spec is None or spec.loader is None:  # pragma: no cover - importlib guard
-                return None
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[name] = module
-            spec.loader.exec_module(module)
-            return module
-
-        for base in base_candidates:
-            for suffix in (".py", ".pyc"):
-                candidate = base / f"{name}{suffix}"
-                if candidate.exists():
-                    module = _attempt_load(candidate)
-                    if module is not None:
-                        return module
-
-            package_dir = base / name
-            if package_dir.is_dir():
-                for suffix in (".py", ".pyc"):
-                    init_file = package_dir / f"__init__{suffix}"
-                    if init_file.exists():
-                        module = _attempt_load(init_file, package_dir=package_dir)
-                        if module is not None:
-                            return module
-
-        raise exc
-
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from temn import SAEDLauncherFrame
-    from saed_editor import PointEditor
-    from fibonachi_analysis import FibonacciAnalysisFrame
-else:
-    try:
-        from temn import SAEDLauncherFrame
-        from saed_editor import PointEditor
-        from fibonachi_analysis import FibonacciAnalysisFrame
-    except ModuleNotFoundError:
-        SAEDLauncherFrame = _import_module("temn").SAEDLauncherFrame
-        PointEditor = _import_module("saed_editor").PointEditor
-        FibonacciAnalysisFrame = _import_module("fibonachi_analysis").FibonacciAnalysisFrame
-
-
-class PipelineController:
-    """Связывает вкладки и занимается переключением между этапами."""
-
-    def __init__(self, parent: tk.Misc, *, status_callback=None):
-        self.parent = parent
-        self._status_callback = status_callback or (lambda _msg: None)
-        self.notebook = ttk.Notebook(parent)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-
-        self.launcher = SAEDLauncherFrame(self.notebook, controller=self)
-        self.editor = PointEditor(self.notebook, controller=self)
-        self.analysis = FibonacciAnalysisFrame(self.notebook, controller=self, auto_load=False)
-
-        self.notebook.add(self.launcher, text="Лаунчер")
-        self.notebook.add(self.editor, text="Редактор")
-        self.notebook.add(self.analysis, text="Анализ")
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-
-    # --- вызовы из вкладок ---
-    def set_status(self, message: str) -> None:
-        self._status_callback(message)
-
-    def _on_tab_changed(self, _event) -> None:
-        current = self.notebook.select()
-        if current:
-            tab_text = self.notebook.tab(current, "text")
-            self.set_status(f"Открыта вкладка: {tab_text}")
-
-    def open_editor(self, saed_json_path: Path | str) -> None:
-        path = Path(saed_json_path)
-        if not path.exists():
-            raise FileNotFoundError(path)
-        try:
-            self.editor.load_input_json(path, push_undo=False)
-            self.notebook.select(self.editor)
-            self.set_status(f"Редактор: {path.name}")
-        except Exception as exc:  # pragma: no cover - GUI fallback
-            messagebox.showerror("Ошибка", f"Не удалось загрузить данные в редактор:\n{exc}")
-
-    def open_analysis(
-        self,
-        payload_path: Path | str,
-        image_path: Optional[Path | str],
-        spots_json: Optional[Path | str],
-    ) -> None:
-        path = Path(payload_path)
-        if not path.exists():
-            raise FileNotFoundError(path)
-        try:
-            self.analysis.load_json(path)
-            self.notebook.select(self.analysis)
-            self.set_status(f"Анализ: {path.name}")
-        except Exception as exc:  # pragma: no cover - GUI fallback
-            messagebox.showerror("Ошибка", f"Не удалось загрузить данные в анализатор:\n{exc}")
-
-
-class TabbedPipelineApp(tk.Tk):
-    """Главное окно, содержащее все этапы работы."""
-
-    def __init__(self):
-        super().__init__()
-        self.title("SAED Symmetry — Комплекс")
-        self.geometry("1520x980")
-        self.resizable(True, True)
-
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("Header.TLabel", font=("TkDefaultFont", 18, "bold"))
-        style.configure("Subheader.TLabel", font=("TkDefaultFont", 11))
-        style.configure("Byline.TLabel", font=("TkDefaultFont", 10, "italic"), foreground="#555555")
-        style.configure("Accent.TButton", font=("TkDefaultFont", 10, "bold"))
-        style.configure("TNotebook", padding=(12, 10))
-        style.configure("TNotebook.Tab", padding=(16, 8))
-
-        header = ttk.Frame(self, padding=(20, 18, 20, 12))
-        header.pack(side=tk.TOP, fill=tk.X)
-        header.grid_columnconfigure(0, weight=1)
-
-        ttk.Label(header, text="SAED Symmetry — Комплекс", style="Header.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            header,
-            text="Единый конвейер обработки электронограммы от загрузки до анализа.",
-            style="Subheader.TLabel",
-            wraplength=720,
-            justify="left",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-
-        ttk.Label(header, text="by Roynik 2025", style="Byline.TLabel").grid(
-            row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)
-        )
-        ttk.Button(header, text="Справка", command=self._show_help).grid(
-            row=0, column=2, rowspan=2, sticky="ne"
-        )
-
-        content = ttk.Frame(self, padding=(20, 0, 20, 12))
-        content.pack(fill=tk.BOTH, expand=True)
-
-        self.status_var = tk.StringVar(value="Готово")
-        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8))
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-
-        self.controller = PipelineController(content, status_callback=self._update_status)
-        self.controller.set_status("Открыта вкладка: Лаунчер")
-
-    def _update_status(self, message: str) -> None:
-        self.status_var.set(message)
-
-    def _show_help(self) -> None:
-        help_window = tk.Toplevel(self)
-        help_window.title("О приложении")
-        help_window.transient(self)
-        help_window.grab_set()
-        help_window.resizable(False, False)
-
-        frame = ttk.Frame(help_window, padding=(20, 16))
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        message = (
-            "Во вкладке «Лаунчер» подготовьте изображение и параметры детектора. "
-            "«Редактор» позволит вручную уточнить точки и радиусы, а «Анализ» — построить "
-            "отчёт по симметрии и цепочкам Фибоначчи."
-        )
-        ttk.Label(frame, text=message, justify="left", wraplength=480).pack(anchor="w")
-
-        ttk.Label(frame, text="Поддержать проект:", padding=(0, 12, 0, 0)).pack(anchor="w")
-
-        donation_link = "https://donatello.to/Roynik"
-        link_label = tk.Label(
-            frame,
-            text=donation_link,
-            fg="#1a0dab",
-            cursor="hand2",
-            font=("TkDefaultFont", 10, "underline"),
-            justify="left",
-        )
-        link_label.pack(anchor="w")
-        link_label.bind("<Button-1>", lambda _event: webbrowser.open_new_tab(donation_link))
-
-        ttk.Button(frame, text="Закрыть", command=help_window.destroy).pack(
-            anchor="e", pady=(20, 0)
-        )
-
-def main() -> None:
-    app = TabbedPipelineApp()
-    app.mainloop()
-
-if __name__ == "__main__":
-    main()
+#!/usr/bin/env python3  # 1
+# -*- coding: utf-8 -*-  # 2
+(  # 3
+    "Unified window with launcher, editor, and analyzer tabs.\n"  # 4
+)  # 5
+# 6
+from __future__ import annotations  # 7
+# 8
+import importlib  # 9
+import importlib.util  # 10
+import sys  # 11
+import webbrowser  # 12
+from pathlib import Path  # 13
+from typing import Optional, TYPE_CHECKING  # 14
+# 15
+import tkinter as tk  # 16
+from tkinter import ttk, messagebox  # 17
+# 18
+# 19
+MODULE_DIR = Path(__file__).resolve().parent  # 20
+if str(MODULE_DIR) not in sys.path:  # 21
+    sys.path.insert(0, str(MODULE_DIR))  # 22
+# 23
+# 24
+def _import_module(name: str):  # 25
+    (  # 26
+        "Import helper that falls back to sibling files when bundlers miss them.\n"  # 27
+    )  # 28
+# 29
+    try:  # 30
+        return importlib.import_module(name)  # 31
+    except ModuleNotFoundError as exc:  # 32
+        base_candidates = []  # 33
+        frozen_base = getattr(sys, "_MEIPASS", None)  # 34
+        if frozen_base is not None:  # 35
+            base_candidates.append(Path(frozen_base))  # 36
+        base_candidates.append(Path(__file__).resolve().parent)  # 37
+# 38
+        def _attempt_load(module_path: Path, *, package_dir: Path | None = None):  # 39
+            spec_kwargs = {}  # 40
+            if package_dir is not None:  # 41
+                spec_kwargs["submodule_search_locations"] = [str(package_dir)]  # 42
+            spec = importlib.util.spec_from_file_location(name, module_path, **spec_kwargs)  # 43
+            if spec is None or spec.loader is None:  # pragma: no cover - importlib guard  # 44
+                return None  # 45
+            module = importlib.util.module_from_spec(spec)  # 46
+            sys.modules[name] = module  # 47
+            spec.loader.exec_module(module)  # 48
+            return module  # 49
+# 50
+        for base in base_candidates:  # 51
+            for suffix in (".py", ".pyc"):  # 52
+                candidate = base / f"{name}{suffix}"  # 53
+                if candidate.exists():  # 54
+                    module = _attempt_load(candidate)  # 55
+                    if module is not None:  # 56
+                        return module  # 57
+# 58
+            package_dir = base / name  # 59
+            if package_dir.is_dir():  # 60
+                for suffix in (".py", ".pyc"):  # 61
+                    init_file = package_dir / f"__init__{suffix}"  # 62
+                    if init_file.exists():  # 63
+                        module = _attempt_load(init_file, package_dir=package_dir)  # 64
+                        if module is not None:  # 65
+                            return module  # 66
+# 67
+        raise exc  # 68
+# 69
+# 70
+if TYPE_CHECKING:  # pragma: no cover - typing only  # 71
+    from temn import SAEDLauncherFrame  # 72
+    from saed_editor import PointEditor  # 73
+    from fibonachi_analysis import FibonacciAnalysisFrame  # 74
+else:  # 75
+    try:  # 76
+        from temn import SAEDLauncherFrame  # 77
+        from saed_editor import PointEditor  # 78
+        from fibonachi_analysis import FibonacciAnalysisFrame  # 79
+    except ModuleNotFoundError:  # 80
+        SAEDLauncherFrame = _import_module("temn").SAEDLauncherFrame  # 81
+        PointEditor = _import_module("saed_editor").PointEditor  # 82
+        FibonacciAnalysisFrame = _import_module("fibonachi_analysis").FibonacciAnalysisFrame  # 83
+# 84
+# 85
+class PipelineController:  # 86
+    (  # 87
+        "Connects the tabs and handles stage switching.\n"  # 88
+    )  # 89
+# 90
+    def __init__(self, parent: tk.Misc, *, status_callback=None):  # 91
+        self.parent = parent  # 92
+        self._status_callback = status_callback or (lambda _msg: None)  # 93
+        self.notebook = ttk.Notebook(parent)  # 94
+        self.notebook.pack(fill=tk.BOTH, expand=True)  # 95
+# 96
+        self.launcher = SAEDLauncherFrame(self.notebook, controller=self)  # 97
+        self.editor = PointEditor(self.notebook, controller=self)  # 98
+        self.analysis = FibonacciAnalysisFrame(self.notebook, controller=self, auto_load=False)  # 99
+# 100
+        self.notebook.add(self.launcher, text="Launcher")  # 101
+        self.notebook.add(self.editor, text="Editor")  # 102
+        self.notebook.add(self.analysis, text="Analysis")  # 103
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)  # 104
+# 105
+    # --- callbacks from tabs ---  # 106
+    def set_status(self, message: str) -> None:  # 107
+        self._status_callback(message)  # 108
+# 109
+    def _on_tab_changed(self, _event) -> None:  # 110
+        current = self.notebook.select()  # 111
+        if current:  # 112
+            tab_text = self.notebook.tab(current, "text")  # 113
+            self.set_status(f"Opened tab: {tab_text}")  # 114
+# 115
+    def open_editor(self, saed_json_path: Path | str) -> None:  # 116
+        path = Path(saed_json_path)  # 117
+        if not path.exists():  # 118
+            raise FileNotFoundError(path)  # 119
+        try:  # 120
+            self.editor.load_input_json(path, push_undo=False)  # 121
+            self.notebook.select(self.editor)  # 122
+            self.set_status(f"Editor: {path.name}")  # 123
+        except Exception as exc:  # pragma: no cover - GUI fallback  # 124
+            messagebox.showerror("Error", f"Failed to load data into the editor:\n{exc}")  # 125
+# 126
+    def open_analysis(  # 127
+        self,  # 128
+        payload_path: Path | str,  # 129
+        image_path: Optional[Path | str],  # 130
+        spots_json: Optional[Path | str],  # 131
+    ) -> None:  # 132
+        path = Path(payload_path)  # 133
+        if not path.exists():  # 134
+            raise FileNotFoundError(path)  # 135
+        try:  # 136
+            self.analysis.load_json(path)  # 137
+            self.notebook.select(self.analysis)  # 138
+            self.set_status(f"Analysis: {path.name}")  # 139
+        except Exception as exc:  # pragma: no cover - GUI fallback  # 140
+            messagebox.showerror("Error", f"Failed to load data into the analyzer:\n{exc}")  # 141
+# 142
+# 143
+class TabbedPipelineApp(tk.Tk):  # 144
+    (  # 145
+        "Main window containing every stage of the workflow.\n"  # 146
+    )  # 147
+# 148
+    def __init__(self):  # 149
+        super().__init__()  # 150
+        self.title("SAED Symmetry — Suite")  # 151
+        self.geometry("1520x980")  # 152
+        self.resizable(True, True)  # 153
+# 154
+        style = ttk.Style(self)  # 155
+        try:  # 156
+            style.theme_use("clam")  # 157
+        except tk.TclError:  # 158
+            pass  # 159
+        style.configure("Header.TLabel", font=("TkDefaultFont", 18, "bold"))  # 160
+        style.configure("Subheader.TLabel", font=("TkDefaultFont", 11))  # 161
+        style.configure("Byline.TLabel", font=("TkDefaultFont", 10, "italic"), foreground="#555555")  # 162
+        style.configure("Accent.TButton", font=("TkDefaultFont", 10, "bold"))  # 163
+        style.configure("TNotebook", padding=(12, 10))  # 164
+        style.configure("TNotebook.Tab", padding=(16, 8))  # 165
+# 166
+        header = ttk.Frame(self, padding=(20, 18, 20, 12))  # 167
+        header.pack(side=tk.TOP, fill=tk.X)  # 168
+        header.grid_columnconfigure(0, weight=1)  # 169
+# 170
+        ttk.Label(header, text="SAED Symmetry — Suite", style="Header.TLabel").grid(row=0, column=0, sticky="w")  # 171
+        ttk.Label(  # 172
+            header,  # 173
+            text="A single pipeline for electron diffraction processing from loading to analysis.",  # 174
+            style="Subheader.TLabel",  # 175
+            wraplength=720,  # 176
+            justify="left",  # 177
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))  # 178
+# 179
+        ttk.Label(header, text="by Roynik 2025 v1.4", style="Byline.TLabel").grid(  # 180
+            row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)  # 181
+        )  # 182
+        ttk.Button(header, text="Help", command=self._show_help).grid(  # 183
+            row=0, column=2, rowspan=2, sticky="ne"  # 184
+        )  # 185
+# 186
+        content = ttk.Frame(self, padding=(20, 0, 20, 12))  # 187
+        content.pack(fill=tk.BOTH, expand=True)  # 188
+# 189
+        self.status_var = tk.StringVar(value="Ready")  # 190
+        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8))  # 191
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)  # 192
+# 193
+        self.controller = PipelineController(content, status_callback=self._update_status)  # 194
+        self.controller.set_status("Opened tab: Launcher")  # 195
+# 196
+    def _update_status(self, message: str) -> None:  # 197
+        self.status_var.set(message)  # 198
+# 199
+    def _show_help(self) -> None:  # 200
+        help_window = tk.Toplevel(self)  # 201
+        help_window.title("About the application")  # 202
+        help_window.transient(self)  # 203
+        help_window.grab_set()  # 204
+        help_window.resizable(False, False)  # 205
+# 206
+        frame = ttk.Frame(help_window, padding=(20, 16))  # 207
+        frame.pack(fill=tk.BOTH, expand=True)  # 208
+# 209
+        message = (  # 210
+            "In the Launcher tab, prepare the image and detector parameters. "  # 211
+            "The Editor tab lets you refine points and radii manually, and Analysis builds "  # 212
+            "a symmetry report with Fibonacci chains."  # 213
+        )  # 214
+        ttk.Label(frame, text=message, justify="left", wraplength=480).pack(anchor="w")  # 215
+# 216
+        ttk.Label(frame, text="Support the project:", padding=(0, 12, 0, 0)).pack(anchor="w")  # 217
+# 218
+        donation_link = "https://donatello.to/Roynik"  # 219
+        link_label = tk.Label(  # 220
+            frame,  # 221
+            text=donation_link,  # 222
+            fg="#1a0dab",  # 223
+            cursor="hand2",  # 224
+            font=("TkDefaultFont", 10, "underline"),  # 225
+            justify="left",  # 226
+        )  # 227
+        link_label.pack(anchor="w")  # 228
+        link_label.bind("<Button-1>", lambda _event: webbrowser.open_new_tab(donation_link))  # 229
+# 230
+        ttk.Button(frame, text="Close", command=help_window.destroy).pack(  # 231
+            anchor="e", pady=(20, 0)  # 232
+        )  # 233
+# 234
+def main() -> None:  # 235
+    app = TabbedPipelineApp()  # 236
+    app.mainloop()  # 237
+# 238
+if __name__ == "__main__":  # 239
+    main()  # 240
