@@ -466,11 +466,13 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
         self.lbl_ratio = tk.Label(tab_subsegments, text='Average L/S along chain: —')  # 1
         self.lbl_ratio.grid(row=1, column=0, sticky='w', pady=(6, 4))  # 1
         self.lbl_ratio_neigh = tk.Label(tab_subsegments, text='Average neighboring segment ratio: —')  # 1
-        self.lbl_ratio_neigh.grid(row=2, column=0, sticky='w', pady=(2, 8))  # 1
-# 1
-        tk.Label(tab_subsegments, text='S/L sequence (full):').grid(row=3, column=0, sticky='w', pady=(4, 2))  # 1
+        self.lbl_ratio_neigh.grid(row=2, column=0, sticky='w', pady=(2, 4))  # 1
+        self.lbl_ratio_polygons = tk.Label(tab_subsegments, text='Average neighboring polygon linear ratio: —')  # 1
+        self.lbl_ratio_polygons.grid(row=3, column=0, sticky='w', pady=(2, 8))  # 1
+        # 1
+        tk.Label(tab_subsegments, text='S/L sequence (full):').grid(row=4, column=0, sticky='w', pady=(4, 2))  # 1
         self.txt_sl = tk.Text(tab_subsegments, height=6, wrap='word')  # 1
-        self.txt_sl.grid(row=4, column=0, sticky='ew', pady=(0, 4))  # 1
+        self.txt_sl.grid(row=5, column=0, sticky='ew', pady=(0, 4))  # 1
         self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # 1
 # 1
         prefixes_header = tk.Label(tab_prefixes, text='Prefixes of "fib-words" (L→LS, S→L)')  # 1
@@ -946,6 +948,7 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
         self.lst_header.config(text='Found words (Fibonacci subsegments)')  # 1
         self.lbl_ratio.config(text='Average L/S along chain: —')  # 1
         self.lbl_ratio_neigh.config(text='Average neighboring segment ratio: —')  # 1
+        self.lbl_ratio_polygons.config(text='Average neighboring polygon linear ratio: —')  # 1
         self.txt_sl.delete('1.0', tk.END)  # 1
         self.txt_words.configure(state='normal');  # 1
         self.txt_words.delete('1.0', tk.END);  # 1
@@ -1362,20 +1365,36 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
 # 1
         self.lst.insert(tk.END, '')  # 1
         lines_added = False  # 1
+        polygon_linear_ratios = []  # 1
         for idx in range(len(areas), 1, -1):  # 1
             prev_area = areas[idx - 2]  # 1
             curr_area = areas[idx - 1]  # 1
             if prev_area == 0:  # 1
                 ratio_text = 'undefined (previous area = 0)'  # 1
+                linear_text = 'undefined (previous area = 0)'  # 1
             else:  # 1
-                ratio = math.sqrt(curr_area / prev_area)  # 1
-                ratio_text = f'{ratio:.6g}'  # 1
+                size_ratio = curr_area / prev_area  # 1
+                ratio_text = f'{size_ratio:.6g}'  # 1
+                if size_ratio > 0:  # 1
+                    linear_ratio = math.sqrt(size_ratio)  # 1
+                    polygon_linear_ratios.append(linear_ratio)  # 1
+                    linear_text = f'{linear_ratio:.6g}'  # 1
+                else:  # 1
+                    linear_text = 'undefined (ratio ≤ 0)'  # 1
             self.lst.insert(tk.END, f'Size ratio {idx} and {idx - 1}: {ratio_text}')  # 1
+            self.lst.insert(tk.END, f'Linear size ratio {idx} and {idx - 1}: {linear_text}')  # 1
             lines_added = True  # 1
-# 1
+        # 1
         if not lines_added:  # 1
             self.lst.insert(tk.END, 'Not enough polygons for ratios.')  # 1
-# 1
+        # 1
+        finite_linear = [r for r in polygon_linear_ratios if math.isfinite(r)]  # 1
+        if finite_linear:  # 1
+            mean_linear = float(np.mean(finite_linear))  # 1
+            self.lbl_ratio_polygons.config(text=f'Average neighboring polygon linear ratio: {mean_linear:.6g}')  # 1
+        else:  # 1
+            self.lbl_ratio_polygons.config(text='Average neighboring polygon linear ratio: —')  # 1
+        # 1
         self.status.config(text=f'Areas computed: {len(areas)}. See the list on the right.')  # 1
 # 1
 class App(tk.Tk):  # 1
