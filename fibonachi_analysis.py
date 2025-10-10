@@ -350,6 +350,8 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
         self.ratio_selected_idx: List[int] = []  # 1
         self.polygon_current_idx: List[int] = []  # 1
         self.polygons_idx: List[List[int]] = []  # 1
+        self._polygon_history: List[Tuple[List[int], List[List[int]]]] = []  # 1
+        self._polygon_redo: List[Tuple[List[int], List[List[int]]]] = []  # 1
 
         self.list_index_map: Dict[int, Tuple] = {}  # 1
         self.curr_chain = None  # 1
@@ -742,7 +744,7 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
 # 4
     def _reset_polygon_history(self) -> None:  # 4
         self._polygon_history = [self._capture_polygon_state()]  # 2
-        self._on_polygon_redo.clear()  # 4
+        self._polygon_redo.clear()  # 4
 # 4
     def _record_polygon_state(self) -> None:  # 4
         state = self._capture_polygon_state()  # 4
