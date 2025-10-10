@@ -1370,7 +1370,6 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
             prev_area = areas[idx - 2]  # 1
             curr_area = areas[idx - 1]  # 1
             if prev_area == 0:  # 1
-                ratio_text = 'undefined (previous area = 0)'  # 1
                 linear_text = 'undefined (previous area = 0)'  # 1
             else:  # 1
                 size_ratio = curr_area / prev_area  # 1
@@ -1381,7 +1380,6 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
                     linear_text = f'{linear_ratio:.6g}'  # 1
                 else:  # 1
                     linear_text = 'undefined (ratio ≤ 0)'  # 1
-            self.lst.insert(tk.END, f'Size ratio {idx} and {idx - 1}: {ratio_text}')  # 1
             self.lst.insert(tk.END, f'Linear size ratio {idx} and {idx - 1}: {linear_text}')  # 1
             lines_added = True  # 1
         # 1
