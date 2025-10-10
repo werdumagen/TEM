@@ -339,148 +339,103 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
 # 2
         # 4
         self.pick_tol = 10.0  # 1
-        controls = tk.Frame(right)  # 0
-        controls.grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 10))  # 0
-        controls.columnconfigure(0, weight=1)  # 0
-        controls.columnconfigure(1, weight=1)  # 0
-        tk.Button(controls, text='Open JSON…', command=self.open_json).grid(row=0, column=0, sticky='ew', padx=4, pady=2)  # 0
-        tk.Button(controls, text='Start analysis (LMB chain)', command=self.run_analysis).grid(row=0, column=1, sticky='ew', padx=4, pady=2)  # 0
-        tk.Button(controls, text='Save PNG', command=self.save_png).grid(row=1, column=0, sticky='ew', padx=4, pady=2)  # 0
-        tk.Button(controls, text='Clear selection', command=self.clear_selection).grid(row=1, column=1, sticky='ew', padx=4, pady=2)  # 0
-        tk.Label(controls, text='Selection thickness (px):').grid(row=2, column=0, sticky='w', padx=4, pady=(8, 2))  # 0
-        self.entBand = tk.Spinbox(controls, from_=2, to=100, width=6, command=self._onBand)  # 0
-        self.entBand.delete(0, 'end'); self.entBand.insert(0, str(int(self.max_dist_line)))  # 0
-        self.entBand.grid(row=2, column=1, sticky='ew', padx=4, pady=(8, 2))  # 0
+        self.max_dist_line = 20.0  # default selection thickness in pixels  # 1
 
-        mode_frame = tk.LabelFrame(right, text='Analysis modes')  # 0
-        mode_frame.grid(row=2, column=0, sticky='ew', padx=6, pady=(0, 8))  # 0
-        for col in range(3):  # 0
-            mode_frame.columnconfigure(col, weight=1)  # 0
-        btn_mode_sl = tk.Button(mode_frame, text='Mode 1: S/L (LMB)', command=lambda: self._set_mode_hint_status('sl'))  # 0
-        btn_mode_sl.grid(row=0, column=0, sticky='ew', padx=4, pady=4)  # 0
-        btn_mode_ratio = tk.Button(mode_frame, text='Mode 2: Ratios (RMB)', command=lambda: self._set_mode_hint_status('ratio'))  # 0
-        btn_mode_ratio.grid(row=0, column=1, sticky='ew', padx=4, pady=4)  # 0
-        btn_mode_poly = tk.Button(mode_frame, text='Mode 3: Polygons (MMB)', command=lambda: self._set_mode_hint_status('polygon'))  # 0
-        btn_mode_poly.grid(row=0, column=2, sticky='ew', padx=4, pady=4)  # 0
-        self._mode_tooltips = [  # 0
-            _Tooltip(btn_mode_sl, 'Left mouse button: first click anchors the chain, the second finalizes it. The collected segments are split into S/L with Fibonacci windows listed on the right. Esc resets the selection.'),  # 0
-            _Tooltip(btn_mode_ratio, 'Right mouse button: anchor with the first click and close with the second to analyze neighboring segment ratios. The list highlights segment pairs; Esc clears the mode.'),  # 0
-            _Tooltip(btn_mode_poly, 'Middle mouse button: build polygons vertex by vertex. Click the first vertex to close, use Z/Y to undo or redo and press Enter to compute areas and ratios.'),  # 0
-        ]  # 0
+        self.mode_buttons: Dict[str, tk.Button] = {}  # 1
+        self._mode_tooltips: List[HoverTooltip] = []  # 1
+        self.analysis_mode: str = 'sl'  # 1
+        self._last_analysis_mode: Optional[str] = None  # 1
 
-        self.status = tk.Label(right, text='', anchor='w')  # 0
-        self.status.grid(row=1, column=0, sticky='ew', padx=6, pady=(0, 10))  # 0
+        self.selected_idx: List[int] = []  # 1
+        self.ratio_selected_idx: List[int] = []  # 1
+        self.polygon_current_idx: List[int] = []  # 1
+        self.polygons_idx: List[List[int]] = []  # 1
 
-        # заголовок списка (динамический)  # 273
-        self.lst_header = tk.Label(right, text='Found words (Fibonacci subsegments)')  # 0
-        self.lst_header.grid(row=3, column=0, sticky='w', padx=6, pady=(0, 2))  # 0
-        self.lst = tk.Listbox(right, width=66, height=22)  # 0
-        self.lst.grid(row=4, column=0, sticky='nsew', padx=6)  # 0
-        right.rowconfigure(4, weight=1)  # 0
-        self.lst.bind('<<ListboxSelect>>', self._on_list_select)  # 0
+        self.list_index_map: Dict[int, Tuple] = {}  # 1
+        self.curr_chain = None  # 1
+        self.curr_seg = None  # 1
+        self.curr_labels = None  # 1
+        self.curr_ratio = float('nan')  # 1
 
-        # подписи со средними  # 281
-        self.lbl_ratio = tk.Label(right, text='Average L/S along chain: —')  # 0
-        self.lbl_ratio.grid(row=5, column=0, sticky='w', padx=6, pady=(6, 4))  # 0
-        self.lbl_ratio_neigh = tk.Label(right, text='Average neighboring segment ratio: —')  # 0
-        self.lbl_ratio_neigh.grid(row=6, column=0, sticky='w', padx=6, pady=(2, 8))  # 0
+        self.anchor_idx: Optional[int] = None  # 1
+        self.ratio_anchor_idx: Optional[int] = None  # 1
+        self.rubber_line = None  # 1
+        self.rubber_line_ratio = None  # 1
+        self.polygon_rubber_line = None  # 1
 
-        # последовательность S/L (полная) + бинды инверсии  # 287
-        tk.Label(right, text='S/L sequence (full):').grid(row=7, column=0, sticky='w', padx=6, pady=(4, 2))  # 0
-        self.txt_sl = tk.Text(right, height=6, wrap='word')  # 0
-        self.txt_sl.grid(row=8, column=0, sticky='ew', padx=6, pady=(0, 4))  # 0
-        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # 0
+        self.columnconfigure(0, weight=1)  # 1
+        self.rowconfigure(0, weight=1)  # 1
 
-        # префиксы «фиб-слова»  # 293
-        tk.Label(right, text='Prefixes of "fib-words" (L→LS, S→L)').grid(row=9, column=0, sticky='w', padx=6, pady=(8, 2))  # 0
-        self.txt_words = tk.Text(right, height=10, state='disabled')  # 0
-        self.txt_words.grid(row=10, column=0, sticky='ew', padx=6, pady=(0, 8))  # 0
-        container.columnconfigure(0, weight=1)  # 5
-        container.columnconfigure(1, weight=0)  # 3
-# 3
-        left = tk.Frame(container)  # 5
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=12)  # 4
-        left.rowconfigure(0, weight=1)  # 2
+        container = tk.Frame(self)  # 1
+        container.grid(row=0, column=0, sticky="nsew")  # 1
+        container.columnconfigure(0, weight=1)  # 1
+        container.columnconfigure(1, weight=0)  # 1
+
+        left = tk.Frame(container)  # 1
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=12)  # 1
+        left.rowconfigure(0, weight=1)  # 1
         left.columnconfigure(0, weight=1)  # 1
-# 3
-        right = tk.Frame(container, width=470)  # 4
-        right.grid(row=0, column=1, sticky="ns", pady=12)  # 4
-        right.columnconfigure(0, weight=1)  # 2
-# 3
-        controls = tk.Frame(right)  # 3
-        controls.grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 10))  # 1
-        controls.columnconfigure(0, weight=1)  # 5
-        controls.columnconfigure(1, weight=1)  # 2
-# 4
-        tk.Button(controls, text='Open JSON…', command=self.open_json).grid(row=0, column=0, sticky='ew', padx=4, pady=2)  # 2
 
-        mode_switch = tk.Frame(controls)  # 2
-        mode_switch.grid(row=0, column=1, sticky='ew', padx=4, pady=2)  # 1
-        for col in range(3):  # 4
-            mode_switch.columnconfigure(col, weight=1)  # 2
+        right = tk.Frame(container, width=470)  # 1
+        right.grid(row=0, column=1, sticky="ns", pady=12)  # 1
+        right.columnconfigure(0, weight=1)  # 1
+
+        controls = tk.Frame(right)  # 1
+        controls.grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 10))  # 1
+        controls.columnconfigure(0, weight=1)  # 1
+        controls.columnconfigure(1, weight=1)  # 1
+
+        tk.Button(controls, text='Open JSON…', command=self.open_json).grid(row=0, column=0, sticky='ew', padx=4, pady=2)  # 1
+        tk.Button(controls, text='Save PNG', command=self.save_png).grid(row=0, column=1, sticky='ew', padx=4, pady=2)  # 1
+        tk.Button(controls, text='Start analysis (LMB chain)', command=self.run_analysis).grid(row=1, column=0, sticky='ew', padx=4, pady=2)  # 1
+        tk.Button(controls, text='Clear selection', command=self.clear_selection).grid(row=1, column=1, sticky='ew', padx=4, pady=2)  # 1
+
+        tk.Label(controls, text='Selection thickness (px):').grid(row=2, column=0, sticky='w', padx=4, pady=(8, 2))  # 1
+        self.entBand = tk.Spinbox(controls, from_=2, to=100, width=6, command=self._onBand)  # 1
+        self.entBand.delete(0, 'end'); self.entBand.insert(0, str(int(self.max_dist_line)))  # 1
+        self.entBand.grid(row=2, column=1, sticky='ew', padx=4, pady=(8, 2))  # 1
+
+        mode_switch = tk.Frame(controls)  # 1
+        mode_switch.grid(row=3, column=0, columnspan=2, sticky='ew', padx=4, pady=(8, 2))  # 1
+        for col in range(3):  # 1
+            mode_switch.columnconfigure(col, weight=1)  # 1
 
         self.mode_buttons['sl'] = tk.Button(mode_switch, text='🔗 Chain', command=lambda: self._set_analysis_mode('sl'))  # 1
         self.mode_buttons['sl'].grid(row=0, column=0, sticky='ew', padx=(0, 2))  # 1
         self._mode_tooltips.append(HoverTooltip(self.mode_buttons['sl'], 'Chain analysis: use Left Click while this mode is active.'))  # 1
 
-        self.mode_buttons['ratio'] = tk.Button(mode_switch, text='📊 Ratio', command=lambda: self._set_analysis_mode('ratio'))  # 4
-        self.mode_buttons['ratio'].grid(row=0, column=1, sticky='ew', padx=2)  # 3
-        self._mode_tooltips.append(HoverTooltip(self.mode_buttons['ratio'], 'Neighbor ratios: use Left Click while this mode is active.'))  # 3
+        self.mode_buttons['ratio'] = tk.Button(mode_switch, text='📊 Ratio', command=lambda: self._set_analysis_mode('ratio'))  # 1
+        self.mode_buttons['ratio'].grid(row=0, column=1, sticky='ew', padx=2)  # 1
+        self._mode_tooltips.append(HoverTooltip(self.mode_buttons['ratio'], 'Neighbor ratios: use Left Click while this mode is active.'))  # 1
 
-        self.mode_buttons['polygon'] = tk.Button(mode_switch, text='🔺 Polygon', command=lambda: self._set_analysis_mode('polygon'))  # 2
-        self.mode_buttons['polygon'].grid(row=0, column=2, sticky='ew', padx=(2, 0))  # 4
+        self.mode_buttons['polygon'] = tk.Button(mode_switch, text='🔺 Polygon', command=lambda: self._set_analysis_mode('polygon'))  # 1
+        self.mode_buttons['polygon'].grid(row=0, column=2, sticky='ew', padx=(2, 0))  # 1
+        self._mode_tooltips.append(HoverTooltip(self.mode_buttons['polygon'], 'Polygon analysis: add vertices with Left Click, close by clicking the first point.'))  # 1
 
-        def _onBand(self):  # 331
-            try:  # 332
-                self.max_dist_line = max(2.0, float(self.entBand.get()))  # 333
-            except Exception:  # 334
-                pass  # 335
+        self.status = tk.Label(right, text='', anchor='w')  # 1
+        self.status.grid(row=1, column=0, sticky='ew', padx=6, pady=(0, 10))  # 1
+        self._set_analysis_mode('sl')  # ensure default mode and status hint  # 1
 
-        def _set_mode_hint_status(self, mode: str) -> None:  # 0
-            hints = {  # 0
-                'sl': 'Mode 1 — LMB: anchor two peaks to analyze the chain with S/L clustering and Fibonacci windows.',
-                # 0
-                'ratio': 'Mode 2 — RMB: collect a chain to inspect neighboring segment ratios; list rows highlight segment pairs.',
-                # 0
-                'polygon': 'Mode 3 — MMB: add vertices to build polygons, close on the first point, use Z/Y to undo or redo.',
-                # 0
-            }  # 0
-            text = hints.get(mode)  # 0
-            if text:  # 0
-                self.status.config(text=text)  # 0
-        tk.Button(controls, text='Clear selection', command=self.clear_selection).grid(row=1, column=1, sticky='ew', padx=4, pady=2)  # 3
-        tk.Label(controls, text='Selection thickness (px):').grid(row=2, column=0, sticky='w', padx=4, pady=(8, 2))  # 4
-        self.entBand = tk.Spinbox(controls, from_=2, to=100, width=6, command=self._onBand)  # 2
-        self.entBand.delete(0, 'end'); self.entBand.insert(0, str(int(self.max_dist_line)))  # 4
-        self.entBand.grid(row=2, column=1, sticky='ew', padx=4, pady=(8, 2))  # 1
-# 2
-        self.status = tk.Label(right, text='', anchor='w')  # 4
-        self.status.grid(row=1, column=0, sticky='ew', padx=6, pady=(0, 10))  # 2
-# 4
-        # 2
-        self.lst_header = tk.Label(right, text='Found words (Fibonacci subsegments)')  # 4
-        self.lst_header.grid(row=2, column=0, sticky='w', padx=6, pady=(0, 2))  # 4
-        self.lst = tk.Listbox(right, width=66, height=22)  # 4
-        self.lst.grid(row=3, column=0, sticky='nsew', padx=6)  # 4
-        right.rowconfigure(3, weight=1)  # 2
+        self.lst_header = tk.Label(right, text='Found words (Fibonacci subsegments)')  # 1
+        self.lst_header.grid(row=2, column=0, sticky='w', padx=6, pady=(0, 2))  # 1
+        self.lst = tk.Listbox(right, width=66, height=22)  # 1
+        self.lst.grid(row=3, column=0, sticky='nsew', padx=6)  # 1
+        right.rowconfigure(3, weight=1)  # 1
         self.lst.bind('<<ListboxSelect>>', self._on_list_select)  # 1
-# 2
-        # 5
-        self.lbl_ratio = tk.Label(right, text='Average L/S along chain: —')  # 3
-        self.lbl_ratio.grid(row=4, column=0, sticky='w', padx=6, pady=(6, 4))  # 5
-        self.lbl_ratio_neigh = tk.Label(right, text='Average neighboring segment ratio: —')  # 2
-        self.lbl_ratio_neigh.grid(row=5, column=0, sticky='w', padx=6, pady=(2, 8))  # 2
-# 3
-        # 2
-        tk.Label(right, text='S/L sequence (full):').grid(row=6, column=0, sticky='w', padx=6, pady=(4, 2))  # 4
-        self.txt_sl = tk.Text(right, height=6, wrap='word')  # 4
-        self.txt_sl.grid(row=7, column=0, sticky='ew', padx=6, pady=(0, 4))  # 3
-        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # 3
-# 4
-        # 2
+
+        self.lbl_ratio = tk.Label(right, text='Average L/S along chain: —')  # 1
+        self.lbl_ratio.grid(row=4, column=0, sticky='w', padx=6, pady=(6, 4))  # 1
+        self.lbl_ratio_neigh = tk.Label(right, text='Average neighboring segment ratio: —')  # 1
+        self.lbl_ratio_neigh.grid(row=5, column=0, sticky='w', padx=6, pady=(2, 8))  # 1
+
+        tk.Label(right, text='S/L sequence (full):').grid(row=6, column=0, sticky='w', padx=6, pady=(4, 2))  # 1
+        self.txt_sl = tk.Text(right, height=6, wrap='word')  # 1
+        self.txt_sl.grid(row=7, column=0, sticky='ew', padx=6, pady=(0, 4))  # 1
+        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # 1
+
         tk.Label(right, text='Prefixes of "fib-words" (L→LS, S→L)').grid(row=8, column=0, sticky='w', padx=6, pady=(8, 2))  # 1
         self.txt_words = tk.Text(right, height=10, state='disabled')  # 1
-        self.txt_words.grid(row=9, column=0, sticky='ew', padx=6, pady=(0, 8))  # 4
+        self.txt_words.grid(row=9, column=0, sticky='ew', padx=6, pady=(0, 8))  # 1
 # 5
         self.fig = plt.Figure(figsize=(9.6, 6.6)); self.ax = self.fig.add_subplot(111)  # 4
         self.ax.axis('off')  # 5
@@ -525,6 +480,14 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
         if mode not in ('sl', 'ratio', 'polygon'):  # 4
             return  # 1
         self.analysis_mode = mode  # 3
+        hints = {  # 1
+            'sl': 'Chain mode: Left Click to anchor two peaks and analyze the Fibonacci split.',  # 1
+            'ratio': 'Ratio mode: Left Click to anchor two peaks and inspect neighboring segment ratios.',  # 1
+            'polygon': 'Polygon mode: Left Click to add vertices, close on the first point, use Z/Y to undo/redo.',  # 1
+        }  # 1
+        hint = hints.get(mode)  # 1
+        if hint and hasattr(self, 'status'):  # 1
+            self.status.config(text=hint)  # 1
         for key, btn in self.mode_buttons.items():  # 2
             relief = 'sunken' if key == mode else 'raised'  # 1
             btn.config(relief=relief)  # 1
@@ -779,7 +742,7 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
 # 4
     def _reset_polygon_history(self) -> None:  # 4
         self._polygon_history = [self._capture_polygon_state()]  # 2
-        self._polygon_redo.clear()  # 4
+        self._on_polygon_redo.clear()  # 4
 # 4
     def _record_polygon_state(self) -> None:  # 4
         state = self._capture_polygon_state()  # 4
