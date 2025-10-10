@@ -34,7 +34,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # 2
 from matplotlib.patches import Circle  # 4
 # 2
 from preproc import PreprocSettings, load_grayscale_with_preproc  # 36
-
+if not hasattr(tk, "Notebook") and hasattr(tk, "Notebook"):  # 41
+    tk.Notebook = ttk.Notebook  # type: ignore[attr-defined]
 
 class _Tooltip:  # 0
     def __init__(self, widget: tk.Widget, text: str, *, delay: int = 400):  # 0
