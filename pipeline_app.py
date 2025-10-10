@@ -177,7 +177,7 @@ class TabbedPipelineApp(tk.Tk):  # 144
             justify="left",  # 177
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))  # 178
 # 179
-        ttk.Label(header, text="by Roynik 2025 v1.5", style="Byline.TLabel").grid(  # 180
+        ttk.Label(header, text="by Roynik 2025 v1.6", style="Byline.TLabel").grid(  # 180
             row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)  # 181
         )  # 182
         ttk.Button(header, text="Help", command=self._show_help).grid(  # 183
