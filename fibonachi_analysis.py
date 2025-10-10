@@ -25,7 +25,7 @@ from typing import Optional, Tuple, List, Dict  # 5
 import numpy as np  # 1
 from PIL import Image  # 2
 import tkinter as tk  # 2
-from tkinter import filedialog, messagebox  # 2
+from tkinter import filedialog, messagebox, ttk
 # 1
 import matplotlib  # 1
 matplotlib.use('TkAgg')  # 5
@@ -34,7 +34,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # 2
 from matplotlib.patches import Circle  # 4
 # 2
 from preproc import PreprocSettings, load_grayscale_with_preproc  # 36
-if not hasattr(tk, "Notebook") and hasattr(tk, "Notebook"):  # 41
+if not hasattr(tk, "Notebook") and hasattr(ttk, "Notebook"):  # 41
     tk.Notebook = ttk.Notebook  # type: ignore[attr-defined]
 
 class _Tooltip:  # 0
