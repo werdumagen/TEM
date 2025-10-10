@@ -417,27 +417,51 @@ class FibonacciAnalysisFrame(tk.Frame):  # 1
         self.status = tk.Label(right, text='', anchor='w')  # 1
         self.status.grid(row=1, column=0, sticky='ew', padx=6, pady=(0, 10))  # 1
         self._set_analysis_mode('sl')  # ensure default mode and status hint  # 1
-
         self.lst_header = tk.Label(right, text='Found words (Fibonacci subsegments)')  # 1
         self.lst_header.grid(row=2, column=0, sticky='w', padx=6, pady=(0, 2))  # 1
-        self.lst = tk.Listbox(right, width=66, height=22)  # 1
-        self.lst.grid(row=3, column=0, sticky='nsew', padx=6)  # 1
+
+        self.results_notebook = tk.Notebook(right)  # 1
+        self.results_notebook.grid(row=3, column=0, sticky='nsew', padx=6, pady=(0, 8))  # 1
         right.rowconfigure(3, weight=1)  # 1
+
+        tab_subsegments = ttk.Frame(self.results_notebook)  # 1
+        tab_subsegments.grid_columnconfigure(0, weight=1)  # 1
+        tab_subsegments.grid_rowconfigure(0, weight=1)  # 1
+
+        tab_prefixes = ttk.Frame(self.results_notebook)  # 1
+        tab_prefixes.grid_columnconfigure(0, weight=1)  # 1
+        tab_prefixes.grid_rowconfigure(1, weight=1)  # 1
+
+        self.results_notebook.add(tab_subsegments, text='Subsegments')  # 1
+        self.results_notebook.add(tab_prefixes, text='Fib prefixes')  # 1
+
+        self.lst = tk.Listbox(tab_subsegments, width=66, height=22)  # 1
+        self.lst.grid(row=0, column=0, sticky='nsew')  # 1
         self.lst.bind('<<ListboxSelect>>', self._on_list_select)  # 1
 
-        self.lbl_ratio = tk.Label(right, text='Average L/S along chain: —')  # 1
-        self.lbl_ratio.grid(row=4, column=0, sticky='w', padx=6, pady=(6, 4))  # 1
-        self.lbl_ratio_neigh = tk.Label(right, text='Average neighboring segment ratio: —')  # 1
-        self.lbl_ratio_neigh.grid(row=5, column=0, sticky='w', padx=6, pady=(2, 8))  # 1
+        self.lbl_ratio = tk.Label(tab_subsegments, text='Average L/S along chain: —')  # 1
+        self.lbl_ratio.grid(row=1, column=0, sticky='w', pady=(6, 4))  # 1
+        self.lbl_ratio_neigh = tk.Label(tab_subsegments, text='Average neighboring segment ratio: —')  # 1
+        self.lbl_ratio_neigh.grid(row=2, column=0, sticky='w', pady=(2, 8))  # 1
 
-        tk.Label(right, text='S/L sequence (full):').grid(row=6, column=0, sticky='w', padx=6, pady=(4, 2))  # 1
-        self.txt_sl = tk.Text(right, height=6, wrap='word')  # 1
-        self.txt_sl.grid(row=7, column=0, sticky='ew', padx=6, pady=(0, 4))  # 1
+        tk.Label(tab_subsegments, text='S/L sequence (full):').grid(row=3, column=0, sticky='w', pady=(4, 2))  # 1
+        self.txt_sl = tk.Text(tab_subsegments, height=6, wrap='word')  # 1
+        self.txt_sl.grid(row=4, column=0, sticky='ew', pady=(0, 4))  # 1
         self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # 1
 
-        tk.Label(right, text='Prefixes of "fib-words" (L→LS, S→L)').grid(row=8, column=0, sticky='w', padx=6, pady=(8, 2))  # 1
-        self.txt_words = tk.Text(right, height=10, state='disabled')  # 1
-        self.txt_words.grid(row=9, column=0, sticky='ew', padx=6, pady=(0, 8))  # 1
+        prefixes_header = tk.Label(tab_prefixes, text='Prefixes of "fib-words" (L→LS, S→L)')  # 1
+        prefixes_header.grid(row=0, column=0, sticky='w', pady=(0, 4))  # 1
+
+        prefixes_frame = tk.Frame(tab_prefixes)  # 1
+        prefixes_frame.grid(row=1, column=0, sticky='nsew')  # 1
+        prefixes_frame.grid_columnconfigure(0, weight=1)  # 1
+        prefixes_frame.grid_rowconfigure(0, weight=1)  # 1
+
+        self.txt_words = tk.Text(prefixes_frame, height=10, state='disabled')  # 1
+        self.txt_words.grid(row=0, column=0, sticky='nsew')  # 1
+        scroll_words = tk.Scrollbar(prefixes_frame, orient='vertical', command=self.txt_words.yview)  # 1
+        scroll_words.grid(row=0, column=1, sticky='ns')  # 1
+        self.txt_words.configure(yscrollcommand=scroll_words.set)  # 1
 # 5
         self.fig = plt.Figure(figsize=(9.6, 6.6)); self.ax = self.fig.add_subplot(111)  # 4
         self.ax.axis('off')  # 5
