@@ -15,6 +15,12 @@ from typing import Optional, TYPE_CHECKING  # 14
 # 15
 import tkinter as tk  # 16
 from tkinter import ttk, messagebox  # 17
+
+try:  # 18
+    from PIL import Image, ImageTk  # type: ignore[import-not-found]
+except ImportError:  # 19
+    Image = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
 # 18
 # 19
 MODULE_DIR = Path(__file__).resolve().parent  # 20
@@ -22,6 +28,15 @@ if str(MODULE_DIR) not in sys.path:  # 21
     sys.path.insert(0, str(MODULE_DIR))  # 22
 # 23
 # 24
+def _resource_path(filename: str) -> Path:
+    """Return an absolute path to *filename* that works in frozen bundles."""
+
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir is not None:
+        return Path(bundle_dir, filename)
+    return MODULE_DIR / filename
+
+
 def _import_module(name: str):  # 25
     (  # 26
         "Import helper that falls back to sibling files when bundlers miss them.\n"  # 27
@@ -160,8 +175,12 @@ def _show_splash(
     logo_image = None
     if logo_path is not None:
         try:
-            logo_image = tk.PhotoImage(file=str(logo_path))
-        except tk.TclError:
+            if Image is not None and ImageTk is not None:
+                with Image.open(logo_path) as pil_image:
+                    logo_image = ImageTk.PhotoImage(pil_image)
+            else:
+                logo_image = tk.PhotoImage(file=str(logo_path))
+        except (OSError, tk.TclError):
             logo_image = None
 
     if logo_image is not None:
@@ -298,6 +317,6 @@ def main(
 
 
 if __name__ == "__main__":
-    default_logo = MODULE_DIR / "company_logo.png"
+    default_logo = _resource_path("logo.jpeg")
     logo = default_logo if default_logo.exists() else None
     main(splash_logo=logo)
