@@ -141,16 +141,69 @@ class PipelineController:  # 86
             messagebox.showerror("Error", f"Failed to load data into the analyzer:\n{exc}")  # 141
 # 142
 # 143
+def _show_splash(
+    root: tk.Tk,
+    *,
+    logo_path: Path | str | None = None,
+    duration_ms: int = 3000,
+    background: str = "#ffffff",
+) -> None:
+    """Show a centered splash screen before the main window becomes visible."""
+
+    splash = tk.Toplevel(root)
+    splash.overrideredirect(True)
+    splash.configure(background=background)
+
+    frame = tk.Frame(splash, background=background, padx=32, pady=28)
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    logo_image = None
+    if logo_path is not None:
+        try:
+            logo_image = tk.PhotoImage(file=str(logo_path))
+        except tk.TclError:
+            logo_image = None
+
+    if logo_image is not None:
+        logo_label = tk.Label(frame, image=logo_image, background=background)
+        logo_label.image = logo_image  # keep a reference to avoid garbage collection
+        logo_label.pack()
+
+    tk.Label(
+        frame,
+        text="Loading SAED Symmetry — Suite…",
+        background=background,
+        font=("TkDefaultFont", 11),
+        pady=12,
+    ).pack()
+
+    splash.update_idletasks()
+    width = splash.winfo_reqwidth()
+    height = splash.winfo_reqheight()
+    x = (splash.winfo_screenwidth() // 2) - (width // 2)
+    y = (splash.winfo_screenheight() // 2) - (height // 2)
+    splash.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _close_splash() -> None:
+        if splash.winfo_exists():
+            splash.destroy()
+        root.deiconify()
+
+    root.after(duration_ms, _close_splash)
+
+
 class TabbedPipelineApp(tk.Tk):  # 144
     (  # 145
         "Main window containing every stage of the workflow.\n"  # 146
     )  # 147
 # 148
-    def __init__(self):  # 149
+    def __init__(self, *, show_initially: bool = True):  # 149
         super().__init__()  # 150
-        self.title("SAED Symmetry — Suite")  # 151
-        self.geometry("1520x980")  # 152
-        self.resizable(True, True)  # 153
+        if not show_initially:  # 151
+            self.withdraw()  # 152
+        self.title("SAED Symmetry — Suite")  # 153
+        self.geometry("1520x980")  # 154
+        self.resizable(True, True)  # 155
 # 154
         style = ttk.Style(self)  # 155
         try:  # 156
@@ -177,7 +230,7 @@ class TabbedPipelineApp(tk.Tk):  # 144
             justify="left",  # 177
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))  # 178
 # 179
-        ttk.Label(header, text="by Roynik 2025 v1.6", style="Byline.TLabel").grid(  # 180
+        ttk.Label(header, text="by Roynik 2025 v1.5", style="Byline.TLabel").grid(  # 180
             row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)  # 181
         )  # 182
         ttk.Button(header, text="Help", command=self._show_help).grid(  # 183
@@ -232,9 +285,19 @@ class TabbedPipelineApp(tk.Tk):  # 144
             anchor="e", pady=(20, 0)  # 232
         )  # 233
 # 234
-def main() -> None:  # 235
-    app = TabbedPipelineApp()  # 236
-    app.mainloop()  # 237
-# 238
-if __name__ == "__main__":  # 239
-    main()  # 240
+def main(
+    *,
+    splash_logo: Path | str | None = None,
+    splash_duration_ms: int = 3000,
+) -> None:
+    """Run the pipeline app, optionally showing a splash screen first."""
+
+    app = TabbedPipelineApp(show_initially=False)
+    _show_splash(app, logo_path=splash_logo, duration_ms=splash_duration_ms)
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    default_logo = MODULE_DIR / "company_logo.png"
+    logo = default_logo if default_logo.exists() else None
+    main(splash_logo=logo)
