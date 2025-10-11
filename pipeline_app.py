@@ -186,7 +186,22 @@ def _show_splash(
     if logo_image is not None:
         logo_label = tk.Label(frame, image=logo_image, background=background)
         logo_label.image = logo_image  # keep a reference to avoid garbage collection
-        logo_label.pack()
+        logo_label.pack(padx=32, pady=24)
+    else:
+        # When bundling without Pillow support (e.g. frozen EXE), loading JPEG logos
+        # falls back to the Tk image loader which cannot open them.  In that case the
+        # splash window used to shrink to a 1x1 pixel rectangle and effectively remain
+        # invisible.  Display a textual fallback so that the splash is always visible.
+        tk.Label(
+            frame,
+            text="SAED Symmetry\nLaunching…",
+            justify="center",
+            background=background,
+            foreground="#ffffff",
+            font=("TkDefaultFont", 18, "bold"),
+            padx=36,
+            pady=28,
+        ).pack()
 
     splash.update_idletasks()
     width = splash.winfo_reqwidth()
@@ -309,6 +324,6 @@ def main(
 
 
 if __name__ == "__main__":
-    default_logo = _resource_path("logo.jpeg")
+    default_logo = _resource_path("logo.png")
     logo = default_logo if default_logo.exists() else None
     main(splash_logo=logo) #1
