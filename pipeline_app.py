@@ -190,10 +190,7 @@ def _show_splash(
 
     tk.Label(
         frame,
-        text="Loading SAED Symmetry — Suite…",
-        background=background,
-        font=("TkDefaultFont", 11),
-        pady=12,
+        background=background
     ).pack()
 
     splash.update_idletasks()
