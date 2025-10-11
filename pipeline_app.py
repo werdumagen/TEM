@@ -316,4 +316,4 @@ def main(
 if __name__ == "__main__":
     default_logo = _resource_path("logo.jpeg")
     logo = default_logo if default_logo.exists() else None
-    main(splash_logo=logo)
+    main(splash_logo=logo) #1
