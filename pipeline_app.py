@@ -161,7 +161,7 @@ def _show_splash(
     *,
     logo_path: Path | str | None = None,
     duration_ms: int = 3000,
-    background: str = "#ffffff",
+    background: str = "#59c6f1",
 ) -> None:
     """Show a centered splash screen before the main window becomes visible."""
 
@@ -169,7 +169,7 @@ def _show_splash(
     splash.overrideredirect(True)
     splash.configure(background=background)
 
-    frame = tk.Frame(splash, background=background, padx=32, pady=28)
+    frame = tk.Frame(splash, background=background)
     frame.pack(fill=tk.BOTH, expand=True)
 
     logo_image = None
@@ -187,11 +187,6 @@ def _show_splash(
         logo_label = tk.Label(frame, image=logo_image, background=background)
         logo_label.image = logo_image  # keep a reference to avoid garbage collection
         logo_label.pack()
-
-    tk.Label(
-        frame,
-        background=background
-    ).pack()
 
     splash.update_idletasks()
     width = splash.winfo_reqwidth()
