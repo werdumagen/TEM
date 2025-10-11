@@ -31,10 +31,27 @@ if str(MODULE_DIR) not in sys.path:  # 21
 def _resource_path(filename: str) -> Path:
     """Return an absolute path to *filename* that works in frozen bundles."""
 
+    candidates: list[Path] = []
+
     bundle_dir = getattr(sys, "_MEIPASS", None)
     if bundle_dir is not None:
-        return Path(bundle_dir, filename)
-    return MODULE_DIR / filename
+        candidates.append(Path(bundle_dir, filename))
+
+    # When frozen with PyInstaller the resources can also live next to the
+    # executable.  Checking ``sys.executable`` keeps the image available when the
+    # splash screen runs from the packaged binary.
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / filename)
+
+    candidates.append(MODULE_DIR / filename)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    # Fall back to the module directory when nothing was found so that the
+    # caller can still perform its own existence checks.
+    return candidates[-1]
 
 
 def _import_module(name: str):  # 25
@@ -256,7 +273,7 @@ class TabbedPipelineApp(tk.Tk):  # 144
             justify="left",  # 177
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))  # 178
 # 179
-        ttk.Label(header, text="by Roynik 2025 v1.6 ", style="Byline.TLabel").grid(  # 180
+        ttk.Label(header, text="by RL 9-11 2025 v2.61 ", style="Byline.TLabel").grid(  # 180
             row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)  # 181
         )  # 182
         ttk.Button(header, text="Help", command=self._show_help).grid(  # 183
