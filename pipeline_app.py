@@ -17,10 +17,15 @@ import textwrap
 import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
+
+# --- ИЗМЕНЕНИЕ: Добавлен импорт winreg для работы с реестром Windows ---
+if sys.platform == "win32":
+    import winreg
+# -----------------------------------------------------------------
 
 try:
     from PIL import Image, ImageTk  # type: ignore[import-not-found]
@@ -29,148 +34,17 @@ except ImportError:
     ImageTk = None  # type: ignore[assignment]
 
 MODULE_DIR = Path(__file__).resolve().parent
-LICENSE_STORAGE = Path.home() / ".saed_suite_license.json"
 
-# --- ОБФУСКАЦИЯ СЕКРЕТА ---
+# --- ИЗМЕНЕНИЕ: Путь к файлу лицензии теперь используется только как fallback ---
+LICENSE_STORAGE_PATH = Path.home() / ".saed_suite_license.json"
+# -------------------------------------------------------------------------
+
 _LSP1 = "Q2hhbmdlTWVUb0FQcml"
 _LSP2 = "2YXRlU2VjcmV0"
 LICENSE_SECRET = base64.b64decode(_LSP1 + _LSP2).decode("utf-8")
-# ---------------------------
 
 TRIAL_DAYS = 3
 
-# +++ НОВЫЙ КЛАСС ДЛЯ МАСКИРОВАННОГО ВВОДА КЛЮЧА +++
-
-class MaskedEntry(ttk.Entry):
-    """An entry widget that enforces a mask for license key input."""
-
-    def __init__(self, master=None, **kwargs):
-        super().__init__(master, **kwargs)
-
-        self.mask = "XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
-        self.char_positions = [i for i, char in enumerate(self.mask) if char == 'X']
-        self.literal_positions = {i: char for i, char in enumerate(self.mask) if char != 'X'}
-
-        self.var = tk.StringVar()
-        self.configure(textvariable=self.var)
-
-        self._last_value = ''
-        self.var.trace_add("write", self._on_write)
-
-        self.bind("<FocusIn>", self._on_focus_in)
-        self.bind("<<Paste>>", self._on_paste)
-
-        self._format_to_mask("")
-
-    def _on_paste(self, _event=None):
-        """Handle pasting from clipboard."""
-        try:
-            clipboard_content = self.clipboard_get()
-            self._format_to_mask(clipboard_content)
-        except tk.TclError:
-            pass  # Clipboard is empty
-        return "break"  # Prevent default paste action
-
-    def _on_focus_in(self, _event=None):
-        """When the widget gets focus, move cursor to the first empty spot."""
-        raw_content = self._get_raw_content()
-        pos = len(raw_content)
-        self._set_cursor_at_char_pos(pos)
-
-    def _get_raw_content(self) -> str:
-        """Get only the user-entered characters, without the mask literals."""
-        return "".join(char for i, char in enumerate(self.var.get())
-                       if i in self.char_positions and char != 'X')
-
-    def _format_to_mask(self, text: str):
-        """Format the provided text to fit the mask."""
-        # Sanitize input: keep only valid hex characters
-        sanitized = "".join(filter(lambda c: c in "0123456789ABCDEFabcdef", text.upper()))
-        sanitized = sanitized[:len(self.char_positions)]
-
-        # Build the new string with the mask
-        new_value = list(self.mask)
-        for i, char_pos in enumerate(self.char_positions):
-            if i < len(sanitized):
-                new_value[char_pos] = sanitized[i]
-            else:
-                new_value[char_pos] = 'X' # Placeholder for empty spots
-
-        self._last_value = "".join(new_value)
-        self.var.set(self._last_value)
-
-        # Set cursor to the end of the entered text
-        self._set_cursor_at_char_pos(len(sanitized))
-
-    def _set_cursor_at_char_pos(self, char_index: int):
-        """Move the Tkinter cursor to the correct position based on character index."""
-        if 0 <= char_index < len(self.char_positions):
-            cursor_pos = self.char_positions[char_index]
-        else:
-            cursor_pos = self.char_positions[-1] + 1
-        self.icursor(cursor_pos)
-
-    def _on_write(self, *_args):
-        """Called whenever the StringVar changes."""
-        current_value = self.var.get()
-        if current_value == self._last_value:
-            return
-
-        raw_content = self._get_raw_content()
-        self._format_to_mask(raw_content)
-
-    def get_key(self) -> str:
-        """Return the clean, user-entered key."""
-        return self._get_raw_content()
-
-# +++ НОВОЕ ДИАЛОГОВОЕ ОКНО ДЛЯ ВВОДА КЛЮЧА +++
-
-class LicenseDialog(tk.Toplevel):
-    """A custom dialog for entering and validating a license key."""
-
-    def __init__(self, parent, title, message):
-        super().__init__(parent)
-        self.transient(parent)
-        self.grab_set()
-        self.title(title)
-        self.resizable(False, False)
-        self.configure(padx=24, pady=24)
-
-        self.result = None
-
-        ttk.Label(self, text=message, wraplength=360, justify="left").pack(anchor="w", pady=(0, 12))
-
-        self.entry = MaskedEntry(self, width=32, font=("Courier", 10))
-        self.entry.pack(fill=tk.X, pady=(4, 8))
-        self.entry.focus_set()
-
-        self.feedback_var = tk.StringVar(value="")
-        feedback_label = ttk.Label(self, textvariable=self.feedback_var, foreground="#aa0000", wraplength=360)
-        feedback_label.pack(anchor="w", pady=(0, 16))
-
-        actions = ttk.Frame(self)
-        actions.pack(fill=tk.X)
-
-        ttk.Button(actions, text="Activate", command=self._on_activate, style="Accent.TButton").pack(side=tk.RIGHT)
-        ttk.Button(actions, text="Cancel", command=self._on_cancel).pack(side=tk.RIGHT, padx=(0, 8))
-
-        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
-        self.wait_window(self)
-
-    def _on_activate(self):
-        key = self.entry.get_key()
-        if len(key) != 24:
-            self.feedback_var.set("Please fill in the entire license key.")
-            return
-
-        self.result = self.entry.var.get() # Return with hyphens
-        self.destroy()
-
-    def _on_cancel(self):
-        self.result = None
-        self.destroy()
-
-# -----------------------------------------------------------------
 
 def _resource_path(filename: str) -> Path:
     """Return an absolute path to *filename* that works in frozen bundles."""
@@ -203,8 +77,7 @@ def _import_module(name: str):
             if package_dir is not None:
                 spec_kwargs["submodule_search_locations"] = [str(package_dir)]
             spec = importlib.util.spec_from_file_location(name, module_path, **spec_kwargs)
-            if spec is None or spec.loader is None:
-                return None
+            if spec is None or spec.loader is None: return None
             module = importlib.util.module_from_spec(spec)
             sys.modules[name] = module
             spec.loader.exec_module(module)
@@ -215,49 +88,83 @@ def _import_module(name: str):
                 candidate = base / f"{name}{suffix}"
                 if candidate.exists():
                     module = _attempt_load(candidate)
-                    if module is not None:
-                        return module
+                    if module is not None: return module
             package_dir = base / name
             if package_dir.is_dir():
                 for suffix in (".py", ".pyc"):
                     init_file = package_dir / f"__init__{suffix}"
                     if init_file.exists():
                         module = _attempt_load(init_file, package_dir=package_dir)
-                        if module is not None:
-                            return module
+                        if module is not None: return module
         raise exc
 
 
 class LicenseManager:
-    """Handle trial and permanent license state."""
-    def __init__(self, path: Path = LICENSE_STORAGE, *, trial_days: int = TRIAL_DAYS):
-        self.path = path
+    """Handle trial and permanent license state using Windows Registry or a fallback file."""
+
+    REG_KEY = r"Software\SAEDSymmetrySuite"
+
+    def __init__(self, *, trial_days: int = TRIAL_DAYS):
         self.trial_days = trial_days
         self._data = self._load()
 
     def _default_data(self) -> dict[str, Optional[str]]:
         return {"trial_start": self._now().isoformat(), "license_key": None}
 
+    # --- ИЗМЕНЕНИЕ: Логика загрузки теперь зависит от ОС ---
     def _load(self) -> dict[str, Optional[str]]:
-        if self.path.exists():
+        data = None
+        # Попытка чтения из реестра Windows
+        if sys.platform == "win32":
             try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    raise ValueError("Invalid license data structure")
-                return data
-            except (OSError, json.JSONDecodeError, ValueError):
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.REG_KEY, 0, winreg.KEY_READ) as key:
+                    trial_start, _ = winreg.QueryValueEx(key, "trial_start")
+                    license_key, _ = winreg.QueryValueEx(key, "license_key")
+                    data = {"trial_start": trial_start, "license_key": license_key or None}
+            except FileNotFoundError:
+                pass  # Ключ не найден, это первый запуск
+            except OSError:
+                # Другие ошибки чтения реестра, переключаемся на файл
                 pass
-        data = self._default_data()
-        self._save(data)
+
+        # Если не Windows или реестр не удался, читаем из файла
+        if data is None:
+            if LICENSE_STORAGE_PATH.exists():
+                try:
+                    loaded_data = json.loads(LICENSE_STORAGE_PATH.read_text(encoding="utf-8"))
+                    if isinstance(loaded_data, dict):
+                        data = loaded_data
+                except (OSError, json.JSONDecodeError, ValueError):
+                    pass
+
+        # Если ничего не загрузилось, создаем данные по умолчанию и сохраняем
+        if data is None:
+            data = self._default_data()
+            self._save(data)
+
         return data
 
+    # --- ИЗМЕНЕНИЕ: Логика сохранения теперь зависит от ОС ---
     def _save(self, data: dict[str, Optional[str]]) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        self.path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        # Попытка записи в реестр Windows
+        if sys.platform == "win32":
+            try:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.REG_KEY) as key:
+                    winreg.SetValueEx(key, "trial_start", 0, winreg.REG_SZ, data["trial_start"] or "")
+                    winreg.SetValueEx(key, "license_key", 0, winreg.REG_SZ, data["license_key"] or "")
+                return  # Успешно сохранено в реестр
+            except OSError:
+                # Ошибка записи в реестр, переключаемся на файл
+                pass
 
+        # Fallback: сохранение в файл
+        try:
+            LICENSE_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            LICENSE_STORAGE_PATH.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass  # Не удалось сохранить даже в файл
+
+    # --- helpers (без изменений) -------------------------------------
     def _now(self) -> datetime:
         return datetime.utcnow()
 
@@ -285,6 +192,7 @@ class LicenseManager:
         ).hexdigest()[:8].upper()
         return secrets.compare_digest(checksum, expected)
 
+    # --- public API (без изменений) ----------------------------------
     def has_valid_license(self) -> bool:
         key = self._data.get("license_key")
         if not key: return False
@@ -333,8 +241,7 @@ class LicenseManager:
             "Enter a license key to unlock the full version permanently."
         )
 
-# ... (Остальной код классов PipelineController, _show_splash, TabbedPipelineApp без изменений)
-
+# ... (Остальной код файла pipeline_app.py без изменений)
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from temn import SAEDLauncherFrame
     from saed_editor import PointEditor
@@ -547,10 +454,7 @@ class TabbedPipelineApp(tk.Tk):
 
     def _prompt_for_license(self) -> None:
         prompt_message = "Enter the permanent license key provided by the publisher:"
-        # Заменяем simpledialog на наш новый класс
-        dialog = LicenseDialog(self, "License Key", prompt_message)
-        key = dialog.result
-
+        key = simpledialog.askstring("License Key", prompt_message, parent=self)
         if key is None:
             return
         try:
@@ -598,30 +502,54 @@ class TabbedPipelineApp(tk.Tk):
 
 
 def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
-    """Uses the new custom LicenseDialog for a better user experience."""
-    # Создаем временное невидимое окно-родитель
     root = tk.Tk()
-    root.withdraw()
+    root.title("Trial Expired")
+    root.geometry("420x240")
+    root.resizable(False, False)
+    root.configure(padx=24, pady=24)
 
     message = (
         "The 3-day trial period has ended. "
         "Please enter a valid license key to unlock the full version permanently."
     )
-    dialog = LicenseDialog(root, "Trial Expired", message)
-    key = dialog.result
+    ttk.Label(root, text=message, wraplength=360, justify="left").pack(anchor="w")
 
-    activated = False
-    if key:
+    entry = ttk.Entry(root)
+    entry.pack(fill=tk.X, pady=(16, 8))
+    entry.focus_set()
+
+    feedback_var = tk.StringVar(value="")
+    feedback_label = ttk.Label(root, textvariable=feedback_var, foreground="#aa0000", wraplength=360)
+    feedback_label.pack(anchor="w")
+
+    actions = ttk.Frame(root)
+    actions.pack(fill=tk.X, pady=(18, 0))
+
+    result = {"activated": False}
+
+    def _activate() -> None:
+        key = entry.get().strip()
+        if not key:
+            feedback_var.set("Please enter a license key before continuing.")
+            return
         try:
             license_manager.register_license_key(key)
-            messagebox.showinfo("License Key", "License activated successfully. Thank you!", parent=root)
-            activated = True
         except ValueError:
-            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.", parent=root)
-            activated = False # Рекурсивный вызов убран для простоты
+            feedback_var.set("The provided license key is invalid. Check the code and try again.")
+            return
+        messagebox.showinfo("License Key", "License activated successfully. Thank you!")
+        result["activated"] = True
+        root.destroy()
 
-    root.destroy()
-    return activated
+    def _quit() -> None:
+        root.destroy()
+
+    ttk.Button(actions, text="Activate", command=_activate, style="Accent.TButton").pack(side=tk.RIGHT)
+    ttk.Button(actions, text="Quit", command=_quit).pack(side=tk.RIGHT, padx=(0, 8))
+
+    root.protocol("WM_DELETE_WINDOW", _quit)
+    root.mainloop()
+    return result["activated"]
 
 
 def main(
