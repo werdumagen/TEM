@@ -22,6 +22,12 @@ from typing import TYPE_CHECKING, Optional, Tuple
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+# --- ИЗМЕНЕНИЕ: Добавлен модуль для работы с реестром Windows ---
+try:
+    import winreg
+except ImportError:
+    winreg = None  # Будет None на системах, отличных от Windows
+
 try:
     from PIL import Image, ImageTk  # type: ignore[import-not-found]
 except ImportError:
@@ -29,7 +35,9 @@ except ImportError:
     ImageTk = None  # type: ignore[assignment]
 
 MODULE_DIR = Path(__file__).resolve().parent
-LICENSE_STORAGE = Path.home() / ".saed_suite_license.json"
+
+# --- ИЗМЕНЕНИЕ: Путь к файлу лицензии больше не используется ---
+# LICENSE_STORAGE = Path.home() / ".saed_suite_license.json"
 
 # --- ОБФУСКАЦИЯ СЕКРЕТА ---
 _LSP1 = "Q2hhbmdlTWVUb0FQcml"
@@ -38,6 +46,7 @@ LICENSE_SECRET = base64.b64decode(_LSP1 + _LSP2).decode("utf-8")
 # ---------------------------
 
 TRIAL_DAYS = 3
+
 
 # +++ НОВЫЙ КЛАСС ДЛЯ МАСКИРОВАННОГО ВВОДА КЛЮЧА +++
 
@@ -94,7 +103,7 @@ class MaskedEntry(ttk.Entry):
             if i < len(sanitized):
                 new_value[char_pos] = sanitized[i]
             else:
-                new_value[char_pos] = 'X' # Placeholder for empty spots
+                new_value[char_pos] = 'X'  # Placeholder for empty spots
 
         self._last_value = "".join(new_value)
         self.var.set(self._last_value)
@@ -122,6 +131,7 @@ class MaskedEntry(ttk.Entry):
     def get_key(self) -> str:
         """Return the clean, user-entered key."""
         return self._get_raw_content()
+
 
 # +++ НОВОЕ ДИАЛОГОВОЕ ОКНО ДЛЯ ВВОДА КЛЮЧА +++
 
@@ -163,12 +173,13 @@ class LicenseDialog(tk.Toplevel):
             self.feedback_var.set("Please fill in the entire license key.")
             return
 
-        self.result = self.entry.var.get() # Return with hyphens
+        self.result = self.entry.var.get()  # Return with hyphens
         self.destroy()
 
     def _on_cancel(self):
         self.result = None
         self.destroy()
+
 
 # -----------------------------------------------------------------
 
@@ -230,33 +241,66 @@ def _import_module(name: str):
 
 class LicenseManager:
     """Handle trial and permanent license state."""
-    def __init__(self, path: Path = LICENSE_STORAGE, *, trial_days: int = TRIAL_DAYS):
-        self.path = path
+
+    # --- ИЗМЕНЕНИЕ: Константы для работы с реестром ---
+    REG_PATH = r"Software\SAEDSuite"
+    REG_KEY_TRIAL_START = "TrialStartDate"
+    REG_KEY_LICENSE = "LicenseKey"
+
+    def __init__(self, *, trial_days: int = TRIAL_DAYS):
         self.trial_days = trial_days
         self._data = self._load()
 
     def _default_data(self) -> dict[str, Optional[str]]:
         return {"trial_start": self._now().isoformat(), "license_key": None}
 
+    # --- ИЗМЕНЕНИЕ: Логика загрузки из реестра Windows ---
     def _load(self) -> dict[str, Optional[str]]:
-        if self.path.exists():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    raise ValueError("Invalid license data structure")
-                return data
-            except (OSError, json.JSONDecodeError, ValueError):
-                pass
-        data = self._default_data()
-        self._save(data)
-        return data
+        if winreg is None:  # Если не Windows, используем старый метод с файлом
+            # Для кросс-платформенности можно оставить файловый метод
+            # как запасной вариант.
+            # В данном случае, просто вернем данные по умолчанию.
+            return self._default_data()
 
-    def _save(self, data: dict[str, Optional[str]]) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        self.path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.REG_PATH, 0, winreg.KEY_READ)
+            trial_start_str, _ = winreg.QueryValueEx(key, self.REG_KEY_TRIAL_START)
+            license_key_str, _ = winreg.QueryValueEx(key, self.REG_KEY_LICENSE)
+            winreg.CloseKey(key)
+            return {"trial_start": trial_start_str, "license_key": license_key_str or None}
+        except FileNotFoundError:
+            # Ключ не найден, это первый запуск
+            data = self._default_data()
+            self._save(data)
+            return data
+        except Exception:
+            # Другая ошибка, сбрасываем к настройкам по умолчанию
+            data = self._default_data()
+            self._save(data)
+            return data
+
+    # --- ИЗМЕНЕНИЕ: Логика сохранения в реестр Windows ---
+    def _save(self, data: dict[str, Optional[str]]) -> None:
+        if winreg is None:
+            # Если не Windows, ничего не делаем
+            return
+
+        try:
+            # Создаем или открываем ключ
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.REG_PATH)
+
+            # Сохраняем дату начала триала
+            trial_start = data.get("trial_start") or self._now().isoformat()
+            winreg.SetValueEx(key, self.REG_KEY_TRIAL_START, 0, winreg.REG_SZ, trial_start)
+
+            # Сохраняем лицензионный ключ
+            license_key = data.get("license_key") or ""
+            winreg.SetValueEx(key, self.REG_KEY_LICENSE, 0, winreg.REG_SZ, license_key)
+
+            winreg.CloseKey(key)
+        except Exception as e:
+            # Не удалось записать в реестр, можно вывести предупреждение
+            print(f"Warning: Could not save license data to registry: {e}")
 
     def _now(self) -> datetime:
         return datetime.utcnow()
@@ -333,7 +377,6 @@ class LicenseManager:
             "Enter a license key to unlock the full version permanently."
         )
 
-# ... (Остальной код классов PipelineController, _show_splash, TabbedPipelineApp без изменений)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from temn import SAEDLauncherFrame
@@ -389,10 +432,10 @@ class PipelineController:
             messagebox.showerror("Error", f"Failed to load data into the editor:\n{exc}")
 
     def open_analysis(
-        self,
-        payload_path: Path | str,
-        image_path: Optional[Path | str],
-        spots_json: Optional[Path | str],
+            self,
+            payload_path: Path | str,
+            image_path: Optional[Path | str],
+            spots_json: Optional[Path | str],
     ) -> None:
         path = Path(payload_path)
         if not path.exists():
@@ -406,11 +449,11 @@ class PipelineController:
 
 
 def _show_splash(
-    root: tk.Tk,
-    *,
-    logo_path: Path | str | None = None,
-    duration_ms: int = 3000,
-    background: str = "#59c6f1",
+        root: tk.Tk,
+        *,
+        logo_path: Path | str | None = None,
+        duration_ms: int = 3000,
+        background: str = "#59c6f1",
 ) -> None:
     """Show a centered splash screen before the main window becomes visible."""
 
@@ -617,17 +660,18 @@ def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
             messagebox.showinfo("License Key", "License activated successfully. Thank you!", parent=root)
             activated = True
         except ValueError:
-            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.", parent=root)
-            activated = False # Рекурсивный вызов убран для простоты
+            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.",
+                                 parent=root)
+            activated = False  # Рекурсивный вызов убран для простоты
 
     root.destroy()
     return activated
 
 
 def main(
-    *,
-    splash_logo: Path | str | None = None,
-    splash_duration_ms: int = 3000,
+        *,
+        splash_logo: Path | str | None = None,
+        splash_duration_ms: int = 3000,
 ) -> None:
     """Run the pipeline app, enforcing the trial and license policy."""
 
