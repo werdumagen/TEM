@@ -433,8 +433,8 @@ class FibonacciAnalysisFrame(tk.Frame):
             # Триал-режим
             self.mode_buttons['ratio'].config(state=tk.DISABLED, relief='sunken')
             self.mode_buttons['polygon'].config(state=tk.DISABLED, relief='sunken')
-            HoverTooltip(self.mode_buttons['ratio'], 'Доступно в полной версии')
-            HoverTooltip(self.mode_buttons['polygon'], 'Доступно в полной версии')
+            HoverTooltip(self.mode_buttons['ratio'], 'Available in the full version')
+            HoverTooltip(self.mode_buttons['polygon'], 'Available in the full version')
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         zoom_group = ttk.LabelFrame(controls, text='Scale')
