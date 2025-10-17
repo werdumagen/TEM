@@ -15,14 +15,12 @@ import secrets
 import sys
 import textwrap
 import webbrowser
-import os  # <-- Импорт оставлен на всякий случай, но не используется в новой логике
-import ctypes  # <-- Используется для проверки прав и перезапуска
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, filedialog
 
 try:
     import winreg
@@ -42,6 +40,7 @@ _LSP2 = "2YXRlU2VjcmV0"
 LICENSE_SECRET = base64.b64decode(_LSP1 + _LSP2).decode("utf-8")
 
 TRIAL_DAYS = 3
+SESSION_FILENAME = "saed_session.json"
 
 
 class MaskedEntry(ttk.Entry):
@@ -370,7 +369,9 @@ class PipelineController:
     def open_editor(self, saed_json_path: Path | str) -> None:
         path = Path(saed_json_path)
         if not path.exists():
-            raise FileNotFoundError(path)
+            self.set_status(f"Error: {path.name} not found.")
+            messagebox.showerror("Error", f"File not found:\n{path}")
+            return
         try:
             self.editor.load_input_json(path, push_undo=False)
             self.notebook.select(self.editor)
@@ -386,7 +387,9 @@ class PipelineController:
     ) -> None:
         path = Path(payload_path)
         if not path.exists():
-            raise FileNotFoundError(path)
+            self.set_status(f"Error: {path.name} not found.")
+            messagebox.showerror("Error", f"File not found:\n{path}")
+            return
         try:
             self.analysis.load_json(path)
             self.notebook.select(self.analysis)
@@ -400,7 +403,6 @@ def _show_splash(
         *,
         logo_path: Path | str | None = None,
         duration_ms: int = 3000,
-        background: str = "#59c6f1",
 ) -> None:
     if duration_ms <= 0:
         root.deiconify()
@@ -476,7 +478,7 @@ class TabbedPipelineApp(tk.Tk):
             header, text="A single pipeline for electron diffraction processing from loading to analysis.",
             style="Subheader.TLabel", wraplength=720, justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(header, text="by RL 9-11 2025 v3.5.2 ", style="Byline.TLabel").grid(
+        ttk.Label(header, text="by RL 9-11 2025 v2.61 ", style="Byline.TLabel").grid(
             row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)
         )
         ttk.Button(header, text="Help", command=self._show_help).grid(
@@ -497,6 +499,91 @@ class TabbedPipelineApp(tk.Tk):
                                              license_manager=self.license_manager)
         self.controller.set_status("Opened tab: Launcher")
         self._refresh_license_banner()
+
+        # --- NEW: Session Management Bindings ---
+        self.bind_all("<Control-s>", self._on_save_session)
+        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
+        self.project_folder: Optional[Path] = None
+        self._session_dirty_flag = False
+        self.bind_all("<Key>", lambda e: self._mark_dirty())
+        self.bind_all("<Button-1>", lambda e: self._mark_dirty())
+        # --- End Session Management ---
+
+    def _mark_dirty(self):
+        self._session_dirty_flag = True
+
+    def _on_app_close(self):
+        """Handle window close event, prompting to save."""
+        if self._session_dirty_flag:
+            project_path = self.controller.launcher.get_project_folder()
+            project_name = project_path.name if project_path else "current session"
+
+            answer = messagebox.askyesnocancel(
+                "Save Session?",
+                f"Do you want to save your changes to '{project_name}' before closing?"
+            )
+            if answer is True:  # Yes
+                self._on_save_session()
+                self.destroy()
+            elif answer is False:  # No
+                self.destroy()
+            elif answer is None:  # Cancel
+                return
+        else:
+            self.destroy()
+
+    def _on_save_session(self, event=None):
+        """Collect state from all tabs and save to saed_session.json."""
+        try:
+            project_folder = self.controller.launcher.get_project_folder()
+            if not project_folder:
+                messagebox.showerror("Save Session", "Please select a Project Folder in the Launcher tab first.")
+                return
+
+            project_folder.mkdir(parents=True, exist_ok=True)
+            session_path = project_folder / SESSION_FILENAME
+
+            session_data = {
+                "__version__": "1.0",
+                "project_folder_name": project_folder.name,
+                "launcher": self.controller.launcher.get_state(),
+                "editor": self.controller.editor.get_state(),
+                "analysis": self.controller.analysis.get_state(),
+            }
+
+            # Use numpy-safe exporter if needed
+            class NpEncoder(json.JSONEncoder):
+                def default(self, obj):
+                    if isinstance(obj, np.integer): return int(obj)
+                    if isinstance(obj, np.floating): return float(obj)
+                    if isinstance(obj, np.ndarray): return obj.tolist()
+                    return super(NpEncoder, self).default(obj)
+
+            session_path.write_text(
+                json.dumps(session_data, indent=2, cls=NpEncoder),
+                encoding="utf-8"
+            )
+            self._session_dirty_flag = False
+            self.status_var.set(f"Session saved to {session_path.name}")
+
+        except Exception as e:
+            messagebox.showerror("Save Session Error", f"Failed to save session:\n{e}")
+
+    def _load_session_data(self, session_data: dict, project_folder: Path):
+        """Push loaded session data into all tabs."""
+        try:
+            self.controller.launcher.set_state(session_data.get('launcher'), project_folder)
+
+            # Editor must be loaded before Analysis
+            self.controller.editor.set_state(session_data.get('editor'), project_folder)
+
+            self.controller.analysis.set_state(session_data.get('analysis'), project_folder)
+
+            self.status_var.set(f"Session loaded from {project_folder.name}")
+            self.controller.notebook.select(self.controller.analysis)  # Show analysis tab
+            self._session_dirty_flag = False
+        except Exception as e:
+            messagebox.showerror("Load Session Error", f"Failed to load session data:\n{e}")
 
     def _update_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -535,6 +622,8 @@ class TabbedPipelineApp(tk.Tk):
             "In the Launcher tab, prepare the image and detector parameters. "
             "The Editor tab lets you refine points and radii manually, and Analysis builds "
             "a symmetry report with Fibonacci chains."
+            "\n\nUse Ctrl+S to save your session (settings, points, and analyses) "
+            f"to a '{SESSION_FILENAME}' file in the selected Project Folder."
         )
         ttk.Label(frame, text=message, justify="left", wraplength=480).pack(anchor="w")
         ttk.Label(frame, text="Support the project:", padding=(0, 12, 0, 0)).pack(anchor="w")
@@ -573,93 +662,44 @@ def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
     return activated
 
 
-# --- НОВАЯ ФУНКЦИЯ ПРОВЕРКИ И ПОВЫШЕНИЯ ПРАВ ---
-def _ensure_admin_privileges() -> bool:
-    """
-    Проверяет, есть ли права администратора. Если нет, пытается перезапустить
-    приложение с запросом UAC.
-
-    Возвращает True, если можно продолжать (уже админ).
-    Возвращает False, если нужно выйти (перезапуск или отказ пользователя).
-    """
-    if sys.platform != 'win32':
-        return True  # Проверка только для Windows
-
-    try:
-        # Проверяем, запущена ли программа УЖЕ с правами администратора
-        is_admin = (ctypes.windll.shell32.IsUserAnAdmin() == 1)
-    except Exception:
-        is_admin = False  # Если проверка не удалась, считаем, что прав нет
-
-    if is_admin:
-        return True  # Права уже есть, продолжаем
-
-    # --- Прав нет. Пытаемся перезапустить себя с правами ---
-    try:
-        # Формируем строку параметров, корректно экранируя пути с пробелами
-        params_list = []
-        for arg in sys.argv[1:]:
-            # Добавляем кавычки, если в аргументе есть пробел и он еще не в кавычках
-            if " " in arg and not (arg.startswith('"') and arg.endswith('"')):
-                params_list.append(f'"{arg}"')
-            else:
-                params_list.append(arg)
-        params = " ".join(params_list)
-
-        # Выполняем ShellExecute с операцией "runas" (запрос UAC)
-        ret = ctypes.windll.shell32.ShellExecuteW(
-            None,  # hwnd
-            "runas",  # lpOperation
-            sys.executable,  # lpFile (python.exe или App.exe)
-            params,  # lpParameters (аргументы скрипта/приложения)
-            None,  # lpDirectory
-            1  # nShowCmd (SW_SHOWNORMAL)
-        )
-
-        if ret > 32:
-            # UAC был показан, и пользователь, вероятно, нажал "Да".
-            # Новый (админский) процесс запущен.
-            # Этот (старый) процесс должен немедленно завершиться.
-            return False  # Сигнал главному процессу на выход
-        else:
-            # Код ошибки (<= 32).
-            # Самая частая: 1223 (ERROR_CANCELLED) - пользователь нажал "Нет"
-            temp_root = tk.Tk()
-            temp_root.withdraw()
-            messagebox.showerror(
-                "Требуются права администратора",
-                "Для корректной работы (особенно из защищенных папок) "
-                "приложению требуются права администратора.\n\n"
-                "В доступе отказано. Приложение будет закрыто."
-            )
-            temp_root.destroy()
-            return False  # Сигнал главному процессу на выход
-
-    except Exception as e:
-        # Неожиданная ошибка при попытке перезапуска
-        temp_root = tk.Tk()
-        temp_root.withdraw()
-        messagebox.showerror(
-            "Ошибка запуска",
-            f"Не удалось перезапустить приложение с правами администратора: {e}"
-        )
-        temp_root.destroy()
-        return False  # Сигнал главному процессу на выход
-
-
-# --- КОНЕЦ НОВОЙ ФУНКЦИИ ---
-
-
 def main(
         *,
         splash_logo: Path | str | None = None,
         splash_duration_ms: int = 3000,
 ) -> None:
-    # --- ИЗМЕНЕНИЕ: Проверка прав в самом начале ---
-    # Эта функция будет вызвана до создания ЛЮБЫХ окон
-    if not _ensure_admin_privileges():
-        sys.exit(0)  # Если функция вернула False, завершаем работу
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    # --- NEW: Pre-launch dialog for loading session ---
+    root = tk.Tk()
+    root.withdraw()
+    load_existing = messagebox.askyesno(
+        "Start SAED Symmetry",
+        "Do you want to load an existing project folder?",
+        parent=root
+    )
+    project_folder: Optional[Path] = None
+    session_data: Optional[dict] = None
+
+    if load_existing:
+        folder = filedialog.askdirectory(
+            title="Select Project Folder to Load",
+            parent=root
+        )
+        if folder:
+            project_folder = Path(folder)
+            session_file = project_folder / SESSION_FILENAME
+            if session_file.exists():
+                try:
+                    session_data = json.loads(session_file.read_text(encoding="utf-8"))
+                    splash_duration_ms = 1000  # Faster splash if loading
+                except Exception as e:
+                    messagebox.showerror("Load Error", f"Failed to read '{SESSION_FILENAME}':\n{e}", parent=root)
+                    session_data = None
+                    project_folder = None
+            else:
+                messagebox.showinfo("New Project",
+                                    f"No '{SESSION_FILENAME}' found.\nA new project will be started in this folder.",
+                                    parent=root)
+    root.destroy()
+    # --- End pre-launch dialog ---
 
     license_manager = LicenseManager()
     if not license_manager.has_valid_license() and license_manager.is_trial_expired():
@@ -667,8 +707,16 @@ def main(
         if not activated:
             return
 
-    # Если мы дошли сюда, у нас есть права, и лицензия в порядке
     app = TabbedPipelineApp(license_manager, show_initially=False)
+
+    # --- NEW: Load session data if it was found ---
+    if session_data and project_folder:
+        app._load_session_data(session_data, project_folder)
+    elif project_folder:
+        # User selected a folder, but it was empty. Set it in the launcher.
+        app.controller.launcher.set_project_folder(project_folder)
+    # --- End load session ---
+
     _show_splash(app, logo_path=splash_logo, duration_ms=splash_duration_ms)
     app.mainloop()
 

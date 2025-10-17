@@ -13,7 +13,7 @@ The remaining editor functionality is preserved.
 """
 import sys, json, subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import numpy as np
@@ -78,6 +78,7 @@ class PointEditor(tk.Frame):
         self.rect_artist = None
         self.overlay = None  # {center:{x,y}, dead_radius, search_radius}
         self.image_path: Optional[Path] = None
+        self.input_json_path: Optional[Path] = None  # NEW: Keep track of the loaded json
         self.img_arr: Optional[np.ndarray] = None
         self._percent_map: Optional[np.ndarray] = None
         self._percent_lookup: Optional[tuple[np.ndarray, np.ndarray]] = None
@@ -140,17 +141,6 @@ class PointEditor(tk.Frame):
         header_row = ttk.Frame(controls)
         header_row.pack(fill=tk.X)
         header_row.columnconfigure(0, weight=1)  # Allow help button to align right
-
-        # --- ИЗМЕНЕНИЕ: Кнопки Undo/Redo удалены ---
-        # history_group = ttk.Frame(header_row)
-        # history_group.pack(side=tk.LEFT)
-        # ttk.Button(history_group, text="◀", width=3, command=self._undo_btn, style="Toolbutton").pack(
-        #     side=tk.LEFT, padx=(0, 4)
-        # )
-        # ttk.Button(history_group, text="▶", width=3, command=self._redo_btn, style="Toolbutton").pack(
-        #     side=tk.LEFT, padx=(0, 4)
-        # )
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         help_button = ttk.Button(header_row, text="?", width=3, command=self._toggle_help, style="Toolbutton")
         help_button.pack(side=tk.RIGHT)
@@ -224,22 +214,14 @@ class PointEditor(tk.Frame):
         self.canvas.mpl_connect("button_release_event", self._on_up)
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
         self.canvas.mpl_connect("key_press_event", self._on_key)
-
-        # --- ИЗМЕНЕНИЕ: Добавлена привязка колесика мыши для зума ---
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
-        # --------------------------------------------------------
-
-        # --- ИЗМЕНЕНИЕ: Добавлены горячие клавиши для Undo/Redo ---
         self.bind_all('<Control-z>', self._undo_btn)
         self.bind_all('<Control-y>', self._redo_btn)
-        # ----------------------------------------------------
 
         self._default_status = "Mode: point editor"
         self._status_message = ""
         self._update_zoom_hint()
         self._set_status(self._default_status)
-
-    # ... (весь остальной код класса PointEditor без изменений, кроме _on_zoom_change)
 
     def _toggle_help(self):
         self._help_visible = not self._help_visible
@@ -274,6 +256,9 @@ class PointEditor(tk.Frame):
         """Public JSON loading method, also used by the tab controller."""
         if push_undo:
             self._push_undo()
+
+        self.input_json_path = path  # Store the path
+
         self._load_input_json(path)
         self._clear_tooltip()
         if reset_view:
@@ -298,7 +283,16 @@ class PointEditor(tk.Frame):
         if not img_path:
             messagebox.showerror("Error", "The JSON is missing the 'image' field.")
             return
-        self.image_path = Path(img_path)
+
+        # Resolve image path relative to the JSON file
+        self.image_path = path.parent / Path(img_path).name
+        if not self.image_path.exists():
+            # Fallback to original path if it was absolute
+            self.image_path = Path(img_path)
+            if not self.image_path.exists():
+                messagebox.showerror("Error", f"Image file not found:\n{self.image_path}")
+                return
+
         fallback_mode = data.get("preproc_mode")
         if not isinstance(fallback_mode, str):
             fallback_mode = None
@@ -342,13 +336,21 @@ class PointEditor(tk.Frame):
             self.points = np.zeros((0, 2), float)
             self.values = np.zeros((0,), float)
 
-    def _save_points(self) -> Path:
+    def _save_points(self) -> Optional[Path]:
         """
         Saves points (including intensities) next to the original input.json:
         - spots.json  — list of points (y,x,intensity)
         - saed_input.edited.json — original input JSON with updated points
         """
-        base = self.image_path.with_name("spots.json") if self.image_path else Path("spots.json")
+        if self.input_json_path is None:
+            messagebox.showerror("Save Error", "No input JSON loaded. Cannot determine where to save.")
+            return None
+
+        base_dir = self.input_json_path.parent
+        base_name = self.input_json_path.stem.replace("_saed_input", "")
+
+        spots_path = base_dir / f"{base_name}_spots.json"
+
         pts = []
         if self._percent_map is not None or self.img_arr is not None:
             vals = self._sample_intensities(self.points)
@@ -356,10 +358,11 @@ class PointEditor(tk.Frame):
             vals = self.values
         for (y, x), v in zip(self.points, vals):
             pts.append({"y": float(y), "x": float(x), "intensity": float(v)})
-        base.write_text(json.dumps({"points": pts}, indent=2), encoding="utf-8")
+        spots_path.write_text(json.dumps({"points": pts}, indent=2), encoding="utf-8")
 
+        # Save an *edited* version of the saed_input, not a new one
         si = {
-            "image": str(self.image_path) if self.image_path else None,
+            "image": str(self.image_path.name) if self.image_path else None,  # Save relative path
             "preproc_mode": self._preproc_settings.mode,
             "preproc": self._preproc_settings.to_json(),
             "center": (self.overlay.get("center") if self.overlay else None),
@@ -369,11 +372,58 @@ class PointEditor(tk.Frame):
             },
             "points": pts
         }
-        edited = self.image_path.with_name("saed_input.edited.json") if self.image_path else Path(
-            "saed_input.edited.json")
-        edited.write_text(json.dumps(si, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._set_status(f"Points saved: {base.name}")
-        return base
+
+        edited_input_path = base_dir / f"{base_name}_saed_input.edited.json"
+        edited_input_path.write_text(json.dumps(si, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        self._set_status(f"Points saved: {spots_path.name}")
+        return spots_path
+
+    # --- NEW: Session Management Methods ---
+
+    def get_state(self) -> Dict[str, Any]:
+        """Collect editor state for session save."""
+        return {
+            "input_json_path_str": str(self.input_json_path) if self.input_json_path else None,
+            "image_path_str": str(self.image_path) if self.image_path else None,
+            "points_list": self.points.tolist(),
+            "values_list": self.values.tolist(),
+            "overlay": self.overlay,
+            "view_cx": self.view_cx,
+            "view_cy": self.view_cy,
+        }
+
+    def set_state(self, state: Optional[Dict[str, Any]], project_folder: Path):
+        """Apply editor state from session load."""
+        if state is None:
+            return
+
+        input_json_path_str = state.get("input_json_path_str")
+        if not input_json_path_str:
+            return  # Cannot restore editor without its input file
+
+        # Re-find the input file relative to the *loaded project folder*
+        input_json_name = Path(input_json_path_str).name
+        new_input_json_path = project_folder / input_json_name
+
+        if not new_input_json_path.exists():
+            print(f"Warning: Could not find editor input '{input_json_name}' in '{project_folder}'")
+            return
+
+        # Load the base file
+        self.load_input_json(new_input_json_path, push_undo=False, reset_view=False)
+
+        # Override with the saved state
+        self.points = np.array(state.get("points_list", []))
+        self.values = np.array(state.get("values_list", []))
+        self.overlay = state.get("overlay")
+        self.view_cx = state.get("view_cx")
+        self.view_cy = state.get("view_cy")
+
+        self._ensure_view_center()
+        self._redraw()
+
+    # --- End Session Management Methods ---
 
     # ---------- Helpers ----------
     def _sample_intensities(self, pts_yx: np.ndarray) -> np.ndarray:
@@ -850,7 +900,7 @@ class PointEditor(tk.Frame):
         self._ensure_view_center()
 
     def _undo_btn(self, event=None):  # event=None to handle both button and key press
-        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+        if event and isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
             return
         self._clear_tooltip()
         if not self._undo: return
@@ -861,7 +911,7 @@ class PointEditor(tk.Frame):
         self._redraw()
 
     def _redo_btn(self, event=None):  # event=None to handle both button and key press
-        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+        if event and isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
             return
         self._clear_tooltip()
         if not self._redo: return
@@ -874,7 +924,10 @@ class PointEditor(tk.Frame):
     # ---------- View-center helpers ----------
     def _ensure_view_center(self):
         if self.img_arr is None:
+            if self.view_cx is None: self.view_cx = 0
+            if self.view_cy is None: self.view_cy = 0
             return
+
         H, W = self.img_arr.shape[:2]
         if self.overlay and self.overlay.get("center"):
             cx = float(self.overlay["center"].get("x", (W - 1) / 2.0))
@@ -888,7 +941,10 @@ class PointEditor(tk.Frame):
     # ---------- Zoom ----------
     def _apply_zoom(self):
         if self.img_arr is None:
+            self.ax.set_xlim(-100, 100)
+            self.ax.set_ylim(100, -100)
             return
+
         H, W = self.img_arr.shape[:2]
         self._ensure_view_center()
 
@@ -923,17 +979,13 @@ class PointEditor(tk.Frame):
         self.ax.set_xlim(x0, x1)
         self.ax.set_ylim(y1, y0)
 
-    # --- ИЗМЕНЕНИЕ: Метод переписан, чтобы принимать необязательный аргумент ---
     def _on_zoom_change(self, val=None):
         try:
-            # Если вызвано слайдером, val будет строкой
-            # Если вызвано из _on_scroll, val не будет передан, используем self.zoom_val
             new_val = float(val) if val is not None else self.zoom_val
             self.zoom_val = int(round(new_val))
         except (ValueError, TypeError):
             self.zoom_val = 0
 
-        # Обновляем виджет, если он не совпадает (предотвращение рекурсии)
         if hasattr(self, "zoom_var"):
             current_slider_val = int(round(self.zoom_var.get()))
             if current_slider_val != self.zoom_val:
@@ -943,25 +995,18 @@ class PointEditor(tk.Frame):
         self._clear_tooltip()
         self._redraw()
 
-    # --- НОВЫЙ МЕТОД: Обработка скролла мыши для зума ---
     def _on_scroll(self, event):
         if event.xdata is None or event.ydata is None:
-            return  # Не зумировать, если курсор за пределами изображения
+            return
 
-        # Шаг изменения зума
         zoom_step = 5
         if event.button == 'up':
             self.zoom_val += zoom_step
         elif event.button == 'down':
             self.zoom_val -= zoom_step
 
-        # Ограничиваем значение в пределах 0-100
         self.zoom_val = max(0, min(100, self.zoom_val))
-
-        # Обновляем виджеты и перерисовываем
         self._on_zoom_change()
-
-    # ----------------------------------------------------
 
     # ---------- Mouse / Keyboard events ----------
     def _on_key(self, e):
@@ -1188,13 +1233,18 @@ class PointEditor(tk.Frame):
         self._apply_zoom()
         self.canvas.draw_idle()
 
-    # ... (Остальная часть файла `saed_editor.py` без изменений)
-    # ... (Классы PointEditorApp, функции _parse_args и блок if __name__ == "__main__":)
-
     # ---------- Анализ ----------
     def _start_analysis(self):
-        saved = self._save_points()
+        saved_spots_path = self._save_points()
+        if saved_spots_path is None or self.input_json_path is None:
+            messagebox.showerror("Analysis Error", "Could not save points or input JSON path is missing.")
+            return
+
         self._set_status("Preparing data for analysis…")
+
+        base_dir = self.input_json_path.parent
+        base_name = self.input_json_path.stem.replace("_saed_input", "")
+        fibo_input_path = base_dir / f"{base_name}_fibo_input.json"
 
         payload_path = None
         try:
@@ -1247,7 +1297,7 @@ class PointEditor(tk.Frame):
                     search_val = float(self.overlay.get("search_radius"))
 
             payload = {
-                "image": str(self.image_path) if self.image_path else None,
+                "image": str(self.image_path.name) if self.image_path else None,  # Relative path
                 "preproc_mode": self._preproc_settings.mode,
                 "preproc": self._preproc_settings.to_json(),
                 "points": points_list,
@@ -1259,73 +1309,43 @@ class PointEditor(tk.Frame):
                     "dead": dead_val,
                     "search": search_val
                 },
-                "spots_json": str(saved) if saved else None
+                "spots_json": str(saved_spots_path.name) if saved_spots_path else None  # Relative path
             }
 
-            payload_path = (self.image_path.with_name("fibo_input.json") if self.image_path
-                            else Path("fibo_input.json"))
-            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            fibo_input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            payload_path = fibo_input_path
 
 
         except Exception as e:
-
             payload_path = None
-
-            messagebox.showerror("Data preparation error",
-
-                                 f"Failed to prepare data for fibonachi_analysis:\n{e}")
+            messagebox.showerror("Data preparation error", f"Failed to prepare data for fibonachi_analysis:\n{e}")
 
         used_controller = False
-
         if self.controller is not None and payload_path is not None:
-
             try:
-
-                self.controller.open_analysis(payload_path, self.image_path, saved)
+                self.controller.open_analysis(payload_path, self.image_path, saved_spots_path)
                 self._set_status("Analysis opened in tab")
-
                 used_controller = True
-
             except Exception as e:
-
-                messagebox.showerror("Launch error",
-
-                                     f"Failed to switch to the analyzer:\n{e}")
+                messagebox.showerror("Launch error", f"Failed to switch to the analyzer:\n{e}")
 
         if not used_controller:
-
             try:
-
                 if getattr(sys, "frozen", False):
-
                     fibexe = Path(sys.executable).with_name("fibonachi_analysis.exe")
-
                 else:
-
                     fibexe = Path(__file__).with_name("fibonachi_analysis.exe")
-
                 cmd = [str(fibexe)]
-
-                if payload_path is not None:
-                    cmd += ["--payload", str(payload_path)]
-
-                if self.image_path is not None:
-                    cmd += ["--image", str(self.image_path)]
-
-                if saved is not None:
-                    cmd += ["--points", str(saved)]
-
+                if payload_path is not None: cmd += ["--payload", str(payload_path)]
+                if self.image_path is not None: cmd += ["--image", str(self.image_path)]
+                if saved_spots_path is not None: cmd += ["--points", str(saved_spots_path)]
                 subprocess.Popen(cmd, shell=False)
                 self._set_status("External analysis started")
-
             except Exception as e:
-
-                messagebox.showerror("Launch error",
-
-                                     f"Failed to launch fibonachi_analysis.exe:\n{e}")
+                messagebox.showerror("Launch error", f"Failed to launch fibonachi_analysis.exe:\n{e}")
 
         if self.img_arr is None or len(self.points) == 0:
-            messagebox.showinfo("Analysis", "No image or points available for analysis.")
+            # messagebox.showinfo("Analysis", "No image or points available for analysis.")
             return
 
         cy, cx = (self.img_arr.shape[0] - 1) / 2.0, (self.img_arr.shape[1] - 1) / 2.0
@@ -1334,9 +1354,9 @@ class PointEditor(tk.Frame):
         ring_means = [np.mean(radii[labels == i]) for i in np.unique(labels)] if len(rc) else []
         sym = symmetry_scores(angles, radii, ring_means)
 
-        lines = ["SAED Symmetry Analysis", "=======================", "",
+        lines = ["SAED Symmetry Analysis (Quick Report)", "=======================", "",
                  f"File: {self.image_path}",
-                 f"Saved: {saved.name if saved else '-'}",
+                 f"Saved: {saved_spots_path.name if saved_spots_path else '-'}",
                  f"Points: {len(self.points)}", "", "Symmetries:"]
         for k, v in sorted(sym.items(), key=lambda kv: -kv[1]):
             lines.append(f"  {k:>7}: {v:.3f}")
@@ -1367,7 +1387,6 @@ class PointEditorApp(tk.Tk):
 # -------- CLI ---------
 def _parse_args(argv):
     import argparse
-
     p = argparse.ArgumentParser()
     p.add_argument("--input", type=str, required=False, help="Path to saed_input.json")
     return p.parse_args(argv)
