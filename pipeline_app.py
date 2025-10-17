@@ -15,8 +15,8 @@ import secrets
 import sys
 import textwrap
 import webbrowser
-import os  # <-- Добавлено для проверки прав
-import ctypes  # <-- Добавлено для проверки прав
+import os  # <-- Импорт оставлен на всякий случай, но не используется в новой логике
+import ctypes  # <-- Используется для проверки прав и перезапуска
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
@@ -573,85 +573,81 @@ def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
     return activated
 
 
-def _check_permissions_and_elevate() -> bool:
+# --- НОВАЯ ФУНКЦИЯ ПРОВЕРКИ И ПОВЫШЕНИЯ ПРАВ ---
+def _ensure_admin_privileges() -> bool:
     """
-    Проверяет права на запись. Если их нет, пытается перезапустить с правами администратора.
-    Возвращает True, если можно продолжать, False - если нужно выйти.
+    Проверяет, есть ли права администратора. Если нет, пытается перезапустить
+    приложение с запросом UAC.
+
+    Возвращает True, если можно продолжать (уже админ).
+    Возвращает False, если нужно выйти (перезапуск или отказ пользователя).
     """
-    if winreg is None:  # Не-Windows (Linux, macOS), пропускаем проверку
-        return True
-
-    # Определяем папку приложения
-    if getattr(sys, "frozen", False):
-        app_dir = Path(sys.executable).parent.resolve()
-    else:
-        app_dir = Path(__file__).parent.resolve()
-
-    test_file = app_dir / f"__temp_write_test_{secrets.token_hex(4)}.tmp"
+    if sys.platform != 'win32':
+        return True  # Проверка только для Windows
 
     try:
-        # 1. Пытаемся создать временный файл
-        test_file.write_text("test_write_permissions", encoding="utf-8")
-        test_file.unlink()
-        return True  # Права на запись есть, продолжаем
+        # Проверяем, запущена ли программа УЖЕ с правами администратора
+        is_admin = (ctypes.windll.shell32.IsUserAnAdmin() == 1)
+    except Exception:
+        is_admin = False  # Если проверка не удалась, считаем, что прав нет
 
-    except (IOError, OSError, PermissionError):
-        # 2. Ошибка записи. Проверяем, есть ли уже права администратора
-        try:
-            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-        except Exception:
-            is_admin = False  # На всякий случай
+    if is_admin:
+        return True  # Права уже есть, продолжаем
 
-        if is_admin:
-            # 3. Мы администратор, но все равно не можем писать.
-            messagebox.showerror(
-                "Ошибка записи",
-                "Приложение имеет права администратора, но не может создавать файлы в своей папке. "
-                f"Проверьте права доступа или переместите приложение.\n\nПуть: {app_dir}"
-            )
-            return False  # Не продолжать
-
-        # 4. Мы не администратор, и у нас нет прав на запись. Пытаемся перезапустить.
-        try:
-            ret = ctypes.windll.shell32.ShellExecuteW(
-                None,
-                "runas",  # Операция "runas" запрашивает повышение прав
-                sys.executable,
-                # Передаем аргументы командной строки, с которыми было запущено приложение
-                " ".join(sys.argv),
-                None,
-                1  # SW_SHOWNORMAL
-            )
-
-            if ret > 32:
-                # Перезапуск успешен (UAC "Да"). Новый процесс запускается.
-                # Этот (старый) процесс должен завершиться.
-                return False
+    # --- Прав нет. Пытаемся перезапустить себя с правами ---
+    try:
+        # Формируем строку параметров, корректно экранируя пути с пробелами
+        params_list = []
+        for arg in sys.argv[1:]:
+            # Добавляем кавычки, если в аргументе есть пробел и он еще не в кавычках
+            if " " in arg and not (arg.startswith('"') and arg.endswith('"')):
+                params_list.append(f'"{arg}"')
             else:
-                # Пользователь нажал "Нет" в UAC (ret <= 32)
-                messagebox.showerror(
-                    "Требуются права администратора",
-                    "Для работы из этой папки приложению требуются права администратора. "
-                    "В доступе отказано. Приложение будет закрыто."
-                )
-                return False
+                params_list.append(arg)
+        params = " ".join(params_list)
 
-        except Exception as e:
-            # Не удалось выполнить ShellExecute
+        # Выполняем ShellExecute с операцией "runas" (запрос UAC)
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None,  # hwnd
+            "runas",  # lpOperation
+            sys.executable,  # lpFile (python.exe или App.exe)
+            params,  # lpParameters (аргументы скрипта/приложения)
+            None,  # lpDirectory
+            1  # nShowCmd (SW_SHOWNORMAL)
+        )
+
+        if ret > 32:
+            # UAC был показан, и пользователь, вероятно, нажал "Да".
+            # Новый (админский) процесс запущен.
+            # Этот (старый) процесс должен немедленно завершиться.
+            return False  # Сигнал главному процессу на выход
+        else:
+            # Код ошибки (<= 32).
+            # Самая частая: 1223 (ERROR_CANCELLED) - пользователь нажал "Нет"
+            temp_root = tk.Tk()
+            temp_root.withdraw()
             messagebox.showerror(
-                "Ошибка перезапуска",
-                f"Не удалось перезапустить приложение с правами администратора: {e}\n\n"
-                "Приложение будет закрыто."
+                "Требуются права администратора",
+                "Для корректной работы (особенно из защищенных папок) "
+                "приложению требуются права администратора.\n\n"
+                "В доступе отказано. Приложение будет закрыто."
             )
-            return False
+            temp_root.destroy()
+            return False  # Сигнал главному процессу на выход
 
-    finally:
-        # Гарантированная очистка, если файл остался
-        if test_file.exists():
-            try:
-                test_file.unlink()
-            except OSError:
-                pass
+    except Exception as e:
+        # Неожиданная ошибка при попытке перезапуска
+        temp_root = tk.Tk()
+        temp_root.withdraw()
+        messagebox.showerror(
+            "Ошибка запуска",
+            f"Не удалось перезапустить приложение с правами администратора: {e}"
+        )
+        temp_root.destroy()
+        return False  # Сигнал главному процессу на выход
+
+
+# --- КОНЕЦ НОВОЙ ФУНКЦИИ ---
 
 
 def main(
@@ -659,27 +655,19 @@ def main(
         splash_logo: Path | str | None = None,
         splash_duration_ms: int = 3000,
 ) -> None:
-    # --- НОВАЯ ЛОГИКА ПРОВЕРКИ ПРАВ ---
-    # Нам нужен временный root, чтобы messagebox мог работать
-    # до создания основного окна приложения.
-    temp_root = tk.Tk()
-    temp_root.withdraw()
-    try:
-        should_proceed = _check_permissions_and_elevate()
-    finally:
-        temp_root.destroy()  # Уничтожаем временный root
-
-    if not should_proceed:
-        # Если False, значит, мы либо перезапускаемся, либо пользователь отказал.
-        # В любом случае, этот экземпляр приложения должен завершиться.
-        sys.exit(0)
-    # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+    # --- ИЗМЕНЕНИЕ: Проверка прав в самом начале ---
+    # Эта функция будет вызвана до создания ЛЮБЫХ окон
+    if not _ensure_admin_privileges():
+        sys.exit(0)  # Если функция вернула False, завершаем работу
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     license_manager = LicenseManager()
     if not license_manager.has_valid_license() and license_manager.is_trial_expired():
         activated = _show_trial_expired_dialog(license_manager)
         if not activated:
             return
+
+    # Если мы дошли сюда, у нас есть права, и лицензия в порядке
     app = TabbedPipelineApp(license_manager, show_initially=False)
     _show_splash(app, logo_path=splash_logo, duration_ms=splash_duration_ms)
     app.mainloop()
