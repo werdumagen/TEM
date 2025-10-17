@@ -286,6 +286,30 @@ class SAEDLauncherFrame(ttk.Frame):  # 277
         self._scroll_window_id = None  # 286
         self._build_ui()  # 287
 # 288
+    def _get_default_output_path(self) -> str:
+        """Generates a default output path, avoiding existing directories."""
+        if getattr(sys, "frozen", False):
+            # For a compiled .exe, use the directory where it's located
+            base_dir = Path(sys.executable).parent
+        else:
+            # For development, use the current working directory
+            base_dir = Path()
+
+        base_name = "saed_results"
+        output_path = base_dir / base_name
+
+        if not output_path.exists():
+            return str(output_path)
+
+        # If the base path exists, find a new one by appending a number
+        counter = 1
+        while True:
+            new_name = f"{base_name}_{counter}"
+            new_path = base_dir / new_name
+            if not new_path.exists():
+                return str(new_path)
+            counter += 1
+
     def _build_ui(self):  # 289
         outer = ttk.Frame(self)  # 290
         outer.pack(fill=tk.BOTH, expand=True)  # 291
@@ -307,7 +331,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 277
 # 307
         ttk.Label(data_box, text="Output folder:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 308
         self.ent_out = ttk.Entry(data_box)  # 309
-        self.ent_out.insert(0, "saed_results")  # 310
+        self.ent_out.insert(0, self._get_default_output_path())  # 310
         self.ent_out.grid(row=1, column=1, columnspan=2, sticky="we", padx=6, pady=4)  # 311
         ttk.Button(data_box, text="Choose…", command=self._browse_out).grid(row=1, column=3, sticky="ew", padx=6, pady=4)  # 312
 # 313
@@ -654,24 +678,24 @@ class SAEDLauncherFrame(ttk.Frame):  # 277
 # 654
             messagebox.showerror("Error", str(e))  # 655
 # 656
-        class SAEDApp(tk.Tk):  # 657
+class SAEDApp(tk.Tk):  # 657
 # 658
-            (  # 659
-                "Backwards-compatible standalone application using the tab frame.\n"  # 660
-            )  # 661
+    (  # 659
+        "Backwards-compatible standalone application using the tab frame.\n"  # 660
+    )  # 661
 # 662
-            def __init__(self):  # 663
-                super().__init__()  # 664
+    def __init__(self):  # 663
+        super().__init__()  # 664
 # 665
-                self.title("SAED Symmetry – Launcher")  # 666
+        self.title("SAED Symmetry – Launcher")  # 666
 # 667
-                self.geometry("980x680")  # 668
+        self.geometry("980x680")  # 668
 # 669
-                self.resizable(True, False)  # 670
+        self.resizable(True, False)  # 670
 # 671
-                frame = SAEDLauncherFrame(self)  # 672
+        frame = SAEDLauncherFrame(self)  # 672
 # 673
-                frame.pack(fill=tk.BOTH, expand=True)  # 674
+        frame.pack(fill=tk.BOTH, expand=True)  # 674
 # 675
-        if __name__ == "__main__":  # 676
-            SAEDApp().mainloop()  # 677
+if __name__ == "__main__":  # 676
+    SAEDApp().mainloop()  # 677
