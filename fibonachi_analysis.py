@@ -402,6 +402,62 @@ class FibonacciAnalysisFrame(tk.Frame):
         if auto_load:
             self._initial_load()
 
+    # --- NEW: Session Save/Load ---
+
+    def get_state(self) -> Dict[str, Any]:
+        """Returns a serializable dictionary of the analysis tab's state."""
+        # Convert numpy arrays in permanent_analyses to lists for JSON serialization
+        serializable_analyses = []
+        for analysis in self.permanent_analyses:
+            serializable_analysis = analysis.copy()
+            # No numpy arrays stored directly in this version, so a shallow copy is fine
+            serializable_analyses.append(serializable_analysis)
+
+        return {
+            "fibo_input_path": str(self.fibo_input_path) if hasattr(self, 'fibo_input_path') else None,
+            "permanent_analyses": serializable_analyses,
+            "active_analysis_idx": self.active_analysis_idx,
+            "zoom_val": self.zoom_val,
+            "view_cx": self.view_cx,
+            "view_cy": self.view_cy,
+        }
+
+    def set_state(self, state: Dict[str, Any]):
+        """Restores the analysis tab's state from a dictionary."""
+        fibo_input_path = state.get("fibo_input_path")
+        if not fibo_input_path:
+            # If no path, clear the state
+            self.permanent_analyses = []
+            self.active_analysis_idx = None
+            self.img_arr = None
+            self._redraw_canvas()
+            self._update_display_for_active_analysis()
+            return
+
+        try:
+            # Load the base data from fibo_input.json
+            self.load_json(Path(fibo_input_path))
+
+            # Restore analyses from the session state
+            self.permanent_analyses = state.get("permanent_analyses", [])
+            self.active_analysis_idx = state.get("active_analysis_idx")
+
+            # Restore view
+            self.zoom_val = state.get("zoom_val", 0)
+            self.view_cx = state.get("view_cx")
+            self.view_cy = state.get("view_cy")
+            if hasattr(self, 'zoom_var'):
+                self.zoom_var.set(self.zoom_val)
+
+            # Update UI
+            self._redraw_canvas()
+            self._update_display_for_active_analysis()
+            if self.controller:
+                self.controller.set_status(f"Restored analysis session from {Path(fibo_input_path).name}")
+
+        except Exception as e:
+            messagebox.showerror("Analysis Load Error", f"Failed to restore analysis state:\n{e}")
+
     def _build_ui(self):
         container = tk.Frame(self)
         container.grid(row=0, column=0, sticky="nsew")
@@ -517,7 +573,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         tab_prefixes = ttk.Frame(self.results_notebook);
         tab_prefixes.grid_columnconfigure(0, weight=1);
         tab_prefixes.grid_rowconfigure(1, weight=1)
-        self.results_notebook.add(tab_subsegments, text='Subsegments')
+        self.results_notebook.add(tab_subsegments, text='Details')
         self.results_notebook.add(tab_prefixes, text='Fib-Words')
 
         self.lst = tk.Listbox(tab_subsegments, width=66, height=15)
@@ -536,7 +592,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         tk.Label(tab_subsegments, text='S/L sequence (full):').grid(row=2, column=0, sticky='w', pady=(4, 2))
         self.txt_sl = tk.Text(tab_subsegments, height=4, wrap='word')
         self.txt_sl.grid(row=3, column=0, sticky='ew', pady=(0, 4))
-        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # Note: editing is disabled, but hook is here
+        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)
 
         prefixes_header = tk.Label(tab_prefixes, text='Prefixes of "fib-words" (L→LS, S→L)')
         prefixes_header.grid(row=0, column=0, sticky='w', pady=(0, 4))
@@ -1167,6 +1223,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.load_json(Path(p))
 
     def load_json(self, json_path: Path):
+        self.fibo_input_path = json_path  # Store for session saving
         self.img_path, self.points, self.center, self.dead, self.srch, self.preproc = load_input(json_path)
         self.img_arr = None
         if self.img_path:
