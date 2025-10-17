@@ -41,7 +41,7 @@ class AnalysisConfirmationDialog(tk.Toplevel):
 
         try:
             # Attempt to load icons if available
-            # Green checkmark icon (replace with your own image data)
+            # Green checkmark icon
             check_icon_data = b"iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAADnSURBVDhPnY5BCsJgEETfZsE3iCDeQDxD8SbeoZ15gJcQvEknl3Zl7wYKSJb58nwzBpkfOElYmJqgmz8hJ04m6A6STpyUaA7STpySaA/STpyEaA/STpyBaA/STpyCaA/STpyBaA/STpyBaA/STpwoBeoGg2/iV0WwM9vxvUvAtb2P6b0LoTVQ5A0oVbQ6/hbNsgV/ycb/1k/gC6jX8f79wJ24+2WqlwCWv5u0FhROO2LgZ1xU8f07gW0e5Z0E0s+B3A/yQ+wlgQ/y1A/q5f/gB/829kFh2BfTQAAAABJRU5ErkJggg=="
             self.check_img = tk.PhotoImage(data=check_icon_data)
             btn_accept = tk.Button(frame, image=self.check_img, command=self.accept_callback, borderwidth=0,
@@ -184,7 +184,7 @@ class HoverTooltip:
         self._cancel()
         if self._window is not None:
             try:
-                self.widget.destroy()
+                self._window.destroy()
             except Exception:
                 pass
             self._window = None
@@ -387,6 +387,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.permanent_analyses: List[Dict[str, Any]] = []
         self.active_analysis_idx: Optional[int] = None
         self.confirmation_dialog: Optional[AnalysisConfirmationDialog] = None
+        self.list_index_map: Dict[int, Any] = {}
 
         # UI components
         self._right_scroll_canvas: Optional[tk.Canvas] = None
@@ -502,19 +503,24 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.status.grid(row=1, column=0, sticky='ew', padx=6, pady=(0, 10))
         self._set_analysis_mode('sl')
 
+        self.lst_header = tk.Label(right, text='Select an analysis to view details')
+        self.lst_header.grid(row=2, column=0, sticky='w', padx=6, pady=(0, 2))
+
         self.results_notebook = tk.Notebook(right)
         self.results_notebook.grid(row=3, column=0, sticky='nsew', padx=6, pady=(0, 8))
         right.grid_rowconfigure(3, weight=1)
 
         # Tabs for results
         tab_subsegments = ttk.Frame(self.results_notebook);
-        tab_subsegments.grid_columnconfigure(0, weight=1)
+        tab_subsegments.grid_columnconfigure(0, weight=1);
+        tab_subsegments.grid_rowconfigure(0, weight=1)
         tab_prefixes = ttk.Frame(self.results_notebook);
-        tab_prefixes.grid_columnconfigure(0, weight=1)
-        self.results_notebook.add(tab_subsegments, text='Details')
+        tab_prefixes.grid_columnconfigure(0, weight=1);
+        tab_prefixes.grid_rowconfigure(1, weight=1)
+        self.results_notebook.add(tab_subsegments, text='Subsegments')
         self.results_notebook.add(tab_prefixes, text='Fib-Words')
 
-        self.lst = tk.Listbox(tab_subsegments, width=66, height=10)
+        self.lst = tk.Listbox(tab_subsegments, width=66, height=15)
         self.lst.grid(row=0, column=0, sticky='nsew')
         self.lst.bind('<<ListboxSelect>>', self._on_list_select)
 
@@ -530,7 +536,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         tk.Label(tab_subsegments, text='S/L sequence (full):').grid(row=2, column=0, sticky='w', pady=(4, 2))
         self.txt_sl = tk.Text(tab_subsegments, height=4, wrap='word')
         self.txt_sl.grid(row=3, column=0, sticky='ew', pady=(0, 4))
-        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)
+        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)  # Note: editing is disabled, but hook is here
 
         prefixes_header = tk.Label(tab_prefixes, text='Prefixes of "fib-words" (L→LS, S→L)')
         prefixes_header.grid(row=0, column=0, sticky='w', pady=(0, 4))
@@ -616,6 +622,7 @@ class FibonacciAnalysisFrame(tk.Frame):
     def _update_display_for_active_analysis(self):
         # Clear all info panels first
         self.lst.delete(0, tk.END)
+        self.list_index_map.clear()
         self.lbl_ratio.config(text='Average L/S along chain: —')
         self.lbl_ratio_neigh.config(text='Average neighboring segment ratio: —')
         self.lbl_ratio_polygons.config(text='Average neighboring polygon linear ratio: —')
@@ -623,6 +630,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.txt_words.configure(state='normal');
         self.txt_words.delete('1.0', tk.END);
         self.txt_words.configure(state='disabled')
+        self.lst_header.config(text='Select an analysis to view details')
 
         if self.active_analysis_idx is None or self.active_analysis_idx >= len(self.permanent_analyses):
             return
@@ -635,10 +643,14 @@ class FibonacciAnalysisFrame(tk.Frame):
         elif analysis_type == 'ratio':
             self._populate_ratio_info(analysis)
         elif analysis_type == 'polygon':
-            self._populate_polygon_info()  # Special case, re-calculates all polys
+            # Polygon info is special, it aggregates *all* saved polygons
+            self._populate_polygon_info()
 
     def _populate_sl_info(self, analysis_data):
+        self.lst_header.config(text='Found words (Fibonacci subsegments)')
+        self.list_index_map.clear()
         self.lst.delete(0, tk.END)
+
         ratio = analysis_data['data'].get('ratio', float('nan'))
         found = analysis_data['data'].get('found_words', [])
         SL = analysis_data['data'].get('sl_chain', [])
@@ -646,11 +658,20 @@ class FibonacciAnalysisFrame(tk.Frame):
         groups: Dict[int, List] = {}
         for entry in found: groups.setdefault(entry[0], []).append(entry)
 
+        row = 0
         if groups:
             for n in sorted(groups.keys()):
                 self.lst.insert(tk.END, f'— n={n} —')
+                self.list_index_map[row] = {'type': 'header'}
+                row += 1
                 for (n_, i0, word, Lc, Sc) in groups[n]:
                     self.lst.insert(tk.END, f'  i={i0}  word={word}  L={Lc} S={Sc}')
+                    self.list_index_map[row] = {'analysis_idx': self.active_analysis_idx, 'type': 'sl', 'i0': i0,
+                                                'n': n_}
+                    row += 1
+                self.lst.insert(tk.END, '')
+                self.list_index_map[row] = {'type': 'spacer'}
+                row += 1
         else:
             self.lst.insert(tk.END, 'No matches (n≥3)')
 
@@ -665,44 +686,73 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.txt_words.configure(state='disabled')
 
     def _populate_ratio_info(self, analysis_data):
+        self.lst_header.config(text='Neighboring segment ratios (Ratio mode)')
+        self.list_index_map.clear()
         self.lst.delete(0, tk.END)
+
         ratios = analysis_data['data'].get('ratios', [])
         mean_ratio = analysis_data['data'].get('mean_ratio', float('nan'))
 
+        row = 0
         if not ratios:
             self.lst.insert(tk.END, 'Not enough segments for ratios.')
         else:
             for i, r in enumerate(ratios, start=2):
-                self.lst.insert(tk.END, f'  ({i + 1}-{i}) / ({i}-{i - 1})  ≈  {r:.6g}')
+                entry_text = f'  ({i + 1}-{i}) / ({i}-{i - 1})  ≈  {r:.6g}'
+                self.lst.insert(tk.END, entry_text)
+                k = i - 1  # This 'k' is the index of the *first* segment in the ratio
+                self.list_index_map[row] = {'analysis_idx': self.active_analysis_idx, 'type': 'ratio', 'k': k}
+                row += 1
 
         if math.isfinite(mean_ratio): self.lbl_ratio_neigh.config(
             text=f'Average neighboring segment ratio: {mean_ratio:.6g}')
 
     def _populate_polygon_info(self):
-        # This function re-evaluates all saved polygons together
+        self.lst_header.config(text='Polygons (Polygon mode) — areas and ratios')
+        self.list_index_map.clear()
         self.lst.delete(0, tk.END)
 
-        polygon_analyses = [p for p in self.permanent_analyses if p['type'] == 'polygon']
-        if len(polygon_analyses) < 1:
+        # Find all *active* polygon analyses
+        polygon_analyses: List[Tuple[int, Dict]] = []
+        for i, p in enumerate(self.permanent_analyses):
+            if p['type'] == 'polygon':
+                polygon_analyses.append((i, p))
+
+        if not polygon_analyses:
             self.lst.insert(tk.END, 'No saved polygons to analyze.')
             return
 
-        areas = [p['data']['area'] for p in polygon_analyses]
-        for i, area in enumerate(areas, start=1):
-            self.lst.insert(tk.END, f'Polygon area {i}: {area:.6g}')
+        areas = [p['data']['area'] for _, p in polygon_analyses]
+
+        row = 0
+        for i, (analysis_idx, p) in enumerate(polygon_analyses, start=1):
+            area = p['data']['area']
+            label = p['data']['label']
+            self.lst.insert(tk.END, f'Polygon {label} (Area: {area:.6g})')
+            self.list_index_map[row] = {'analysis_idx': analysis_idx, 'type': 'polygon'}
+            row += 1
 
         if len(areas) >= 2:
             self.lst.insert(tk.END, '')
+            self.list_index_map[row] = {'type': 'spacer'}
+            row += 1
+
             polygon_linear_ratios = []
             for i in range(1, len(areas)):
                 prev_area, curr_area = areas[i - 1], areas[i]
+                prev_label = polygon_analyses[i - 1][1]['data']['label']
+                curr_label = polygon_analyses[i][1]['data']['label']
+
                 if prev_area > 0:
                     size_ratio = curr_area / prev_area
                     linear_ratio = math.sqrt(size_ratio) if size_ratio > 0 else 0
                     polygon_linear_ratios.append(linear_ratio)
-                    self.lst.insert(tk.END, f'Linear size ratio P{i + 1}/P{i}: {linear_ratio:.6g}')
+                    self.lst.insert(tk.END, f'Lin. Ratio {curr_label}/{prev_label}: {linear_ratio:.6g}')
                 else:
-                    self.lst.insert(tk.END, f'Linear size ratio P{i + 1}/P{i}: undefined')
+                    self.lst.insert(tk.END, f'Lin. Ratio {curr_label}/{prev_label}: undefined')
+
+                self.list_index_map[row] = {'type': 'info'}
+                row += 1
 
             finite_linear = [r for r in polygon_linear_ratios if math.isfinite(r) and r > 0]
             if finite_linear:
@@ -716,6 +766,10 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         # Any click rejects a pending analysis
         if self.pending_analysis:
+            # Check if click was *on* the dialog
+            if self.confirmation_dialog and self.confirmation_dialog.winfo_containing(event.x_root,
+                                                                                      event.y_root) == self.confirmation_dialog:
+                return  # Click was on the dialog, let its buttons handle it
             self._reject_pending_analysis(ask_user=False)
             return
 
@@ -765,25 +819,29 @@ class FibonacciAnalysisFrame(tk.Frame):
         for i, analysis in enumerate(self.permanent_analyses):
             pts = self.points[analysis['indices']]
             if analysis['type'] == 'polygon':
-                center = pts.mean(axis=0)
+                center = pts.mean(axis=0)  # y, x
                 dist_sq = (center[0] - y) ** 2 + (center[1] - x) ** 2
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    best_idx = i
             else:  # chain or ratio
-                # Check distance to line segments
                 for k in range(len(pts) - 1):
-                    p1 = pts[k]
-                    p2 = pts[k + 1]
+                    p1_yx = pts[k]
+                    p2_yx = pts[k + 1]
                     # Simple distance to segment midpoint for hit-testing
-                    mid = (p1 + p2) / 2
-                    dist_sq = (mid[0] - y) ** 2 + (mid[1] - x) ** 2
+                    mid_yx = (p1_yx + p2_yx) / 2
+                    dist_sq = (mid_yx[0] - y) ** 2 + (mid_yx[1] - x) ** 2
                     if dist_sq < min_dist_sq:
                         min_dist_sq = dist_sq
                         best_idx = i
 
-        if best_idx is not None and math.sqrt(min_dist_sq) < self.pick_tol * 2:
-            self.active_analysis_idx = best_idx
-            self._redraw_canvas()
-            self._update_display_for_active_analysis()
-            self.status.config(text=f"Analysis #{best_idx + 1} is now active.")
+        # Use a larger tolerance for selection than for point picking
+        if best_idx is not None and math.sqrt(min_dist_sq) < self.pick_tol * 3:
+            if self.active_analysis_idx != best_idx:
+                self.active_analysis_idx = best_idx
+                self._redraw_canvas()
+                self._update_display_for_active_analysis()
+                self.status.config(text=f"Analysis #{best_idx + 1} is now active.")
 
     def _on_motion(self, event):
         if event.xdata is None or event.ydata is None or self.points is None: return
@@ -807,6 +865,11 @@ class FibonacciAnalysisFrame(tk.Frame):
             self.canvas.draw_idle()
         else:
             self._clear_rubber_lines()
+
+    def _on_list_select(self, event):
+        # A selection in the listbox was made, just trigger a redraw.
+        # The redraw function will handle the highlighting.
+        self._redraw_canvas()
 
     def _on_enter_key(self, event):
         if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)): return
@@ -858,7 +921,10 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self.pending_analysis:
             self._draw_one_analysis(self.pending_analysis, is_pending=True)
 
-        # 4. Interactive elements (anchors, rubber lines)
+        # 4. Highlighted list selection (NEW)
+        self._draw_list_selection_highlight()
+
+        # 5. Interactive elements (anchors, rubber lines)
         if self.anchor_idx is not None:
             y, x = self.points[self.anchor_idx]
             self.ax.scatter([x], [y], s=52, c='yellow', edgecolors='k', linewidths=0.6, zorder=4)
@@ -872,27 +938,130 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.canvas.draw_idle()
 
     def _draw_one_analysis(self, analysis_data: Dict[str, Any], is_active: bool = False, is_pending: bool = False):
+        """Dispatches to the correct V1-style drawing function."""
         if self.points is None: return
 
-        indices = analysis_data['indices']
         analysis_type = analysis_data['type']
-        pts = self.points[indices]
 
         # Determine style based on state
         if is_pending:
-            color, lw, alpha, zorder = 'lime', 2.5, 0.95, 3
+            color, ls, lw, zorder = 'lime', '-', 2.2, 3.0
         elif is_active:
-            color, lw, alpha, zorder = 'magenta', 2.2, 0.9, 2.5
+            color, ls, lw, zorder = 'magenta', '--', 2.0, 2.5
         else:
-            color, lw, alpha, zorder = 'deepskyblue', 1.8, 0.6, 2
+            color, ls, lw, zorder = 'deepskyblue', ':', 1.8, 2.0
+
+        style = {'color': color, 'ls': ls, 'lw': lw, 'zorder': zorder, 'active': is_active or is_pending}
 
         if analysis_type in ('sl', 'ratio'):
-            self.ax.plot(pts[:, 1], pts[:, 0], color=color, lw=lw, ls='--', zorder=zorder, marker='o',
-                         markersize=5 if is_active else 4)
+            self._draw_one_analysis_chain(analysis_data, style)
         elif analysis_type == 'polygon':
-            poly = MplPolygon(pts[:, ::-1], closed=True, facecolor=color, alpha=alpha * 0.3, edgecolor=color,
-                              linewidth=lw, zorder=zorder)
-            self.ax.add_patch(poly)
+            self._draw_one_analysis_polygon(analysis_data, style)
+
+    def _draw_one_analysis_chain(self, analysis_data: Dict[str, Any], style: Dict):
+        """Draws a chain (SL or Ratio) with V1 style (numbers, labels)."""
+        indices = analysis_data['indices']
+        pts = self.points[indices]
+        color = style['color']
+
+        self.ax.scatter(pts[:, 1], pts[:, 0], s=36, c=color, edgecolors='k', linewidths=0.6,
+                        zorder=style['zorder'] + 0.1)
+
+        for i in range(len(pts) - 1):
+            y1, x1 = pts[i];
+            y2, x2 = pts[i + 1]
+            self.ax.plot([x1, x2], [y1, y2], color=style['color'], lw=style['lw'], ls=style['ls'],
+                         zorder=style['zorder'])
+
+        # Draw numbers and labels only for active/pending
+        if style['active']:
+            for i in range(len(pts)):
+                yN, xN = pts[i]
+                self.ax.text(xN, yN, str(i + 1), color=style['color'], fontsize=8, ha='right', va='bottom',
+                             zorder=style['zorder'] + 0.2)
+
+            if analysis_data['type'] == 'sl':
+                sl_chain = analysis_data['data']['sl_chain']
+                for k in range(len(sl_chain)):
+                    y1, x1 = pts[k];
+                    y2, x2 = pts[k + 1]
+                    my, mx = (y1 + y2) / 2, (x1 + x2) / 2
+                    self.ax.text(mx, my, sl_chain[k], color='red', fontsize=9, ha='center', va='center',
+                                 zorder=style['zorder'] + 0.2)
+
+    def _draw_one_analysis_polygon(self, analysis_data: Dict[str, Any], style: Dict):
+        """Draws a polygon with V1 style (fill, label)."""
+        indices = analysis_data['indices']
+        pts = self.points[indices]
+
+        poly = MplPolygon(pts[:, ::-1], closed=True,
+                          facecolor=style['color'], alpha=0.25,
+                          edgecolor=style['color'], linewidth=style['lw'],
+                          ls=style['ls'], zorder=style['zorder'])
+        self.ax.add_patch(poly)
+
+        if style['active']:
+            label = analysis_data['data']['label']
+            cy, cx = pts.mean(axis=0)
+            self.ax.text(cx, cy, label, color=style['color'], fontsize=9, ha='center', va='center',
+                         zorder=style['zorder'] + 0.1)
+
+    def _draw_list_selection_highlight(self):
+        """Draws the bright green highlight for the selected listbox item."""
+        sel = self.lst.curselection()
+        if not sel: return
+
+        row = sel[0]
+        meta = self.list_index_map.get(row)
+        if not meta or 'analysis_idx' not in meta: return
+
+        analysis_idx = meta['analysis_idx']
+        analysis_type = meta['type']
+
+        if analysis_idx >= len(self.permanent_analyses): return
+
+        analysis_data = self.permanent_analyses[analysis_idx]
+
+        if analysis_type == 'sl':
+            self._highlight_word_V1(analysis_data, meta['i0'], meta['n'])
+        elif analysis_type == 'ratio':
+            self._highlight_ratio_pair_V1(analysis_data, meta['k'] - 1, meta['k'])
+        elif analysis_type == 'polygon':
+            self._highlight_polygon_V1(analysis_data)
+
+    def _highlight_word_V1(self, analysis_data: Dict, i0: int, n: int):
+        """Draws lime green highlight for a 'word' (from V1)"""
+        indices = analysis_data['indices']
+        chain = self.points[indices]
+        sl_chain = analysis_data['data']['sl_chain']
+
+        for k in range(i0, i0 + n):
+            y1, x1 = chain[k];
+            y2, x2 = chain[k + 1]
+            self.ax.plot([x1, x2], [y1, y2], color='lime', lw=3.2, zorder=10)
+            my, mx = (y1 + y2) / 2, (x1 + x2) / 2
+            self.ax.text(mx, my, sl_chain[k], color='red', fontsize=9, ha='center', va='center', zorder=10.1)
+
+    def _highlight_ratio_pair_V1(self, analysis_data: Dict, seg_a: int, seg_b: int):
+        """Draws lime green highlight for a ratio pair (from V1)"""
+        indices = analysis_data['indices']
+        chain = self.points[indices]
+        M = len(chain) - 1
+        if not (0 <= seg_a < M and 0 <= seg_b < M): return
+
+        for k in (seg_a, seg_b):
+            y1, x1 = chain[k];
+            y2, x2 = chain[k + 1]
+            self.ax.plot([x1, x2], [y1, y2], color='lime', lw=3.2, zorder=10)
+            my, mx = (y1 + y2) / 2, (x1 + x2) / 2
+            self.ax.text(mx, my, f'{k + 2}-{k + 1}', color='red', fontsize=9, ha='center', va='center', zorder=10.1)
+
+    def _highlight_polygon_V1(self, analysis_data: Dict):
+        """Draws lime green highlight for a polygon."""
+        indices = analysis_data['indices']
+        pts = self.points[indices]
+        poly = MplPolygon(pts[:, ::-1], closed=True, fill=False, edgecolor='lime', linewidth=3.2, zorder=10)
+        self.ax.add_patch(poly)
 
     def _draw_polygon_construction(self):
         if not self.polygon_current_idx or self.points is None: return
@@ -967,11 +1136,16 @@ class FibonacciAnalysisFrame(tk.Frame):
                 indices = self.polygon_current_idx.copy()
                 area = self._polygon_area(indices)
 
+                poly_num = len([p for p in self.permanent_analyses if p['type'] == 'polygon']) + 1
+
                 analysis_data = {
                     'type': 'polygon',
                     'indices': indices,
                     'dialog_pos': self.points[indices[-1]][::-1],  # (x,y)
-                    'data': {'area': area}
+                    'data': {
+                        'area': area,
+                        'label': f'P{poly_num}'
+                    }
                 }
                 self.polygon_current_idx.clear()
                 self._prompt_for_confirmation(analysis_data)
@@ -1039,14 +1213,23 @@ class FibonacciAnalysisFrame(tk.Frame):
     def _activate_right_scroll(self, _event):
         if self._right_scroll_canvas:
             self._right_scroll_canvas.bind_all("<MouseWheel>", self._on_right_scroll_mousewheel)
+            self._right_scroll_canvas.bind_all("<Button-4>", self._on_right_scroll_mousewheel)
+            self._right_scroll_canvas.bind_all("<Button-5>", self._on_right_scroll_mousewheel)
 
     def _deactivate_right_scroll(self, _event):
         if self._right_scroll_canvas:
             self._right_scroll_canvas.unbind_all("<MouseWheel>")
+            self._right_scroll_canvas.unbind_all("<Button-4>")
+            self._right_scroll_canvas.unbind_all("<Button-5>")
 
     def _on_right_scroll_mousewheel(self, event):
-        if self._right_scroll_canvas:
+        if self._right_scroll_canvas is None: return
+        if getattr(event, 'delta', 0):
             self._right_scroll_canvas.yview_scroll(int(-event.delta / 120), 'units')
+        elif getattr(event, 'num', None) == 4:
+            self._right_scroll_canvas.yview_scroll(-1, 'units')
+        elif getattr(event, 'num', None) == 5:
+            self._right_scroll_canvas.yview_scroll(1, 'units')
 
     def _onBand(self):
         try:
@@ -1057,6 +1240,11 @@ class FibonacciAnalysisFrame(tk.Frame):
     def _set_analysis_mode(self, mode: str):
         if self.license_manager and not self.license_manager.has_valid_license() and mode in ['ratio', 'polygon']:
             return
+
+        # Reject pending analysis if switching modes
+        if self.pending_analysis:
+            self._reject_pending_analysis(ask_user=False)
+
         self.analysis_mode = mode
         hints = {
             'sl': 'Chain mode: Left Click to select two endpoints.',
@@ -1087,21 +1275,24 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self._full_view_bounds is None: return
 
         x0_full, x1_full, y0_full, y1_full = self._full_view_bounds
+        if self.view_cx is None or self.view_cy is None:
+            self.view_cx = (x0_full + x1_full) / 2.0
+            self.view_cy = (y0_full + y1_full) / 2.0
+
         if self.zoom_val <= 0:
             self.ax.set_xlim(x0_full, x1_full)
             self.ax.set_ylim(y0_full, y1_full)
             return
 
-        w, h = x1_full - x0_full, y1_full - y0_full
-        cx = self.view_cx if self.view_cx is not None else w / 2 + x0_full
-        cy = self.view_cy if self.view_cy is not None else h / 2 + y0_full
+        w, h = x1_full - x0_full, y0_full - y1_full  # y is inverted
+        cx, cy = self.view_cx, self.view_cy
 
         min_dim = min(w, h)
         L = max(50.0, min_dim - (min_dim - 50.0) * (self.zoom_val / 100.0))
         half = L / 2.0
 
         x0, x1 = max(x0_full, cx - half), min(x1_full, cx + half)
-        y0, y1 = max(y1_full, cy - half), min(y0_full, cy + half)  # inverted for imshow
+        y0, y1 = min(y0_full, cy + half), max(y1_full, cy - half)  # inverted for imshow
 
         self.ax.set_xlim(x0, x1)
         self.ax.set_ylim(y0, y1)
@@ -1124,10 +1315,6 @@ class FibonacciAnalysisFrame(tk.Frame):
             self._right_scroll_canvas.yview_moveto(1.0)
             self._right_scroll_canvas.after(120, lambda: self._right_scroll_canvas.yview_moveto(0.0))
 
-    def _on_list_select(self, event):
-        # Highlighting from list is complex with the new model, disabling for now
-        pass
-
     def save_png(self):
         p = filedialog.asksaveasfilename(defaultextension='.png', filetypes=[('PNG', '*.png')])
         if p:
@@ -1136,14 +1323,23 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def _clear_rubber_lines(self):
         if self.rubber_line:
-            self.rubber_line.remove();
+            try:
+                self.rubber_line.remove()
+            except Exception:
+                pass
             self.rubber_line = None
         if self.polygon_rubber_line:
-            self.polygon_rubber_line.remove();
+            try:
+                self.polygon_rubber_line.remove()
+            except Exception:
+                pass
             self.polygon_rubber_line = None
 
     def _on_sl_keypress(self, event):
-        # This is complex to re-integrate safely, disabling manual edit for now.
+        # Manual editing of the SL chain is disabled in this workflow
+        # to prevent data mismatch.
+        messagebox.showinfo("Info",
+                            "Manual editing of the S/L chain is disabled. Please re-run the chain analysis if needed.")
         return "break"
 
     def _set_sl_text(self, s: str):
@@ -1152,23 +1348,70 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def _collect_points_along_segment(self, i0: int, i1: int, max_dist: float) -> List[int]:
         if self.points is None: return []
-        p0, p1 = self.points[i0, [1, 0]], self.points[i1, [1, 0]]
+        p0, p1 = self.points[i0, [1, 0]], self.points[i1, [1, 0]]  # x, y
         v = p1 - p0
         vv = float(np.dot(v, v))
         if vv == 0: return [i0]
 
         idx = []
-        for k, (y, x) in enumerate(self.points):
-            w = np.array([x, y]) - p0
+        pts_xy = self.points[:, ::-1]  # y,x -> x,y
+
+        for k, p_xy in enumerate(pts_xy):
+            w = p_xy - p0
             t = float(np.dot(w, v) / vv)
             if 0.0 <= t <= 1.0:
                 proj = p0 + t * v
-                dist = float(np.hypot(x - proj[0], y - proj[1]))
+                dist = float(np.hypot(p_xy[0] - proj[0], p_xy[1] - proj[1]))
                 if dist <= max_dist:
                     idx.append((t, k))
 
         idx.sort(key=lambda z: z[0])
-        return [k for _, k in idx]
+
+        # Ensure start and end points are included and unique
+        result = []
+        seen = set()
+        if i0 not in seen:
+            result.append(i0);
+            seen.add(i0)
+
+        for _, k in idx:
+            if k not in seen:
+                result.append(k);
+                seen.add(k)
+
+        if i1 not in seen:
+            result.append(i1);
+            seen.add(i1)
+
+        # Re-sort based on original list to get the final order
+        final_indices = [k for _, k in sorted([(idx[0], idx[1]) for idx in idx if idx[1] in result])]
+
+        # Final check to ensure i0 and i1 are at the ends if they were in the original list
+        if i0 in final_indices: final_indices.remove(i0)
+        if i1 in final_indices: final_indices.remove(i1)
+
+        # Determine correct order
+        p0_yx = self.points[i0]
+        p1_yx = self.points[i1]
+
+        final_points = self.points[final_indices]
+        if len(final_points) > 0:
+            vec = p1_yx - p0_yx
+            projs = np.dot(final_points - p0_yx, vec) / np.dot(vec, vec)
+            sorted_k = np.array(final_indices)[np.argsort(projs)]
+            final_indices = [i0] + list(sorted_k) + [i1]
+        else:
+            final_indices = [i0, i1]
+
+        # Deduplicate one last time
+        seen_final = set()
+        deduped_final = []
+        for k in final_indices:
+            if k not in seen_final:
+                deduped_final.append(k)
+                seen_final.add(k)
+
+        return deduped_final
 
 
 class App(tk.Tk):
