@@ -15,6 +15,8 @@ import secrets
 import sys
 import textwrap
 import webbrowser
+import os  # <-- Добавлено для проверки прав
+import ctypes  # <-- Добавлено для проверки прав
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
@@ -377,10 +379,10 @@ class PipelineController:
             messagebox.showerror("Error", f"Failed to load data into the editor:\n{exc}")
 
     def open_analysis(
-        self,
-        payload_path: Path | str,
-        image_path: Optional[Path | str],
-        spots_json: Optional[Path | str],
+            self,
+            payload_path: Path | str,
+            image_path: Optional[Path | str],
+            spots_json: Optional[Path | str],
     ) -> None:
         path = Path(payload_path)
         if not path.exists():
@@ -394,11 +396,11 @@ class PipelineController:
 
 
 def _show_splash(
-    root: tk.Tk,
-    *,
-    logo_path: Path | str | None = None,
-    duration_ms: int = 3000,
-    background: str = "#59c6f1",
+        root: tk.Tk,
+        *,
+        logo_path: Path | str | None = None,
+        duration_ms: int = 3000,
+        background: str = "#59c6f1",
 ) -> None:
     if duration_ms <= 0:
         root.deiconify()
@@ -491,7 +493,8 @@ class TabbedPipelineApp(tk.Tk):
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8))
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.controller = PipelineController(content, status_callback=self._update_status, license_manager=self.license_manager)
+        self.controller = PipelineController(content, status_callback=self._update_status,
+                                             license_manager=self.license_manager)
         self.controller.set_status("Opened tab: Launcher")
         self._refresh_license_banner()
 
@@ -563,17 +566,115 @@ def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
             messagebox.showinfo("License Key", "License activated successfully. Thank you!", parent=root)
             activated = True
         except ValueError:
-            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.", parent=root)
+            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.",
+                                 parent=root)
             activated = False
     root.destroy()
     return activated
 
 
+def _check_permissions_and_elevate() -> bool:
+    """
+    Проверяет права на запись. Если их нет, пытается перезапустить с правами администратора.
+    Возвращает True, если можно продолжать, False - если нужно выйти.
+    """
+    if winreg is None:  # Не-Windows (Linux, macOS), пропускаем проверку
+        return True
+
+    # Определяем папку приложения
+    if getattr(sys, "frozen", False):
+        app_dir = Path(sys.executable).parent.resolve()
+    else:
+        app_dir = Path(__file__).parent.resolve()
+
+    test_file = app_dir / f"__temp_write_test_{secrets.token_hex(4)}.tmp"
+
+    try:
+        # 1. Пытаемся создать временный файл
+        test_file.write_text("test_write_permissions", encoding="utf-8")
+        test_file.unlink()
+        return True  # Права на запись есть, продолжаем
+
+    except (IOError, OSError, PermissionError):
+        # 2. Ошибка записи. Проверяем, есть ли уже права администратора
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+        except Exception:
+            is_admin = False  # На всякий случай
+
+        if is_admin:
+            # 3. Мы администратор, но все равно не можем писать.
+            messagebox.showerror(
+                "Ошибка записи",
+                "Приложение имеет права администратора, но не может создавать файлы в своей папке. "
+                f"Проверьте права доступа или переместите приложение.\n\nПуть: {app_dir}"
+            )
+            return False  # Не продолжать
+
+        # 4. Мы не администратор, и у нас нет прав на запись. Пытаемся перезапустить.
+        try:
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",  # Операция "runas" запрашивает повышение прав
+                sys.executable,
+                # Передаем аргументы командной строки, с которыми было запущено приложение
+                " ".join(sys.argv),
+                None,
+                1  # SW_SHOWNORMAL
+            )
+
+            if ret > 32:
+                # Перезапуск успешен (UAC "Да"). Новый процесс запускается.
+                # Этот (старый) процесс должен завершиться.
+                return False
+            else:
+                # Пользователь нажал "Нет" в UAC (ret <= 32)
+                messagebox.showerror(
+                    "Требуются права администратора",
+                    "Для работы из этой папки приложению требуются права администратора. "
+                    "В доступе отказано. Приложение будет закрыто."
+                )
+                return False
+
+        except Exception as e:
+            # Не удалось выполнить ShellExecute
+            messagebox.showerror(
+                "Ошибка перезапуска",
+                f"Не удалось перезапустить приложение с правами администратора: {e}\n\n"
+                "Приложение будет закрыто."
+            )
+            return False
+
+    finally:
+        # Гарантированная очистка, если файл остался
+        if test_file.exists():
+            try:
+                test_file.unlink()
+            except OSError:
+                pass
+
+
 def main(
-    *,
-    splash_logo: Path | str | None = None,
-    splash_duration_ms: int = 3000,
+        *,
+        splash_logo: Path | str | None = None,
+        splash_duration_ms: int = 3000,
 ) -> None:
+    # --- НОВАЯ ЛОГИКА ПРОВЕРКИ ПРАВ ---
+    # Нам нужен временный root, чтобы messagebox мог работать
+    # до создания основного окна приложения.
+    temp_root = tk.Tk()
+    temp_root.withdraw()
+    try:
+        should_proceed = _check_permissions_and_elevate()
+    finally:
+        temp_root.destroy()  # Уничтожаем временный root
+
+    if not should_proceed:
+        # Если False, значит, мы либо перезапускаемся, либо пользователь отказал.
+        # В любом случае, этот экземпляр приложения должен завершиться.
+        sys.exit(0)
+    # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
     license_manager = LicenseManager()
     if not license_manager.has_valid_license() and license_manager.is_trial_expired():
         activated = _show_trial_expired_dialog(license_manager)
