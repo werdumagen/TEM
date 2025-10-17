@@ -474,7 +474,7 @@ class TabbedPipelineApp(tk.Tk):
             header, text="A single pipeline for electron diffraction processing from loading to analysis.",
             style="Subheader.TLabel", wraplength=720, justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(header, text="by RL 9-11 2025 v2.61 ", style="Byline.TLabel").grid(
+        ttk.Label(header, text="by RL 9-11 2025 v3.5.2 ", style="Byline.TLabel").grid(
             row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)
         )
         ttk.Button(header, text="Help", command=self._show_help).grid(
