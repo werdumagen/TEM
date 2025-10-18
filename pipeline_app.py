@@ -40,7 +40,6 @@ _LSP2 = "2YXRlU2VjcmV0"
 LICENSE_SECRET = base64.b64decode(_LSP1 + _LSP2).decode("utf-8")
 
 TRIAL_DAYS = 3
-SESSION_FILENAME = "saed_session.json"
 
 
 class MaskedEntry(ttk.Entry):
@@ -228,9 +227,13 @@ class LicenseManager:
             self._save(data)
             return data
         except Exception:
+            # Handle potential registry read errors gracefully
+            print("Warning: Could not read license data from registry. Using defaults.")
             data = self._default_data()
+            # Attempt to save defaults back, might fail if permissions are wrong
             self._save(data)
             return data
+
 
     def _save(self, data: dict[str, Optional[str]]) -> None:
         if winreg is None:
@@ -251,15 +254,23 @@ class LicenseManager:
     def _parse_timestamp(self, value: Optional[str]) -> datetime:
         if not value: return self._now()
         try:
+            # Handle potential timezone info if present (though unlikely from registry)
+            if value.endswith('Z'):
+                 value = value[:-1] + '+00:00'
             return datetime.fromisoformat(value)
         except ValueError:
+             # Fallback if the format is somehow corrupted
+            print(f"Warning: Corrupted trial start date '{value}'. Resetting trial.")
             return self._now()
+
 
     def _normalize_key(self, key: str) -> str:
         cleaned = key.replace("-", "").replace(" ", "").upper()
         if not cleaned:
             raise ValueError("Empty license key")
-        return "-".join(textwrap.wrap(cleaned, 4))
+        # Ensure it fits the XXXX-... format even if input is slightly off
+        return "-".join(textwrap.wrap(cleaned.ljust(24, 'X')[:24], 4))
+
 
     def _validate_license_key(self, key: str) -> bool:
         cleaned = key.replace("-", "").upper()
@@ -282,12 +293,14 @@ class LicenseManager:
         if not self._validate_license_key(normalized):
             raise ValueError("Invalid license key")
         self._data["license_key"] = normalized
-        self._data["licensed_at"] = self._now().isoformat()
+        self._data["licensed_at"] = self._now().isoformat() # Optional: record activation time
         self._save(self._data)
 
     def clear_license(self) -> None:
+        # Reset trial start date as well when clearing license
         self._data = self._default_data()
         self._save(self._data)
+
 
     def trial_start(self) -> datetime:
         return self._parse_timestamp(self._data.get("trial_start"))
@@ -300,25 +313,29 @@ class LicenseManager:
         return self._now() >= self.trial_expiration()
 
     def trial_days_remaining(self) -> int:
-        if self.has_valid_license(): return 0
+        if self.has_valid_license(): return 0 # No trial days remaining if licensed
         expiration = self.trial_expiration()
         now = self._now()
         if now >= expiration: return 0
         remaining = expiration - now
-        return remaining.days + (1 if remaining.seconds > 0 else 0)
+        # Calculate remaining days, rounding up
+        return remaining.days + (1 if remaining.seconds > 0 or remaining.microseconds > 0 else 0)
+
 
     def status_message(self) -> str:
         if self.has_valid_license():
             return "Permanent license activated. Thank you for supporting the project!"
         expiration = self.trial_expiration()
         remaining = self.trial_days_remaining()
-        if remaining == 0:
+        if remaining <= 0:
             return "Trial expired. Please enter a license key to continue using the application."
         plural = "day" if remaining == 1 else "days"
+        # Show expiration date for clarity
         return (
             f"Trial mode: {remaining} {plural} remaining (expires on {expiration.date():%Y-%m-%d}). "
             "Enter a license key to unlock the full version permanently."
         )
+
 
 
 if TYPE_CHECKING:
@@ -363,46 +380,121 @@ class PipelineController:
     def _on_tab_changed(self, _event) -> None:
         current = self.notebook.select()
         if current:
-            tab_text = self.notebook.tab(current, "text")
-            self.set_status(f"Opened tab: {tab_text}")
+            try:
+                tab_text = self.notebook.tab(current, "text")
+                self.set_status(f"Opened tab: {tab_text}")
+            except tk.TclError: # Handle case where tab might be briefly invalid during changes
+                self.set_status("Switching tabs...")
+
 
     def open_editor(self, saed_json_path: Path | str) -> None:
         path = Path(saed_json_path)
         if not path.exists():
-            self.set_status(f"Error: {path.name} not found.")
-            messagebox.showerror("Error", f"File not found:\n{path}")
-            return
+            raise FileNotFoundError(f"Editor input file not found: {path}")
         try:
             self.editor.load_input_json(path, push_undo=False)
-            self.notebook.select(self.editor)
-            self.set_status(f"Editor: {path.name}")
+            self.notebook.select(self.editor) # Switch to editor tab
+            self.set_status(f"Editor: Loaded {path.name}")
         except Exception as exc:
             messagebox.showerror("Error", f"Failed to load data into the editor:\n{exc}")
 
     def open_analysis(
-            self,
-            payload_path: Path | str,
-            image_path: Optional[Path | str],
-            spots_json: Optional[Path | str],
+        self,
+        payload_path: Path | str,
+        image_path: Optional[Path | str], # These might be redundant if payload has all info
+        spots_json: Optional[Path | str], # These might be redundant if payload has all info
     ) -> None:
         path = Path(payload_path)
         if not path.exists():
-            self.set_status(f"Error: {path.name} not found.")
-            messagebox.showerror("Error", f"File not found:\n{path}")
-            return
+             raise FileNotFoundError(f"Analysis input file not found: {path}")
         try:
+            # Pass the main payload path to load_json
             self.analysis.load_json(path)
-            self.notebook.select(self.analysis)
-            self.set_status(f"Analysis: {path.name}")
+            self.notebook.select(self.analysis) # Switch to analysis tab
+            self.set_status(f"Analysis: Loaded {path.name}")
         except Exception as exc:
             messagebox.showerror("Error", f"Failed to load data into the analyzer:\n{exc}")
 
 
+    # --- Session Save/Load Methods ---
+
+    def save_session(self, filepath: Path | str) -> None:
+        """Collect state from all tabs and save to a JSON file."""
+        state = {
+            'launcher': self.launcher.get_state(),
+            'editor': self.editor.get_state(),
+            'analysis': self.analysis.get_state(),
+            'active_tab': self.notebook.index(self.notebook.select()) # Save current tab index
+        }
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+            self.set_status(f"Session saved to {Path(filepath).name}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not write session file:\n{e}")
+            raise # Re-raise for the caller to know
+
+
+    def load_session_from_file(self, filepath: Path | str) -> None:
+        """Load state from JSON and apply to all tabs."""
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"Session file not found: {path}")
+
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+
+            # --- Critical Order: Set launcher state FIRST ---
+            # This ensures the output path is set before other modules might need it
+            if 'launcher' in state:
+                self.launcher.set_state(state['launcher'])
+            else:
+                 messagebox.showwarning("Load Warning", "Session file missing 'launcher' state. Some settings may be default.")
+
+
+            # Now load editor and analysis state
+            if 'editor' in state:
+                self.editor.set_state(state['editor'])
+            else:
+                 messagebox.showwarning("Load Warning", "Session file missing 'editor' state. Editor may be empty.")
+                 self.editor.set_state({}) # Clear editor state if missing
+
+
+            if 'analysis' in state:
+                self.analysis.set_state(state['analysis'])
+            else:
+                 messagebox.showwarning("Load Warning", "Session file missing 'analysis' state. Analysis tab may be empty.")
+                 self.analysis.set_state({}) # Clear analysis state if missing
+
+
+            # Restore the active tab
+            active_tab_index = state.get('active_tab', 0)
+            try:
+                # Ensure the index is valid before selecting
+                if 0 <= active_tab_index < self.notebook.index('end'):
+                    self.notebook.select(active_tab_index)
+                else:
+                    self.notebook.select(0) # Fallback to first tab
+            except tk.TclError:
+                self.notebook.select(0) # Fallback on error
+
+            self.set_status(f"Session loaded from {path.name}")
+
+        except json.JSONDecodeError as e:
+            messagebox.showerror("Load Error", f"Session file is corrupted or invalid JSON:\n{e}")
+            raise
+        except Exception as e:
+            messagebox.showerror("Load Error", f"An unexpected error occurred while loading the session:\n{e}")
+            raise # Re-raise for debugging
+
+
 def _show_splash(
-        root: tk.Tk,
-        *,
-        logo_path: Path | str | None = None,
-        duration_ms: int = 3000,
+    root: tk.Tk,
+    *,
+    logo_path: Path | str | None = None,
+    duration_ms: int = 3000,
+    background: str = "#59c6f1", # This is the argument with the default value
 ) -> None:
     if duration_ms <= 0:
         root.deiconify()
@@ -410,41 +502,64 @@ def _show_splash(
 
     splash = tk.Toplevel(root)
     splash.overrideredirect(True)
+    # --- FIX: Use the 'background' argument directly ---
     splash.configure(background=background)
-    frame = tk.Frame(splash, background=background)
+    frame = tk.Frame(splash, background=background) # Also use it here
+    # --- End FIX ---
     frame.pack(fill=tk.BOTH, expand=True)
+
     logo_image = None
     if logo_path is not None:
         try:
-            if Image is not None and ImageTk is not None:
-                with Image.open(logo_path) as pil_image:
-                    logo_image = ImageTk.PhotoImage(pil_image)
+            logo_file = Path(logo_path)
+            if logo_file.exists():
+                if Image is not None and ImageTk is not None:
+                    with Image.open(logo_file) as pil_image:
+                        # Optional: Resize if needed, e.g., pil_image.thumbnail((width, height))
+                        logo_image = ImageTk.PhotoImage(pil_image)
+                else:
+                    # Fallback for systems without Pillow, might not handle all formats
+                    logo_image = tk.PhotoImage(file=str(logo_file))
             else:
-                logo_image = tk.PhotoImage(file=str(logo_path))
-        except (OSError, tk.TclError):
-            logo_image = None
+                 print(f"Warning: Splash logo not found at {logo_file}")
+        except Exception as e: # Catch potential errors from Image.open or tk.PhotoImage
+            print(f"Warning: Could not load splash logo: {e}")
+            logo_image = None # Ensure it's None on failure
+
+
     if logo_image is not None:
         logo_label = tk.Label(frame, image=logo_image, background=background)
-        logo_label.image = logo_image
+        logo_label.image = logo_image # Keep a reference!
         logo_label.pack(padx=32, pady=24)
     else:
+        # Fallback text if logo fails or isn't provided
         tk.Label(
             frame, text="SAED Symmetry\nLaunching…", justify="center", background=background,
             foreground="#ffffff", font=("TkDefaultFont", 18, "bold"), padx=36, pady=28,
         ).pack()
-    splash.update_idletasks()
+
+    splash.update_idletasks() # Ensure dimensions are calculated
     width = splash.winfo_reqwidth()
     height = splash.winfo_reqheight()
-    x = (splash.winfo_screenwidth() // 2) - (width // 2)
-    y = (splash.winfo_screenheight() // 2) - (height // 2)
-    splash.geometry(f"{width}x{height}+{x}+{y}")
+    screen_width = splash.winfo_screenwidth()
+    screen_height = splash.winfo_screenheight()
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
+    splash.geometry(f"{width}x{height}+{x}+{y}") # Center the splash screen
 
     def _close_splash() -> None:
-        if splash.winfo_exists():
-            splash.destroy()
-        root.deiconify()
+        try:
+            if splash.winfo_exists():
+                splash.destroy()
+            if root.winfo_exists(): # Check if main window still exists
+                root.deiconify() # Show main window
+        except tk.TclError:
+             pass # Ignore errors if widgets are already destroyed
 
-    root.after(duration_ms, _close_splash)
+
+    # Ensure the close function runs even if the app closes early
+    splash.after(duration_ms, _close_splash)
+    root.protocol("WM_DELETE_WINDOW", lambda: (_close_splash(), root.destroy())) # Handle main window close during splash
 
 
 class TabbedPipelineApp(tk.Tk):
@@ -454,15 +569,24 @@ class TabbedPipelineApp(tk.Tk):
         super().__init__()
         self.license_manager = license_manager
         if not show_initially:
-            self.withdraw()
+            self.withdraw() # Hide main window initially
         self.title("SAED Symmetry — Suite")
         self.geometry("1520x980")
         self.resizable(True, True)
+
+        # --- Style Configuration ---
         style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
+        available_themes = style.theme_names()
+        # Prefer 'clam', 'alt', 'default' in that order
+        preferred_themes = ['clam', 'alt', 'default']
+        for theme in preferred_themes:
+             if theme in available_themes:
+                  try:
+                       style.theme_use(theme)
+                       break
+                  except tk.TclError:
+                       continue
+        # Define custom styles
         style.configure("Header.TLabel", font=("TkDefaultFont", 18, "bold"))
         style.configure("Subheader.TLabel", font=("TkDefaultFont", 11))
         style.configure("Byline.TLabel", font=("TkDefaultFont", 10, "italic"), foreground="#555555")
@@ -470,9 +594,12 @@ class TabbedPipelineApp(tk.Tk):
         style.configure("TNotebook", padding=(12, 10))
         style.configure("TNotebook.Tab", padding=(16, 8))
         style.configure("License.TLabel", font=("TkDefaultFont", 10))
+
+
+        # --- Header ---
         header = ttk.Frame(self, padding=(20, 18, 20, 12))
         header.pack(side=tk.TOP, fill=tk.X)
-        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(0, weight=1) # Allow title label to expand
         ttk.Label(header, text="SAED Symmetry — Suite", style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header, text="A single pipeline for electron diffraction processing from loading to analysis.",
@@ -484,106 +611,35 @@ class TabbedPipelineApp(tk.Tk):
         ttk.Button(header, text="Help", command=self._show_help).grid(
             row=0, column=2, rowspan=2, sticky="ne"
         )
+
+        # --- License Info ---
         self.license_label = ttk.Label(header, text="", style="License.TLabel", wraplength=720, justify="left")
         self.license_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0))
         self.license_button = ttk.Button(
             header, text="Enter License Key", command=self._prompt_for_license, style="Accent.TButton",
         )
         self.license_button.grid(row=2, column=2, sticky="e", padx=(12, 0), pady=(12, 0))
+
+        # --- Main Content Area (Tabs) ---
         content = ttk.Frame(self, padding=(20, 0, 20, 12))
         content.pack(fill=tk.BOTH, expand=True)
+
+        # --- Status Bar ---
         self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8))
+        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8), relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.controller = PipelineController(content, status_callback=self._update_status,
-                                             license_manager=self.license_manager)
-        self.controller.set_status("Opened tab: Launcher")
+
+        # --- Initialize Controller (and its tabs) ---
+        self.controller = PipelineController(content, status_callback=self._update_status, license_manager=self.license_manager)
+        self.controller.set_status("Opened tab: Launcher") # Initial status
+
+        # Refresh license banner after controller is initialized
         self._refresh_license_banner()
 
-        # --- NEW: Session Management Bindings ---
-        self.bind_all("<Control-s>", self._on_save_session)
-        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
-        self.project_folder: Optional[Path] = None
-        self._session_dirty_flag = False
-        self.bind_all("<Key>", lambda e: self._mark_dirty())
-        self.bind_all("<Button-1>", lambda e: self._mark_dirty())
-        # --- End Session Management ---
+        # --- Bind save/close events ---
+        self.bind_all("<Control-s>", self._on_save_shortcut)
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
 
-    def _mark_dirty(self):
-        self._session_dirty_flag = True
-
-    def _on_app_close(self):
-        """Handle window close event, prompting to save."""
-        if self._session_dirty_flag:
-            project_path = self.controller.launcher.get_project_folder()
-            project_name = project_path.name if project_path else "current session"
-
-            answer = messagebox.askyesnocancel(
-                "Save Session?",
-                f"Do you want to save your changes to '{project_name}' before closing?"
-            )
-            if answer is True:  # Yes
-                self._on_save_session()
-                self.destroy()
-            elif answer is False:  # No
-                self.destroy()
-            elif answer is None:  # Cancel
-                return
-        else:
-            self.destroy()
-
-    def _on_save_session(self, event=None):
-        """Collect state from all tabs and save to saed_session.json."""
-        try:
-            project_folder = self.controller.launcher.get_project_folder()
-            if not project_folder:
-                messagebox.showerror("Save Session", "Please select a Project Folder in the Launcher tab first.")
-                return
-
-            project_folder.mkdir(parents=True, exist_ok=True)
-            session_path = project_folder / SESSION_FILENAME
-
-            session_data = {
-                "__version__": "1.0",
-                "project_folder_name": project_folder.name,
-                "launcher": self.controller.launcher.get_state(),
-                "editor": self.controller.editor.get_state(),
-                "analysis": self.controller.analysis.get_state(),
-            }
-
-            # Use numpy-safe exporter if needed
-            class NpEncoder(json.JSONEncoder):
-                def default(self, obj):
-                    if isinstance(obj, np.integer): return int(obj)
-                    if isinstance(obj, np.floating): return float(obj)
-                    if isinstance(obj, np.ndarray): return obj.tolist()
-                    return super(NpEncoder, self).default(obj)
-
-            session_path.write_text(
-                json.dumps(session_data, indent=2, cls=NpEncoder),
-                encoding="utf-8"
-            )
-            self._session_dirty_flag = False
-            self.status_var.set(f"Session saved to {session_path.name}")
-
-        except Exception as e:
-            messagebox.showerror("Save Session Error", f"Failed to save session:\n{e}")
-
-    def _load_session_data(self, session_data: dict, project_folder: Path):
-        """Push loaded session data into all tabs."""
-        try:
-            self.controller.launcher.set_state(session_data.get('launcher'), project_folder)
-
-            # Editor must be loaded before Analysis
-            self.controller.editor.set_state(session_data.get('editor'), project_folder)
-
-            self.controller.analysis.set_state(session_data.get('analysis'), project_folder)
-
-            self.status_var.set(f"Session loaded from {project_folder.name}")
-            self.controller.notebook.select(self.controller.analysis)  # Show analysis tab
-            self._session_dirty_flag = False
-        except Exception as e:
-            messagebox.showerror("Load Session Error", f"Failed to load session data:\n{e}")
 
     def _update_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -591,42 +647,53 @@ class TabbedPipelineApp(tk.Tk):
     def _refresh_license_banner(self) -> None:
         message = self.license_manager.status_message()
         self.license_label.configure(text=message)
+        # Change button text based on license status
         if self.license_manager.has_valid_license():
-            self.license_button.configure(text="Update License Key")
+            self.license_button.configure(text="Update License")
         else:
             self.license_button.configure(text="Enter License Key")
+
 
     def _prompt_for_license(self) -> None:
         prompt_message = "Enter the permanent license key provided by the publisher:"
         dialog = LicenseDialog(self, "License Key", prompt_message)
-        key = dialog.result
+        key = dialog.result # This will be None if cancelled
         if key is None:
+            self._update_status("License entry cancelled.")
             return
         try:
             self.license_manager.register_license_key(key)
+            messagebox.showinfo("License Key", "License activated successfully. Enjoy the full version!")
+            self._update_status("License activated.")
         except ValueError:
             messagebox.showerror("License Key", "The provided license key is invalid. Please try again.")
-            return
-        messagebox.showinfo("License Key", "License activated successfully. Enjoy the full version!")
-        self._refresh_license_banner()
+            self._update_status("Invalid license key entered.")
+
+        self._refresh_license_banner() # Update banner regardless of success
+
 
     def _show_help(self) -> None:
         help_window = tk.Toplevel(self)
         help_window.title("About the application")
-        help_window.transient(self)
-        help_window.grab_set()
+        help_window.transient(self) # Make it behave like a dialog relative to the main window
+        help_window.grab_set() # Prevent interaction with main window while help is open
         help_window.resizable(False, False)
+
         frame = ttk.Frame(help_window, padding=(20, 16))
         frame.pack(fill=tk.BOTH, expand=True)
+
         message = (
-            "In the Launcher tab, prepare the image and detector parameters. "
-            "The Editor tab lets you refine points and radii manually, and Analysis builds "
-            "a symmetry report with Fibonacci chains."
-            "\n\nUse Ctrl+S to save your session (settings, points, and analyses) "
-            f"to a '{SESSION_FILENAME}' file in the selected Project Folder."
+            "This application provides a workflow for SAED pattern analysis:\n\n"
+            "1.  **Launcher:** Load an image, set preprocessing options, define center/radii (or use auto-detection), and generate initial points.\n"
+            "2.  **Editor:** Manually refine the detected points (add, delete, merge, measure distances) and adjust the center overlay.\n"
+            "3.  **Analysis:** Perform symmetry analysis based on the refined points, focusing on Fibonacci chains and polygon properties.\n\n"
+            "Use **Ctrl+S** to save the current state (settings, points, analyses) to a `saed_session.json` file in the output folder. Use **Load Session...** in the Launcher to restore a previous state."
         )
         ttk.Label(frame, text=message, justify="left", wraplength=480).pack(anchor="w")
-        ttk.Label(frame, text="Support the project:", padding=(0, 12, 0, 0)).pack(anchor="w")
+
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 8))
+
+        ttk.Label(frame, text="Support the project:").pack(anchor="w", pady=(0, 2))
         donation_link = "https://donatello.to/Roynik"
         link_label = tk.Label(
             frame, text=donation_link, fg="#1a0dab", cursor="hand2",
@@ -634,91 +701,132 @@ class TabbedPipelineApp(tk.Tk):
         )
         link_label.pack(anchor="w")
         link_label.bind("<Button-1>", lambda _event: webbrowser.open_new_tab(donation_link))
-        ttk.Button(frame, text="Close", command=help_window.destroy).pack(
-            anchor="e", pady=(20, 0)
-        )
+
+        # Close button at the bottom right
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill=tk.X, pady=(20, 0))
+        ttk.Button(button_frame, text="Close", command=help_window.destroy).pack(side=tk.RIGHT)
+
+
+    # --- Session Save/Load Handlers ---
+
+    def _on_save_shortcut(self, event=None) -> bool:
+        """Saves the current session state to saed_session.json in the output folder."""
+        # Check if controller and launcher exist
+        if not hasattr(self, 'controller') or not hasattr(self.controller, 'launcher'):
+            messagebox.showerror("Save Error", "Application components not fully initialized.")
+            return False
+
+        output_dir_str = self.controller.launcher.ent_out.get()
+        if not output_dir_str:
+            messagebox.showerror("Save Error", "Please specify an 'Output folder' in the Launcher tab first.")
+            return False
+
+        output_dir = Path(output_dir_str)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+            filepath = output_dir / "saed_session.json"
+            self.controller.save_session(filepath) # Delegate saving to controller
+            # Status update already done in controller.save_session
+            return True
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save session:\n{e}")
+            return False
+
+
+    def _on_close_window(self) -> None:
+        """Prompts to save on close, then destroys the window."""
+        # Use tk.Toplevel to ensure the dialog is on top
+        dialog = tk.Toplevel(self)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.title("Confirm Exit")
+        dialog.geometry("300x100") # Adjust size as needed
+
+        label = ttk.Label(dialog, text="Save current session before closing?")
+        label.pack(pady=10)
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+
+        saved = False # Flag to track if save was attempted
+
+        def yes_action():
+            nonlocal saved
+            if self._on_save_shortcut(): # Attempt save
+                 saved = True # Mark as saved successfully or attempted
+            dialog.destroy()
+            self.destroy() # Close main window
+
+        def no_action():
+            dialog.destroy()
+            self.destroy() # Close main window without saving
+
+        def cancel_action():
+            dialog.destroy() # Only close the dialog
+
+        yes_button = ttk.Button(button_frame, text="Yes", command=yes_action)
+        yes_button.pack(side=tk.LEFT, padx=5)
+        no_button = ttk.Button(button_frame, text="No", command=no_action)
+        no_button.pack(side=tk.LEFT, padx=5)
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=cancel_action)
+        cancel_button.pack(side=tk.LEFT, padx=5)
+
+        # Center the dialog (optional but good practice)
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() // 2) - (dialog.winfo_width() // 2)
+        y = self.winfo_rooty() + (self.winfo_height() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+
 
 
 def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
     root = tk.Tk()
-    root.withdraw()
+    root.withdraw() # Keep root hidden
     message = (
         "The 3-day trial period has ended. "
         "Please enter a valid license key to unlock the full version permanently."
     )
+    # Ensure dialog is transient to the hidden root
     dialog = LicenseDialog(root, "Trial Expired", message)
-    key = dialog.result
+    key = dialog.result # Blocks until dialog is closed
     activated = False
     if key:
         try:
             license_manager.register_license_key(key)
+            # Use root as parent for messagebox
             messagebox.showinfo("License Key", "License activated successfully. Thank you!", parent=root)
             activated = True
         except ValueError:
-            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.",
-                                 parent=root)
-            activated = False
-    root.destroy()
+             # Use root as parent for messagebox
+            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.", parent=root)
+            activated = False # Explicitly set to False on error
+
+    root.destroy() # Clean up hidden root window
     return activated
 
 
 def main(
-        *,
-        splash_logo: Path | str | None = None,
-        splash_duration_ms: int = 3000,
+    *,
+    splash_logo: Path | str | None = None,
+    splash_duration_ms: int = 3000,
 ) -> None:
-    # --- NEW: Pre-launch dialog for loading session ---
-    root = tk.Tk()
-    root.withdraw()
-    load_existing = messagebox.askyesno(
-        "Start SAED Symmetry",
-        "Do you want to load an existing project folder?",
-        parent=root
-    )
-    project_folder: Optional[Path] = None
-    session_data: Optional[dict] = None
-
-    if load_existing:
-        folder = filedialog.askdirectory(
-            title="Select Project Folder to Load",
-            parent=root
-        )
-        if folder:
-            project_folder = Path(folder)
-            session_file = project_folder / SESSION_FILENAME
-            if session_file.exists():
-                try:
-                    session_data = json.loads(session_file.read_text(encoding="utf-8"))
-                    splash_duration_ms = 1000  # Faster splash if loading
-                except Exception as e:
-                    messagebox.showerror("Load Error", f"Failed to read '{SESSION_FILENAME}':\n{e}", parent=root)
-                    session_data = None
-                    project_folder = None
-            else:
-                messagebox.showinfo("New Project",
-                                    f"No '{SESSION_FILENAME}' found.\nA new project will be started in this folder.",
-                                    parent=root)
-    root.destroy()
-    # --- End pre-launch dialog ---
-
     license_manager = LicenseManager()
+
+    # Check license status BEFORE creating the main app window
     if not license_manager.has_valid_license() and license_manager.is_trial_expired():
         activated = _show_trial_expired_dialog(license_manager)
         if not activated:
-            return
+            print("Trial expired and no valid license provided. Exiting.")
+            return # Exit if trial expired and activation failed/cancelled
 
-    app = TabbedPipelineApp(license_manager, show_initially=False)
+    # If license is okay (or trial active), proceed to create main app
+    app = TabbedPipelineApp(license_manager, show_initially=False) # Keep hidden for splash
 
-    # --- NEW: Load session data if it was found ---
-    if session_data and project_folder:
-        app._load_session_data(session_data, project_folder)
-    elif project_folder:
-        # User selected a folder, but it was empty. Set it in the launcher.
-        app.controller.launcher.set_project_folder(project_folder)
-    # --- End load session ---
-
+    # Show splash screen, which will deiconify the app window when done
     _show_splash(app, logo_path=splash_logo, duration_ms=splash_duration_ms)
-    app.mainloop()
+
+    app.mainloop() # Start the Tkinter event loop
 
 
 def _build_cli_parser() -> argparse.ArgumentParser:
@@ -737,11 +845,27 @@ def _build_cli_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     parser = _build_cli_parser()
     args = parser.parse_args()
-    if args.no_splash:
-        splash_duration = 0
-        logo = None
-    else:
-        default_logo = _resource_path("logo.png")
-        logo = args.splash_logo if args.splash_logo is not None else (default_logo if default_logo.exists() else None)
-        splash_duration = 3000
+
+    splash_duration = 0
+    logo = None
+    if not args.no_splash:
+        # Determine logo path, checking if default exists
+        default_logo_path = _resource_path("logo.png")
+        if args.splash_logo:
+             logo_path_to_use = args.splash_logo
+        elif default_logo_path.exists():
+             logo_path_to_use = default_logo_path
+        else:
+             logo_path_to_use = None # No logo found or specified
+
+        if logo_path_to_use:
+            logo = logo_path_to_use
+            splash_duration = 3000 # Default duration if logo exists
+        else:
+             # If no logo, maybe a shorter splash or text-only splash?
+             # For now, keep duration but logo will be None
+             splash_duration = 2000 # Shorter splash if text only
+             print("Note: No splash logo found or specified.")
+
+
     main(splash_logo=logo, splash_duration_ms=splash_duration)
