@@ -1147,7 +1147,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         analysis_data = {
             'type': 'sl',
             'indices': indices,
-            'dialog_pos': chain.mean(axis=0)[::-1], # (x,y)
+            'dialog_pos': chain.mean(axis=0)[::-1].tolist(), # (x,y) <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
             'data': {
                 'sl_chain': sl_chain,
                 'ratio': ratio,
@@ -1171,7 +1171,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         analysis_data = {
             'type': 'ratio',
             'indices': indices,
-            'dialog_pos': chain.mean(axis=0)[::-1], # (x,y)
+            'dialog_pos': chain.mean(axis=0)[::-1].tolist(), # (x,y) <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
             'data': {
                 'ratios': ratios_for_display, # Store the calculated neighboring ratios
                 'mean_ratio': mean_ratio,
@@ -1192,7 +1192,7 @@ class FibonacciAnalysisFrame(tk.Frame):
                 analysis_data = {
                     'type': 'polygon',
                     'indices': indices,
-                    'dialog_pos': self.points[indices[-1]][::-1], # (x,y)
+                    'dialog_pos': self.points[indices[-1]][::-1].tolist(), # (x,y) <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
                     'data': {
                         'area': area,
                         'label': f'P{poly_num}'
