@@ -13,7 +13,7 @@ The remaining editor functionality is preserved.
 """
 import sys, json, subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import numpy as np
@@ -39,30 +39,58 @@ def pol_from(center, pts):
 
 def cluster_rings(radii):
     if len(radii) == 0:
-        return np.array([]), np.array([]), ([], [])
+        return np.array([]), np.zeros(0, dtype=int), ([], [])  # Return empty int array for labels
     hist, edges = np.histogram(radii, bins=60)
     centers = (edges[:-1] + edges[1:]) / 2
-    pk, _ = find_peaks(hist, prominence=3)
+    # Find peaks, require a minimum height relative to max peak?
+    # prominence=3 might be too small for noisy data
+    if hist.max() > 0:
+        prominence = max(3, hist.max() * 0.05)  # Adjust prominence based on data
+    else:
+        prominence = 3
+    pk, _ = find_peaks(hist, prominence=prominence)
+
     ring_centers = centers[pk]
     if len(ring_centers) == 0:
-        return np.array([]), np.zeros_like(radii, int), (hist, edges)
+        # Fallback: maybe use KMeans or simple thresholding if find_peaks fails?
+        # For now, return empty if no clear peaks found
+        return np.array([]), np.zeros_like(radii, dtype=int), (hist.tolist(), edges.tolist())  # Return numpy int array
+
+    # Assign each point to the nearest ring center
     labels = np.argmin(np.abs(radii[:, None] - ring_centers[None, :]), axis=1)
-    return ring_centers, labels, (hist, edges)
+    return ring_centers, labels, (hist.tolist(), edges.tolist())  # Convert hist/edges for JSON
 
 
 def symmetry_scores(angles, radii, ring_means, top_rings=3):
     out = {}
-    if not ring_means:
+    if not ring_means or len(ring_means) == 0:  # Check if list is empty
         return out
-    idx = min(top_rings - 1, len(ring_means) - 1)
-    maxR = ring_means[idx] * 1.15
-    ang_sel = angles[radii <= maxR]
+
+    # Ensure top_rings doesn't exceed available rings
+    effective_top_rings = min(top_rings, len(ring_means))
+    if effective_top_rings == 0: return out  # No rings to analyze
+
+    # Determine radius cutoff based on available rings
+    idx = effective_top_rings - 1
+    maxR = ring_means[idx] * 1.15  # Use 1.15 multiplier as before
+
+    # Filter points within the cutoff radius
+    mask = radii <= maxR
+    ang_sel = angles[mask]
+    if len(ang_sel) == 0: return out  # No points selected
+
+    # Calculate scores for different folds
     for k in [4, 6, 8, 10, 12]:
         period = 360.0 / k
-        phases = np.deg2rad((ang_sel % period) * k)
-        C = np.cos(phases).mean();
-        S = np.sin(phases).mean()
+        # Calculate phases relative to the period
+        phases_deg = (ang_sel % period) * k
+        phases_rad = np.deg2rad(phases_deg)
+        # Calculate mean cosine and sine
+        C = np.cos(phases_rad).mean();
+        S = np.sin(phases_rad).mean()
+        # Score is the magnitude of the mean vector (length of resultant vector)
         out[f"{k}-fold"] = float(np.hypot(C, S))
+
     return out
 
 
@@ -78,7 +106,6 @@ class PointEditor(tk.Frame):
         self.rect_artist = None
         self.overlay = None  # {center:{x,y}, dead_radius, search_radius}
         self.image_path: Optional[Path] = None
-        self.input_json_path: Optional[Path] = None  # NEW: Keep track of the loaded json
         self.img_arr: Optional[np.ndarray] = None
         self._percent_map: Optional[np.ndarray] = None
         self._percent_lookup: Optional[tuple[np.ndarray, np.ndarray]] = None
@@ -121,7 +148,14 @@ class PointEditor(tk.Frame):
 
         # первичная загрузка
         if auto_load and input_json:
-            self.load_input_json(Path(input_json), push_undo=False)
+            try:
+                self.load_input_json(Path(input_json), push_undo=False)
+            except FileNotFoundError:
+                self._set_status(f"Error: Input JSON not found at {input_json}")
+                # Initialize with empty state if file not found
+                self._ensure_view_center()  # Still try to set a default view
+                self._redraw()
+
         else:
             self._ensure_view_center()
             self._redraw()
@@ -161,7 +195,8 @@ class PointEditor(tk.Frame):
         file_group = ttk.Frame(controls)
         file_group.pack(fill=tk.X)
         ttk.Button(file_group, text="Open JSON…", command=self._open_json).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(file_group, text="Save", command=self._save_points).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(file_group, text="Save", command=self._save_points_wrapper).pack(side=tk.LEFT,
+                                                                                    padx=(0, 6))  # Changed command
 
         analysis_group = ttk.Frame(controls)
         analysis_group.pack(fill=tk.X, pady=(8, 0))
@@ -170,6 +205,7 @@ class PointEditor(tk.Frame):
         self.help_panel = ttk.LabelFrame(side_panel, text="Hints", padding=(16, 12, 16, 12))
         help_text = (
             "Ctrl+Z / Ctrl+Y — Undo/Redo actions\n"
+            "Ctrl+S — Save current session\n"
             "Mouse Wheel — Zoom in/out\n\n"
             "Left mouse button on empty area — add a point\n"
             "Left mouse button on the center — drag the center\n"
@@ -179,7 +215,8 @@ class PointEditor(tk.Frame):
             "Hold left mouse button from point to point — measure distance\n"
             "Shift + drag — rectangular range deletion"
         )
-        ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=780).pack(fill=tk.X)
+        ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=280).pack(
+            fill=tk.X)  # Adjusted wraplength
         self._help_visible = False
 
         self._side_spacer = ttk.Frame(side_panel)
@@ -215,6 +252,7 @@ class PointEditor(tk.Frame):
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
         self.canvas.mpl_connect("key_press_event", self._on_key)
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
+
         self.bind_all('<Control-z>', self._undo_btn)
         self.bind_all('<Control-y>', self._redo_btn)
 
@@ -230,277 +268,458 @@ class PointEditor(tk.Frame):
             self._set_status("Detailed hints expanded")
         else:
             self.help_panel.pack_forget()
+            self._set_status(self._default_status)  # Restore default status when hiding
 
     def _update_zoom_hint(self):
         if hasattr(self, "zoom_hint"):
-            value = int(round(self.zoom_var.get())) if hasattr(self, "zoom_var") else self.zoom_val
+            value = int(round(self.zoom_var.get())) if hasattr(self, "zoom_var") else int(round(self.zoom_val))
             self.zoom_hint.configure(text=f"Current zoom: {value}% (0 = full frame)")
 
     def _set_status(self, text: str):
         self._status_message = text
-        if hasattr(self, "status_label"):
+        if hasattr(self, "status_label") and self.status_label.winfo_exists():  # Check if widget exists
             self.status_label.configure(text=text)
+        # Propagate status up to the main controller if it exists
         if self.controller is not None and hasattr(self.controller, "set_status"):
             try:
-                self.controller.set_status(text)
+                self.controller.set_status(f"Editor: {text}")  # Add context
             except Exception:
-                pass
+                pass  # Ignore if controller is gone
 
     # ---------- IO ----------
     def _open_json(self):
-        p = filedialog.askopenfilename(filetypes=[("SAED Input JSON", "*saed_input.json;*.json"), ("All", "*.*")])
+        p = filedialog.askopenfilename(
+            title="Open SAED Input",
+            filetypes=[("SAED Input JSON", "*saed_input.json;*.json"), ("All", "*.*")]
+        )
         if p:
-            self.load_input_json(Path(p), push_undo=True)
+            try:
+                self.load_input_json(Path(p), push_undo=True)
+            except FileNotFoundError:
+                messagebox.showerror("Error", f"File not found: {p}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load JSON:\n{e}")
 
     def load_input_json(self, path: Path, *, push_undo: bool = False, reset_view: bool = True):
         """Public JSON loading method, also used by the tab controller."""
+        if not path.exists():
+            raise FileNotFoundError(f"Input JSON file not found: {path}")
+
         if push_undo:
-            self._push_undo()
+            self._push_undo()  # Save state *before* loading new data
 
-        self.input_json_path = path  # Store the path
+        self._load_input_json(path)  # Load the data
+        self._clear_tooltip()  # Clear any popup info
 
-        self._load_input_json(path)
-        self._clear_tooltip()
         if reset_view:
             self.view_cx = None
             self.view_cy = None
-        self._ensure_view_center()
-        self._redraw()
-        self._update_zoom_hint()
+        self._ensure_view_center()  # Set view center based on loaded data
+
+        # Clear undo/redo history after a new file load
+        self._undo.clear()
+        self._redo.clear()
+
+        self._redraw()  # Redraw canvas
+        self._update_zoom_hint()  # Update zoom label
         self._set_status(f"Loaded: {path.name}")
 
     def _load_input_json(self, path: Path):
+        """Internal method to load data from the JSON file."""
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in {path.name}: {e}") from e
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to read JSON:\n{e}")
-            return
+            raise IOError(f"Failed to read JSON file {path.name}: {e}") from e
 
         self._percent_map = None
         self._percent_lookup = None
 
-        img_path = data.get("image")
-        if not img_path:
-            messagebox.showerror("Error", "The JSON is missing the 'image' field.")
-            return
+        img_path_str = data.get("image")
+        if not img_path_str:
+            raise ValueError("The JSON is missing the required 'image' field.")
 
-        # Resolve image path relative to the JSON file
-        self.image_path = path.parent / Path(img_path).name
+        # --- Resolve image path ---
+        img_p = Path(img_path_str)
+        if not img_p.is_absolute():
+            # Resolve relative to the JSON file's directory
+            self.image_path = (path.parent / img_p).resolve()
+        else:
+            self.image_path = img_p.resolve()
+
         if not self.image_path.exists():
-            # Fallback to original path if it was absolute
-            self.image_path = Path(img_path)
-            if not self.image_path.exists():
-                messagebox.showerror("Error", f"Image file not found:\n{self.image_path}")
-                return
+            raise FileNotFoundError(f"Image file specified in JSON not found: {self.image_path}")
 
+        # --- Load Preprocessing Settings ---
         fallback_mode = data.get("preproc_mode")
-        if not isinstance(fallback_mode, str):
-            fallback_mode = None
+        if not isinstance(fallback_mode, str): fallback_mode = None  # Handle missing or wrong type
         self._preproc_settings = PreprocSettings.from_json(
             data.get("preproc"), fallback_mode=fallback_mode
         )
+
+        # --- Load and Process Image ---
         try:
             self.img_arr = load_grayscale_with_preproc(self.image_path, self._preproc_settings)
+            # Compute percentile map for intensity lookups
+            self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
+            self._percent_lookup = (uniq_vals, uniq_perc)
+        except RuntimeError as cv_err:  # Catch OpenCV dependency error
+            messagebox.showerror("Dependency Error", str(cv_err))
+            self.img_arr = None  # Continue without image array if OpenCV fails
+            self._percent_map = None
+            self._percent_lookup = None
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to prepare the image:\n{e}")
-            return
+            messagebox.showerror("Image Error", f"Failed to load or process the image:\n{e}")
+            self.img_arr = None  # Continue without image array on other errors
+            self._percent_map = None
+            self._percent_lookup = None
 
-        self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
-        self._percent_lookup = (uniq_vals, uniq_perc)
-
+        # --- Load Overlay (Center and Radii) ---
         c = data.get("center") or {}
         r = data.get("radii") or {}
+        # Provide defaults based on image size if available, else use 0
+        img_w = self.img_arr.shape[1] if self.img_arr is not None else 0
+        img_h = self.img_arr.shape[0] if self.img_arr is not None else 0
+        default_cx = (img_w - 1) / 2.0 if img_w > 0 else 0.0
+        default_cy = (img_h - 1) / 2.0 if img_h > 0 else 0.0
+
         self.overlay = {
-            "center": {"x": float(c.get("x", (self.img_arr.shape[1] - 1) / 2.0)),
-                       "y": float(c.get("y", (self.img_arr.shape[0] - 1) / 2.0))},
-            "dead_radius": float(r.get("dead") or 0.0),
-            "search_radius": float(r.get("search") or 0.0),
+            "center": {
+                "x": float(c.get("x", default_cx)),
+                "y": float(c.get("y", default_cy))
+            },
+            "dead_radius": float(r.get("dead", 0.0)),
+            "search_radius": float(r.get("search", 0.0)),
         }
 
-        pts = data.get("points", [])
-        if pts:
-            yy = [float(p.get("y")) for p in pts]
-            xx = [float(p.get("x")) for p in pts]
-            self.points = np.column_stack([yy, xx]).astype(float)
-            if self._percent_map is not None:
-                self.values = self._sample_intensities(self.points)
-            elif any("intensity" in p for p in pts):
-                vv = np.array([float(p.get("intensity", 0.0)) for p in pts], dtype=float)
-                if self._percent_lookup is not None:
-                    self.values = map_values_to_percent(vv, *self._percent_lookup)
+        # --- Load Points ---
+        pts_data = data.get("points", [])
+        if pts_data:
+            try:
+                yy = [float(p.get("y", 0.0)) for p in pts_data]
+                xx = [float(p.get("x", 0.0)) for p in pts_data]
+                self.points = np.column_stack([yy, xx]).astype(float)
+
+                # Assign or sample intensities
+                if self._percent_map is not None:
+                    # Sample intensities directly from the loaded percentile map
+                    self.values = self._sample_intensities(self.points)
+                elif any("intensity" in p for p in pts_data):
+                    # Use intensities from JSON if percentile map failed but intensities exist
+                    vv_raw = np.array([float(p.get("intensity", 0.0)) for p in pts_data], dtype=float)
+                    # Attempt to map to percentiles if lookup exists (from failed compute_percentile_map)
+                    if self._percent_lookup is not None:
+                        self.values = map_values_to_percent(vv_raw, *self._percent_lookup)
+                    else:
+                        # Use raw intensities as fallback if no percentile info available
+                        self.values = vv_raw
                 else:
-                    self.values = vv
-            else:
-                self.values = np.zeros((len(self.points),), float)
-        else:
+                    # Fallback: Sample from img_arr if possible, else zeros
+                    if self.img_arr is not None:
+                        self.values = self._sample_intensities(self.points)  # Will use raw values if no lookup
+                    else:
+                        self.values = np.zeros(len(self.points), dtype=float)
+
+            except (ValueError, TypeError) as e:
+                messagebox.showerror("Data Error", f"Invalid point data in JSON: {e}")
+                self.points = np.zeros((0, 2), float)
+                self.values = np.zeros((0,), float)
+
+        else:  # No points in JSON
             self.points = np.zeros((0, 2), float)
             self.values = np.zeros((0,), float)
 
-    def _save_points(self) -> Optional[Path]:
+    def _save_points_wrapper(self):
+        """Wrapper for the save button to handle potential errors."""
+        try:
+            self._save_points()
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save points:\n{e}")
+
+    def _save_points(self) -> Path:
         """
-        Saves points (including intensities) next to the original input.json:
-        - spots.json  — list of points (y,x,intensity)
-        - saed_input.edited.json — original input JSON with updated points
+        Saves points and updates the 'saed_input.edited.json' file
+        in the **output folder** defined in the Launcher tab.
+        Also saves a separate 'spots.json'.
+        Returns the path to 'spots.json'.
         """
-        if self.input_json_path is None:
-            messagebox.showerror("Save Error", "No input JSON loaded. Cannot determine where to save.")
-            return None
-
-        base_dir = self.input_json_path.parent
-        base_name = self.input_json_path.stem.replace("_saed_input", "")
-
-        spots_path = base_dir / f"{base_name}_spots.json"
-
-        pts = []
-        if self._percent_map is not None or self.img_arr is not None:
-            vals = self._sample_intensities(self.points)
+        # --- Determine Output Directory ---
+        output_dir = Path("saed_results")  # Default if controller/launcher missing
+        if self.controller and hasattr(self.controller, 'launcher'):
+            output_dir_str = self.controller.launcher.ent_out.get()
+            if output_dir_str:
+                try:
+                    # Resolve and create the directory
+                    output_dir = Path(output_dir_str).expanduser().resolve()
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    raise OSError(f"Invalid or inaccessible output directory '{output_dir_str}': {e}") from e
+            else:
+                raise ValueError("Output folder is not specified in the Launcher tab.")
         else:
-            vals = self.values
-        for (y, x), v in zip(self.points, vals):
-            pts.append({"y": float(y), "x": float(x), "intensity": float(v)})
-        spots_path.write_text(json.dumps({"points": pts}, indent=2), encoding="utf-8")
+            print("Warning: Controller or Launcher not found, using default output 'saed_results'.")
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save an *edited* version of the saed_input, not a new one
-        si = {
-            "image": str(self.image_path.name) if self.image_path else None,  # Save relative path
+        # --- Prepare Points Data ---
+        pts_list = []
+        # Recalculate values just before saving to ensure they match current points
+        current_values = self._sample_intensities(self.points)
+        for i, (y, x) in enumerate(self.points):
+            # Ensure index is valid for current_values
+            intensity = float(current_values[i]) if i < len(current_values) else 0.0
+            pts_list.append({"y": float(y), "x": float(x), "intensity": intensity})
+
+        # --- Save spots.json ---
+        spots_path = output_dir / "spots.json"
+        spots_path.write_text(json.dumps({"points": pts_list}, indent=2), encoding="utf-8")
+
+        # --- Update and Save saed_input.edited.json ---
+        abs_image_path = self.image_path.resolve() if self.image_path else None
+
+        # Ensure overlay center is serializable
+        overlay_center_data = None
+        if self.overlay and self.overlay.get("center"):
+            center_data = self.overlay["center"]
+            if isinstance(center_data, dict) and "x" in center_data and "y" in center_data:
+                overlay_center_data = {"x": float(center_data["x"]), "y": float(center_data["y"])}
+
+        saed_input_edited_data = {
+            "image": str(abs_image_path) if abs_image_path else None,
             "preproc_mode": self._preproc_settings.mode,
             "preproc": self._preproc_settings.to_json(),
-            "center": (self.overlay.get("center") if self.overlay else None),
+            "center": overlay_center_data,  # Use the cleaned-up center data
             "radii": {
-                "dead": float(self.overlay.get("dead_radius") or 0.0) if self.overlay else 0.0,
-                "search": float(self.overlay.get("search_radius") or 0.0) if self.overlay else 0.0
+                "dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
+                "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0
             },
-            "points": pts
+            "points": pts_list  # Use the latest points list
         }
+        edited_path = output_dir / "saed_input.edited.json"
+        edited_path.write_text(json.dumps(saed_input_edited_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        edited_input_path = base_dir / f"{base_name}_saed_input.edited.json"
-        edited_input_path.write_text(json.dumps(si, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._set_status(f"Points saved to {output_dir.name}")
+        return spots_path  # Return path to spots.json
 
-        self._set_status(f"Points saved: {spots_path.name}")
-        return spots_path
-
-    # --- NEW: Session Management Methods ---
+    # --- NEW: Session Save/Load ---
 
     def get_state(self) -> Dict[str, Any]:
-        """Collect editor state for session save."""
+        """Returns a serializable dictionary of the editor's state."""
+        # Convert numpy arrays to lists for JSON
+        points_list = self.points.tolist() if self.points is not None else []
+        values_list = self.values.tolist() if self.values is not None else []
+
         return {
-            "input_json_path_str": str(self.input_json_path) if self.input_json_path else None,
-            "image_path_str": str(self.image_path) if self.image_path else None,
-            "points_list": self.points.tolist(),
-            "values_list": self.values.tolist(),
+            "image_path": str(self.image_path.resolve()) if self.image_path else None,
+            "preproc_settings": self._preproc_settings.to_json(),
+            "points": points_list,
+            "values": values_list,  # Save current values
             "overlay": self.overlay,
+            "zoom_val": self.zoom_val,
             "view_cx": self.view_cx,
             "view_cy": self.view_cy,
+            # Add measurement state if needed
+            "measurement": self._measurement,
         }
 
-    def set_state(self, state: Optional[Dict[str, Any]], project_folder: Path):
-        """Apply editor state from session load."""
-        if state is None:
+    def set_state(self, state: Dict[str, Any]):
+        """Restores the editor's state from a dictionary."""
+        image_path_str = state.get("image_path")
+        if not image_path_str:
+            # Clear state if no image path
+            self.image_path = None
+            self.img_arr = None
+            self._percent_map = None
+            self._percent_lookup = None
+            self.points = np.zeros((0, 2), float)
+            self.values = np.zeros((0,), float)
+            self.overlay = {}
+            self._preproc_settings = PreprocSettings()  # Reset preproc
+            self.zoom_val = 0
+            self.view_cx = None
+            self.view_cy = None
+            if hasattr(self, 'zoom_var'): self.zoom_var.set(0)
+            self._measurement = None
+            self._redraw()
+            self._set_status("Editor cleared (no image path in session).")
             return
 
-        input_json_path_str = state.get("input_json_path_str")
-        if not input_json_path_str:
-            return  # Cannot restore editor without its input file
+        try:
+            self.image_path = Path(image_path_str).resolve()  # Ensure absolute path
+            if not self.image_path.exists():
+                raise FileNotFoundError(f"Image from session not found: {self.image_path}")
 
-        # Re-find the input file relative to the *loaded project folder*
-        input_json_name = Path(input_json_path_str).name
-        new_input_json_path = project_folder / input_json_name
+            self._preproc_settings = PreprocSettings.from_json(state.get("preproc_settings", {}))
 
-        if not new_input_json_path.exists():
-            print(f"Warning: Could not find editor input '{input_json_name}' in '{project_folder}'")
-            return
+            # Load image and compute percentile map
+            self.img_arr = load_grayscale_with_preproc(self.image_path, self._preproc_settings)
+            self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
+            self._percent_lookup = (uniq_vals, uniq_perc)
 
-        # Load the base file
-        self.load_input_json(new_input_json_path, push_undo=False, reset_view=False)
+            # Restore points and values
+            self.points = np.array(state.get("points", []), dtype=float)
+            # IMPORTANT: Use the saved values, don't re-sample unless necessary
+            saved_values = state.get("values", [])
+            if len(saved_values) == len(self.points):
+                self.values = np.array(saved_values, dtype=float)
+            else:
+                # Resample only if saved values don't match point count (error case)
+                print("Warning: Mismatch between saved points and values count. Re-sampling intensities.")
+                self.values = self._sample_intensities(self.points)
 
-        # Override with the saved state
-        self.points = np.array(state.get("points_list", []))
-        self.values = np.array(state.get("values_list", []))
-        self.overlay = state.get("overlay")
-        self.view_cx = state.get("view_cx")
-        self.view_cy = state.get("view_cy")
+            # Restore overlay, zoom, view, measurement
+            self.overlay = state.get("overlay", {})
+            self.zoom_val = state.get("zoom_val", 0)
+            self.view_cx = state.get("view_cx")
+            self.view_cy = state.get("view_cy")
+            self._measurement = state.get("measurement")  # Restore measurement
 
-        self._ensure_view_center()
-        self._redraw()
+            if hasattr(self, 'zoom_var'): self.zoom_var.set(self.zoom_val)
 
-    # --- End Session Management Methods ---
+            # Clear any interactive states
+            self._clear_merge_seed()
+            self._cancel_measurement_preview()
+            self.center_dragging = False
+            self.rect_start = None
+
+            # Final UI updates
+            self._ensure_view_center()
+            self._redraw()
+            self._update_zoom_hint()
+            self._set_status(f"Restored editor state for {self.image_path.name}")
+
+        except FileNotFoundError as e:
+            messagebox.showerror("Editor Load Error", str(e))
+            self.set_state({})  # Clear state on file not found
+        except Exception as e:
+            messagebox.showerror("Editor Load Error", f"Failed to restore editor state:\n{e}")
+            self.set_state({})  # Clear state on other errors
 
     # ---------- Helpers ----------
     def _sample_intensities(self, pts_yx: np.ndarray) -> np.ndarray:
-        if len(pts_yx) == 0:
+        """Samples intensity values, preferring percentile map, then raw image with lookup, then raw, then zeros."""
+        if pts_yx is None or len(pts_yx) == 0:
             return np.zeros((0,), float)
 
+        # 1. Try Percentile Map directly
         if self._percent_map is not None:
             src = self._percent_map
             H, W = src.shape[:2]
             out = []
             for y, x in pts_yx:
-                yi = int(round(y));
-                xi = int(round(x))
-                yi = max(0, min(H - 1, yi));
-                xi = max(0, min(W - 1, xi))
+                yi = max(0, min(H - 1, int(round(y))))
+                xi = max(0, min(W - 1, int(round(x))))
                 out.append(float(src[yi, xi]))
-            return np.array(out, float)
+            return np.array(out, dtype=float)
 
-        if self.img_arr is None:
-            return np.zeros((len(pts_yx),), float)
+        # 2. Try Raw Image with Percentile Lookup
+        if self.img_arr is not None and self._percent_lookup is not None:
+            H, W = self.img_arr.shape[:2]
+            raw_values = []
+            for y, x in pts_yx:
+                yi = max(0, min(H - 1, int(round(y))))
+                xi = max(0, min(W - 1, int(round(x))))
+                raw_values.append(float(self.img_arr[yi, xi]))
+            raw_values_np = np.array(raw_values, dtype=float)
+            return map_values_to_percent(raw_values_np, *self._percent_lookup)
 
-        H, W = self.img_arr.shape[:2]
-        raw = []
-        for y, x in pts_yx:
-            yi = int(round(y));
-            xi = int(round(x))
-            yi = max(0, min(H - 1, yi));
-            xi = max(0, min(W - 1, xi))
-            raw.append(float(self.img_arr[yi, xi]))
-        raw = np.array(raw, float)
-        if self._percent_lookup is not None:
-            return map_values_to_percent(raw, *self._percent_lookup)
-        return raw
+        # 3. Try Raw Image directly (no percentile conversion)
+        if self.img_arr is not None:
+            H, W = self.img_arr.shape[:2]
+            raw_values = []
+            for y, x in pts_yx:
+                yi = max(0, min(H - 1, int(round(y))))
+                xi = max(0, min(W - 1, int(round(x))))
+                raw_values.append(float(self.img_arr[yi, xi]))
+            return np.array(raw_values, dtype=float)
+
+        # 4. Fallback to zeros if no image data available
+        return np.zeros(len(pts_yx), dtype=float)
 
     def _img_xy(self, e):
+        # Convert matplotlib event coordinates (x, y) to image coordinates (y, x)
         return None if (e.xdata is None or e.ydata is None) else (e.ydata, e.xdata)
 
     def _near_idx(self, y, x, pix_tol=8):
-        if len(self.points) == 0: return None
-        d2 = (self.points[:, 0] - y) ** 2 + (self.points[:, 1] - x) ** 2
-        i = int(np.argmin(d2))
-        return i if d2[i] ** 0.5 <= pix_tol else None
+        # Find index of the point closest to (y, x) within tolerance
+        if self.points is None or len(self.points) == 0: return None
+        # Calculate squared Euclidean distances for efficiency
+        dist_sq = (self.points[:, 0] - y) ** 2 + (self.points[:, 1] - x) ** 2
+        i = int(np.argmin(dist_sq))  # Index of the minimum distance point
+        # Check if the minimum distance is within the tolerance
+        return i if dist_sq[i] <= pix_tol ** 2 else None
 
     def _center_hit(self, y, x):
+        # Check if the click is near the defined center overlay
         if not (self.overlay and self.overlay.get("center")): return False
-        cy = float(self.overlay["center"].get("y", 0.0))
-        cx = float(self.overlay["center"].get("x", 0.0))
-        return ((y - cy) ** 2 + (x - cx) ** 2) ** 0.5 <= self._center_hit_radius
+        center_data = self.overlay["center"]
+        if not isinstance(center_data, dict): return False  # Ensure center is a dict
+
+        cy = float(center_data.get("y", 0.0))
+        cx = float(center_data.get("x", 0.0))
+        dist_sq = (y - cy) ** 2 + (x - cx) ** 2
+        return dist_sq <= self._center_hit_radius ** 2
 
     def _apply_center_filters(self):
         """Removes points that end up in the dead zone or outside the search radius after moving the center."""
-        if not (self.overlay and self.overlay.get("center")): return
-        cy = float(self.overlay["center"].get("y", 0.0))
-        cx = float(self.overlay["center"].get("x", 0.0))
-        dead = float(self.overlay.get("dead_radius") or 0.0)
-        sr = float(self.overlay.get("search_radius") or 0.0)
-        if len(self.points) == 0 or (dead <= 0 and sr <= 0): return
+        if self.points is None or len(self.points) == 0: return  # No points to filter
+        if not (self.overlay and self.overlay.get("center")): return  # No center defined
+
+        center_data = self.overlay["center"]
+        if not isinstance(center_data, dict): return
+
+        cy = float(center_data.get("y", 0.0))
+        cx = float(center_data.get("x", 0.0))
+        dead = float(self.overlay.get("dead_radius", 0.0))
+        sr = float(self.overlay.get("search_radius", 0.0))
+
+        if dead <= 0 and sr <= 0: return  # No filtering needed if radii are zero or less
+
+        # Calculate distances from the new center
         r = np.hypot(self.points[:, 1] - cx, self.points[:, 0] - cy)
+
+        # Create mask
         mask = np.ones(len(self.points), dtype=bool)
         if dead > 0: mask &= (r >= dead)
         if sr > 0: mask &= (r <= sr)
+
+        # --- Update Merge Seed Index ---
+        # If a point was selected for merging, we need to find its new index
+        # *after* filtering, or clear the selection if it was removed.
+        new_merge_seed_idx = None
         if self._merge_seed_idx is not None:
-            if self._merge_seed_idx >= len(mask) or not mask[self._merge_seed_idx]:
-                self._clear_merge_seed()
-            else:
-                new_idx = int(np.count_nonzero(mask[: self._merge_seed_idx + 1]) - 1)
-                self._merge_seed_idx = new_idx
+            original_selected_point = self._merge_seed_origin  # Use the *original* position
+            if original_selected_point:
+                # Check if the originally selected point is still present after filtering
+                kept_indices = np.where(mask)[0]
+                original_index_in_old_array = self._merge_seed_idx
+
+                if original_index_in_old_array in kept_indices:
+                    # Find the *new* index corresponding to the original one
+                    try:
+                        # Map old index to its position in the filtered array
+                        new_merge_seed_idx = np.where(kept_indices == original_index_in_old_array)[0][0]
+                    except IndexError:
+                        # Should not happen if check passed, but handle defensively
+                        new_merge_seed_idx = None
+
+        # Apply the mask to points and values
         self.points = self.points[mask]
-        if len(self.values) == len(mask):
+        # Ensure values array is also filtered correctly
+        if self.values is not None and len(self.values) == len(mask):
             self.values = self.values[mask]
         else:
+            # If values array was mismatched or None, re-sample intensities
             self.values = self._sample_intensities(self.points)
-        if self._merge_seed_idx is not None and self._merge_seed_idx < len(self.points):
-            self._merge_seed_origin = (
-                float(self.points[self._merge_seed_idx, 0]),
-                float(self.points[self._merge_seed_idx, 1]),
-            )
+
+        # Update the merge seed index and origin *after* filtering
+        self._merge_seed_idx = new_merge_seed_idx
+        if self._merge_seed_idx is not None:
+            # Update origin to the current position of the (potentially shifted) point
+            current_y, current_x = self.points[self._merge_seed_idx]
+            self._merge_seed_origin = (float(current_y), float(current_x))
+        else:
+            self._merge_seed_origin = None  # Clear origin if seed was removed or invalid
 
     # ---------- Объединение точек ----------
     def _clear_merge_seed(self, *, keep_status: bool = False) -> bool:
@@ -512,150 +731,134 @@ class PointEditor(tk.Frame):
         return cleared
 
     def _select_merge_seed(self, idx: int) -> None:
-        if idx < 0 or idx >= len(self.points):
+        if self.points is None or idx < 0 or idx >= len(self.points):
             self._clear_merge_seed()
             return
         self._merge_seed_idx = int(idx)
         y, x = self.points[idx]
         self._merge_seed_origin = (float(y), float(x))
         self._set_status(
-            "A point is selected for merging. Move the cursor and press Enter to set the radius."
+            "Point selected for merging. Move cursor to define radius and press Enter."
         )
 
     def _merge_selected_with_radius(self) -> bool:
-        if self._merge_seed_idx is None:
-            return False
-        if len(self.points) == 0:
-            self._clear_merge_seed()
+        if self._merge_seed_idx is None: return False
+        if self.points is None or len(self.points) == 0:
+            self._clear_merge_seed();
             return False
 
         idx = int(self._merge_seed_idx)
-        if idx < 0 or idx >= len(self.points):
+        if idx < 0 or idx >= len(self.points):  # Check bounds again
             self._clear_merge_seed()
-            self._set_status("The selected point is unavailable. Choose the point again.")
+            self._set_status("Selected point became invalid. Please select again.");
             return False
 
         if self._last_cursor_pos is None:
-            self._set_status("Move the cursor inside the image to set the merge radius.")
+            self._set_status("Move cursor inside image to set merge radius, then press Enter.");
             return False
 
+        # Current position of the seed point
         base_cur_y, base_cur_x = map(float, self.points[idx])
+        # Cursor position defines the radius
         cur_y, cur_x = self._last_cursor_pos
-        radius = float(np.hypot(cur_x - base_cur_x, cur_y - base_cur_y))
-        if radius <= 0.0:
-            self._set_status("Radius is too small. Move the cursor and press Enter again.")
+        radius_sq = (cur_x - base_cur_x) ** 2 + (cur_y - base_cur_y) ** 2
+        if radius_sq < 1e-6:  # Radius too small
+            self._set_status("Radius is too small. Move cursor further and press Enter.");
             return False
 
+        # Use the stored origin for distance calculation to handle potential center drag effects
         origin = self._merge_seed_origin or (base_cur_y, base_cur_x)
-        distances = np.hypot(self.points[:, 1] - origin[1], self.points[:, 0] - origin[0])
-        candidate_indices = [int(i) for i, dist in enumerate(distances) if dist <= radius + 1e-6]
+        origin_y, origin_x = origin
+
+        # Find points within the radius using squared distances for efficiency
+        dist_sq = (self.points[:, 1] - origin_x) ** 2 + (self.points[:, 0] - origin_y) ** 2
+        candidate_indices = np.where(dist_sq <= radius_sq + 1e-6)[0].tolist()
+
+        # Ensure the seed index itself is included if somehow missed
         if idx not in candidate_indices:
             candidate_indices.append(idx)
-            candidate_indices.sort()
 
         if len(candidate_indices) <= 1:
-            self._set_status("No other points found within the selected radius.")
+            self._set_status("No other points found within the selected radius.");
             return False
 
-        self._push_undo()
+        # --- Proceed with merging ---
+        self._push_undo()  # Save state before modification
         self._cancel_measurement_preview()
         self._clear_measurement_result()
 
-        if len(self.values) != len(self.points):
+        # Ensure values array is up-to-date
+        if self.values is None or len(self.values) != len(self.points):
             self.values = self._sample_intensities(self.points)
 
         old_points = self.points.copy()
-        old_values = self.values.copy()
-        use_values = len(old_values) == len(old_points)
+        old_values = self.values.copy() if self.values is not None else np.zeros(len(old_points))
+        use_values = self.values is not None
 
-        local_points = old_points[candidate_indices]
-        local_values = old_values[candidate_indices] if use_values else None
+        # --- Calculate the new merged point position and value ---
+        merged_point_sum = np.zeros(2, dtype=float)
+        merged_value_sum = 0.0
+        weight_sum = 0.0  # Could use intensity for weighted average later? For now, simple average.
 
-        base_subset_idx = candidate_indices.index(idx)
-        new_point = local_points[base_subset_idx].astype(float)
-        new_value = float(local_values[base_subset_idx]) if use_values else None
-
-        order = [i for i in range(len(candidate_indices)) if i != base_subset_idx]
-        order.sort(
-            key=lambda local_idx: float(
-                np.hypot(
-                    local_points[local_idx, 1] - origin[1],
-                    local_points[local_idx, 0] - origin[0],
-                )
-            )
-        )
-
-        for local_idx in order:
-            new_point = (new_point + local_points[local_idx]) / 2.0
-            if use_values and new_value is not None and local_values is not None:
-                new_value = (new_value + float(local_values[local_idx])) / 2.0
-
-        candidate_set = set(candidate_indices)
-        candidate_set.discard(idx)
-        new_points_list: list[list[float]] = []
-        new_values_list: list[float] = []
-        inserted = False
-        new_index = None
-
-        for old_idx, pt in enumerate(old_points):
-            if old_idx == idx:
-                new_points_list.append([float(new_point[0]), float(new_point[1])])
-                if use_values and new_value is not None:
-                    new_values_list.append(float(new_value))
-                inserted = True
-                new_index = len(new_points_list) - 1
-                continue
-            if old_idx in candidate_set:
-                continue
-            new_points_list.append([float(pt[0]), float(pt[1])])
+        for cand_idx in candidate_indices:
+            merged_point_sum += old_points[cand_idx]
             if use_values:
-                new_values_list.append(float(old_values[old_idx]))
+                merged_value_sum += old_values[cand_idx]
+            weight_sum += 1.0
 
-        if not inserted:
-            new_index = len(new_points_list)
-            new_points_list.append([float(new_point[0]), float(new_point[1])])
-            if use_values and new_value is not None:
-                new_values_list.append(float(new_value))
+        new_point_yx = merged_point_sum / weight_sum
+        new_value = merged_value_sum / weight_sum if use_values else None
 
-        if new_points_list:
-            self.points = np.array(new_points_list, dtype=float)
-        else:
-            self.points = np.zeros((0, 2), dtype=float)
+        # --- Create new points and values arrays ---
+        mask_to_keep = np.ones(len(old_points), dtype=bool)
+        mask_to_keep[candidate_indices] = False  # Mark merged points for removal
 
+        new_points_list = old_points[mask_to_keep].tolist()
+        new_values_list = old_values[mask_to_keep].tolist() if use_values else []
+
+        # Find where to insert the new point (maintain rough order if possible)
+        # Insert at the position of the original seed point in the *filtered* list
+        insert_pos = np.count_nonzero(mask_to_keep[:idx])
+
+        new_points_list.insert(insert_pos, new_point_yx.tolist())
+        if use_values and new_value is not None:
+            new_values_list.insert(insert_pos, float(new_value))
+
+        # Update instance variables
+        self.points = np.array(new_points_list, dtype=float) if new_points_list else np.zeros((0, 2), dtype=float)
         if use_values:
-            self.values = np.array(new_values_list, dtype=float)
+            self.values = np.array(new_values_list, dtype=float) if new_values_list else np.zeros((0,), dtype=float)
         else:
+            # If values weren't used or were inconsistent, resample
             self.values = self._sample_intensities(self.points)
 
-        self._merge_seed_idx = new_index if new_index is not None else None
-        if self._merge_seed_idx is not None:
-            self._merge_seed_origin = (
-                float(self.points[self._merge_seed_idx, 0]),
-                float(self.points[self._merge_seed_idx, 1]),
-            )
-        else:
-            self._merge_seed_origin = None
+        # Update the merge seed to the newly created point's index
+        self._merge_seed_idx = insert_pos
+        self._merge_seed_origin = tuple(new_point_yx.tolist())  # Update origin
 
-        self._last_cursor_pos = None
+        self._last_cursor_pos = None  # Clear cursor pos after merge
 
         merged_count = len(candidate_indices)
+        radius = math.sqrt(radius_sq)
         self._set_status(
-            f"Merged {merged_count} points within a radius of {radius:.1f} px."
+            f"Merged {merged_count} points within radius {radius:.1f} px. New point selected."
         )
         return True
 
     # ---------- Tooltip и измерения ----------
     def _remove_measure_preview_artist(self) -> bool:
+        # Removes the dashed preview line during measurement
         if self._measure_preview_artist is not None:
             try:
                 self._measure_preview_artist.remove()
             except Exception:
-                pass
+                pass  # Ignore if already removed
             self._measure_preview_artist = None
             return True
         return False
 
     def _remove_measurement_artists(self) -> bool:
+        # Removes the solid line and text annotation of a completed measurement
         removed = False
         if self._measure_line_artist is not None:
             try:
@@ -674,140 +877,152 @@ class PointEditor(tk.Frame):
         return removed
 
     def _cancel_measurement_preview(self) -> bool:
-        removed = self._remove_measure_preview_artist()
-        has_state = (
-                self._measure_active
-                or self._measure_start_point is not None
-                or self._measure_preview_end is not None
-        )
-        removed = removed or has_state
+        # Cancels an ongoing measurement (before the second click)
+        removed_artist = self._remove_measure_preview_artist()
+        has_state = (self._measure_active or self._measure_start_point is not None)
         self._measure_active = False
         self._measure_start_idx = None
         self._measure_start_point = None
         self._measure_preview_end = None
-        return removed
+        return removed_artist or has_state  # Return True if state was cleared or artist removed
 
     def _clear_measurement_result(self) -> bool:
-        removed = self._measurement is not None
-        removed = self._remove_measurement_artists() or removed
+        # Clears a completed measurement result
+        removed_artists = self._remove_measurement_artists()
+        had_measurement = self._measurement is not None
         self._measurement = None
-        return removed
+        return removed_artists or had_measurement
 
     def _start_measurement(self, idx: int) -> None:
-        if idx < 0 or idx >= len(self.points):
-            return
+        # Initiates measurement mode when clicking on a point
+        if self.points is None or idx < 0 or idx >= len(self.points): return
+        # Clear previous measurement results first
+        if self._clear_measurement_result():
+            self._redraw()  # Redraw if old measurement was cleared
+
         self._measure_active = True
         self._measure_start_idx = idx
         y0, x0 = self.points[idx]
         self._measure_start_point = (float(y0), float(x0))
         self._measure_preview_end = None
-        self._remove_measure_preview_artist()
+        self._remove_measure_preview_artist()  # Ensure no old preview line exists
 
     def _update_measurement_preview(self, pos: Optional[tuple[float, float]]) -> None:
-        if not self._measure_active or self._measure_start_point is None:
-            return
-        if pos is None:
+        # Updates the dashed preview line as the mouse moves
+        if not self._measure_active or self._measure_start_point is None: return
+
+        if pos is None:  # Mouse moved out of axes
             self._measure_preview_end = None
             if self._remove_measure_preview_artist():
-                if hasattr(self, "canvas"):
-                    self.canvas.draw_idle()
+                if hasattr(self, "canvas"): self.canvas.draw_idle()
             return
+
         y1, x1 = pos
         self._measure_preview_end = (float(y1), float(x1))
         y0, x0 = self._measure_start_point
+
+        # Preserve current zoom limits
         current_xlim = self.ax.get_xlim()
         current_ylim = self.ax.get_ylim()
+
         if self._measure_preview_artist is None:
+            # Create the line artist if it doesn't exist
             (line,) = self.ax.plot(
-                [x0, x1],
-                [y0, y1],
-                color="#ffcc33",
-                linewidth=1.6,
-                linestyle="--",
-                alpha=0.9,
-                scalex=False,
-                scaley=False,
+                [x0, x1], [y0, y1],  # x, y order for plot
+                color="#ffcc33", linewidth=1.6, linestyle="--", alpha=0.9,
+                scalex=False, scaley=False, zorder=10  # Ensure visible
             )
             self._measure_preview_artist = line
         else:
+            # Update existing line data
             self._measure_preview_artist.set_data([x0, x1], [y0, y1])
+
+        # Restore zoom limits
         self.ax.set_xlim(current_xlim)
         self.ax.set_ylim(current_ylim)
-        if hasattr(self, "canvas"):
-            self.canvas.draw_idle()
+
+        if hasattr(self, "canvas"): self.canvas.draw_idle()
 
     def _finalize_measurement(self, end_idx: Optional[int]) -> None:
+        # Completes the measurement on the second click (if on a point)
         if not self._measure_active or self._measure_start_point is None:
+            self._cancel_measurement_preview();
+            return
+
+        needs_redraw = False
+        if self.points is None or end_idx is None or end_idx == self._measure_start_idx or end_idx < 0 or end_idx >= len(
+                self.points):
+            # If second click is not on a valid *different* point, cancel measurement
+            if self._cancel_measurement_preview(): needs_redraw = True
+        else:
+            # Valid second point clicked
+            start_y, start_x = self._measure_start_point
+            end_y, end_x = map(float, self.points[end_idx])
+            length = float(np.hypot(end_x - start_x, end_y - start_y))
+            # Store measurement details
+            self._measurement = {
+                "start_yx": (start_y, start_x),
+                "end_yx": (end_y, end_x),
+                "length": length,
+            }
+            # Cancel the preview mode (removes dashed line)
             self._cancel_measurement_preview()
-            return
-        if end_idx is None or end_idx == self._measure_start_idx or end_idx < 0 or end_idx >= len(self.points):
-            if self._cancel_measurement_preview() and hasattr(self, "canvas"):
-                self.canvas.draw_idle()
-            return
-        start_y, start_x = self._measure_start_point
-        end_y, end_x = map(float, self.points[end_idx])
-        length = float(np.hypot(end_x - start_x, end_y - start_y))
-        self._measurement = {
-            "start": (start_y, start_x),
-            "end": (end_y, end_x),
-            "length": length,
-        }
-        self._cancel_measurement_preview()
-        self._redraw()
+            needs_redraw = True  # Need to redraw to show final measurement line/text
+
+        # Deactivate measurement mode regardless
+        self._measure_active = False
+        self._measure_start_idx = None
+        self._measure_start_point = None
+
+        if needs_redraw: self._redraw()
 
     def _draw_measurement_overlays(self) -> None:
-        self._measure_line_artist = None
-        self._measure_annotation = None
-        self._measure_preview_artist = None
+        # Draws the solid line and text for a completed measurement
+        # Called during the main _redraw cycle
 
-        if self._measurement is not None:
-            start_y, start_x = self._measurement["start"]
-            end_y, end_x = self._measurement["end"]
+        # Clear any old artists first (important)
+        self._remove_measurement_artists()
+
+        if self._measurement is not None and isinstance(self._measurement, dict):
+            start_y, start_x = self._measurement.get("start_yx", (0, 0))
+            end_y, end_x = self._measurement.get("end_yx", (0, 0))
             length = float(self._measurement.get("length", 0.0))
+
+            # Draw the solid line
             (line,) = self.ax.plot(
-                [start_x, end_x],
-                [start_y, end_y],
-                color="#ffcc33",
-                linewidth=1.8,
-                alpha=0.95,
-                scalex=False,
-                scaley=False,
+                [start_x, end_x], [start_y, end_y],  # x, y order for plot
+                color="#ffcc33", linewidth=1.8, alpha=0.95,
+                scalex=False, scaley=False, zorder=5  # Draw below points but above image
             )
             self._measure_line_artist = line
+
+            # Add the text annotation near the midpoint
             mid_x = (start_x + end_x) / 2.0
             mid_y = (start_y + end_y) / 2.0
             txt = f"L = {length:.1f} px"
             self._measure_annotation = self.ax.annotate(
-                txt,
-                xy=(mid_x, mid_y),
-                xytext=(0, -14),
-                textcoords="offset points",
-                ha="center",
-                bbox=dict(boxstyle="round", fc="white", ec="black", alpha=0.9),
-                fontsize=9,
+                txt, xy=(mid_x, mid_y), xytext=(0, -14),  # Offset text below line midpoint
+                textcoords="offset points", ha="center", va="top",  # Adjust alignment
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.9),
+                fontsize=9, zorder=6  # Ensure text is visible
             )
 
-        if (
-                self._measure_active
-                and self._measure_start_point is not None
-                and self._measure_preview_end is not None
-        ):
+        # Re-draw the preview line if measurement is still active
+        # (This handles cases where redraw happens during measurement)
+        if (self._measure_active and self._measure_start_point is not None and self._measure_preview_end is not None):
             y0, x0 = self._measure_start_point
             y1, x1 = self._measure_preview_end
+            # Ensure preview artist is removed if it exists before creating new one
+            self._remove_measure_preview_artist()
             (pline,) = self.ax.plot(
-                [x0, x1],
-                [y0, y1],
-                color="#ffcc33",
-                linewidth=1.6,
-                linestyle="--",
-                alpha=0.9,
-                scalex=False,
-                scaley=False,
+                [x0, x1], [y0, y1], color="#ffcc33", linewidth=1.6,
+                linestyle="--", alpha=0.9, scalex=False, scaley=False, zorder=10
             )
             self._measure_preview_artist = pline
 
     def _clear_tooltip(self, *, keep_measure: bool = False, keep_preview: bool = False):
-        removed = False
+        # Clears the MMB tooltip and optionally measurement artifacts
+        removed_tooltip = False
         if self._tooltip is not None:
             try:
                 self._tooltip.remove()
@@ -815,69 +1030,99 @@ class PointEditor(tk.Frame):
                 pass
             self._tooltip = None
             self._tooltip_idx = None
-            removed = True
+            removed_tooltip = True
+
+        removed_preview = False
         if not keep_preview:
-            if self._cancel_measurement_preview():
-                removed = True
+            removed_preview = self._cancel_measurement_preview()
+
+        removed_measure = False
         if not keep_measure:
-            if self._clear_measurement_result():
-                removed = True
-        if removed and hasattr(self, "canvas"):
+            removed_measure = self._clear_measurement_result()
+
+        # Redraw only if something visual was actually removed
+        if (removed_tooltip or removed_preview or removed_measure) and hasattr(self, "canvas"):
             self.canvas.draw_idle()
 
     def _show_tooltip_for_idx(self, idx):
-        if idx is None or idx < 0 or idx >= len(self.points):
+        # Shows intensity tooltip on MMB click
+        if self.points is None or idx is None or idx < 0 or idx >= len(self.points):
             return
+
         y, x = self.points[idx]
-        inten = float(self.values[idx]) if idx < len(self.values) else 0.0
-        if self._percent_map is not None:
+
+        # Determine intensity: Prefer sampled percentile, fallback to saved value
+        inten = None
+        if self._percent_map is not None:  # Best source if available
             H, W = self._percent_map.shape[:2]
             yi = max(0, min(H - 1, int(round(y))))
             xi = max(0, min(W - 1, int(round(x))))
             inten = float(self._percent_map[yi, xi])
-        elif self.img_arr is not None:
-            H, W = self.img_arr.shape[:2]
-            yi = max(0, min(H - 1, int(round(y))))
-            xi = max(0, min(W - 1, int(round(x))))
-            raw_val = float(self.img_arr[yi, xi])
-            if self._percent_lookup is not None:
-                inten = float(map_values_to_percent(np.array([raw_val], dtype=float), *self._percent_lookup)[0])
-            else:
-                inten = raw_val
+        elif self.values is not None and idx < len(self.values):  # Use stored value if no map
+            inten = float(self.values[idx])
+            # Check if this stored value *looks* like a percentile (0-100) or raw
+            # This is heuristic, might need adjustment based on typical raw values
+            is_percentile_like = 0 <= inten <= 100
 
-        self._clear_tooltip()
+        # Format the text
+        if inten is not None:
+            unit = "%" if (self._percent_map is not None or is_percentile_like) else "raw"
+            txt = f"x={x:.1f}, y={y:.1f}\nI={inten:.1f} {unit}"
+        else:  # Fallback if intensity couldn't be determined
+            txt = f"x={x:.1f}, y={y:.1f}\nIntensity: N/A"
 
-        txt = f"x={x:.1f}, y={y:.1f}, I={inten:.1f}%"
+        self._clear_tooltip()  # Clear previous tooltip
+
+        # Create new annotation
         self._tooltip = self.ax.annotate(
             txt, xy=(x, y), xytext=(10, 10), textcoords="offset points",
-            bbox=dict(boxstyle="round", fc="white", ec="black", alpha=0.9),
-            fontsize=9
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.9),
+            fontsize=9, zorder=20  # Ensure tooltip is on top
         )
         self._tooltip_idx = idx
-        self.canvas.draw_idle()
+        self.canvas.draw_idle()  # Update canvas to show tooltip
 
     # ---------- Undo/Redo ----------
     def _make_snapshot(self):
-        center = None
-        if self.overlay and isinstance(self.overlay, dict) and self.overlay.get("center"):
+        # Creates a snapshot of the current state for undo/redo
+        center_data = None
+        if self.overlay and isinstance(self.overlay.get("center"), dict):
             c = self.overlay["center"]
-            if c is not None and "x" in c and "y" in c:
-                center = {"x": float(c["x"]), "y": float(c["y"])}
+            if "x" in c and "y" in c:
+                center_data = {"x": float(c["x"]), "y": float(c["y"])}
+
+        # Make copies of numpy arrays
+        points_copy = self.points.copy() if self.points is not None else np.zeros((0, 2))
+        values_copy = self.values.copy() if self.values is not None else np.zeros((0,))
+
         return {
-            "points": self.points.copy(),
-            "values": self.values.copy(),
-            "center": center,
-            "view_cx": self.view_cx, "view_cy": self.view_cy
+            "points": points_copy,
+            "values": values_copy,
+            "center": center_data,  # Store cleaned center data
+            # Store view state
+            "view_cx": self.view_cx,
+            "view_cy": self.view_cy,
+            "zoom_val": self.zoom_val,
+            # Store measurement state
+            "measurement": self._measurement,
+            # Store overlay radii
+            "dead_radius": self.overlay.get("dead_radius", 0.0) if self.overlay else 0.0,
+            "search_radius": self.overlay.get("search_radius", 0.0) if self.overlay else 0.0,
         }
 
     def _push_undo(self):
-        self._undo.append(self._make_snapshot())
-        if len(self._undo) > self._history_cap:
-            self._undo.pop(0)
-        self._redo.clear()
+        # Add current state to undo stack
+        if self._history_cap > 0:  # Only store if history is enabled
+            self._undo.append(self._make_snapshot())
+            # Limit stack size
+            if len(self._undo) > self._history_cap:
+                self._undo.pop(0)
+            self._redo.clear()  # Clear redo stack on new action
 
     def _apply_snapshot(self, snap):
-        self.center_dragging = False
+        # Restores state from a snapshot
+        self.center_dragging = False  # Ensure dragging stops
+        # Clear temporary visuals
         if self.rect_artist is not None:
             try:
                 self.rect_artist.remove()
@@ -885,292 +1130,486 @@ class PointEditor(tk.Frame):
                 pass
             self.rect_artist = None
         self.rect_start = None
-        self._clear_merge_seed(keep_status=True)
+        self._clear_merge_seed(keep_status=True)  # Clear merge selection
+        self._cancel_measurement_preview()  # Clear measurement preview
         self._last_cursor_pos = None
 
+        # Restore core data (use copies from snapshot)
         self.points = snap["points"].copy()
         self.values = snap["values"].copy()
-        if snap["center"] is None:
-            if self.overlay and "center" in self.overlay: self.overlay.pop("center")
-        else:
-            if self.overlay is None: self.overlay = {}
-            self.overlay["center"] = {"x": float(snap["center"]["x"]), "y": float(snap["center"]["y"])}
-        self.view_cx = snap.get("view_cx", self.view_cx)
-        self.view_cy = snap.get("view_cy", self.view_cy)
-        self._ensure_view_center()
 
-    def _undo_btn(self, event=None):  # event=None to handle both button and key press
-        if event and isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
-            return
-        self._clear_tooltip()
-        if not self._undo: return
-        self._redo.append(self._make_snapshot())
-        if len(self._redo) > self._history_cap: self._redo.pop(0)
-        snap = self._undo.pop(-1)
-        self._apply_snapshot(snap)
-        self._redraw()
+        # Restore overlay
+        if self.overlay is None: self.overlay = {}  # Ensure overlay dict exists
+        self.overlay["center"] = snap["center"]  # Restore center (can be None)
+        self.overlay["dead_radius"] = snap.get("dead_radius", 0.0)
+        self.overlay["search_radius"] = snap.get("search_radius", 0.0)
 
-    def _redo_btn(self, event=None):  # event=None to handle both button and key press
-        if event and isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+        # Restore view state
+        self.view_cx = snap.get("view_cx")
+        self.view_cy = snap.get("view_cy")
+        self.zoom_val = snap.get("zoom_val", 0)
+        if hasattr(self, 'zoom_var'): self.zoom_var.set(self.zoom_val)  # Update slider
+
+        # Restore measurement state
+        self._measurement = snap.get("measurement")
+
+        self._ensure_view_center()  # Recalculate if needed
+        self._update_zoom_hint()  # Update label
+
+    def _undo_btn(self, event=None):
+        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)): return  # Ignore in text fields
+        if not self._undo:
+            self._set_status("Nothing to undo.")
             return
-        self._clear_tooltip()
-        if not self._redo: return
-        self._undo.append(self._make_snapshot())
-        if len(self._redo) > self._history_cap: self._undo.pop(0)
-        snap = self._redo.pop(-1)
-        self._apply_snapshot(snap)
-        self._redraw()
+
+        self._clear_tooltip()  # Clear popups before state change
+        current_state = self._make_snapshot()  # Save current state for redo
+        self._redo.append(current_state)
+        if len(self._redo) > self._history_cap: self._redo.pop(0)  # Limit redo stack
+
+        snap_to_restore = self._undo.pop()  # Get previous state
+        self._apply_snapshot(snap_to_restore)  # Restore it
+        self._redraw()  # Update visuals
+        self._set_status("Undo successful.")
+
+    def _redo_btn(self, event=None):
+        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)): return  # Ignore in text fields
+        if not self._redo:
+            self._set_status("Nothing to redo.")
+            return
+
+        self._clear_tooltip()  # Clear popups
+        current_state = self._make_snapshot()  # Save current state for undo
+        self._undo.append(current_state)
+        if len(self._undo) > self._history_cap: self._undo.pop(0)  # Limit undo stack
+
+        snap_to_restore = self._redo.pop()  # Get state to redo
+        self._apply_snapshot(snap_to_restore)  # Restore it
+        self._redraw()  # Update visuals
+        self._set_status("Redo successful.")
 
     # ---------- View-center helpers ----------
     def _ensure_view_center(self):
-        if self.img_arr is None:
-            if self.view_cx is None: self.view_cx = 0
-            if self.view_cy is None: self.view_cy = 0
-            return
+        # Set default view center if not already set
+        if self.view_cx is not None and self.view_cy is not None:
+            return  # Already have a center
 
-        H, W = self.img_arr.shape[:2]
-        if self.overlay and self.overlay.get("center"):
-            cx = float(self.overlay["center"].get("x", (W - 1) / 2.0))
-            cy = float(self.overlay["center"].get("y", (H - 1) / 2.0))
-        else:
-            cx = (W - 1) / 2.0;
-            cy = (H - 1) / 2.0
-        if self.view_cx is None: self.view_cx = cx
-        if self.view_cy is None: self.view_cy = cy
+        cx_def, cy_def = 0.0, 0.0
+        # Try center from overlay first
+        if self.overlay and isinstance(self.overlay.get("center"), dict):
+            c = self.overlay["center"]
+            cx_def = float(c.get("x", 0.0))
+            cy_def = float(c.get("y", 0.0))
+        # Fallback to image center if overlay center is missing/invalid
+        elif self.img_arr is not None:
+            H, W = self.img_arr.shape[:2]
+            cx_def = (W - 1) / 2.0
+            cy_def = (H - 1) / 2.0
+        # Use defaults if no other info available
+        if self.view_cx is None: self.view_cx = cx_def
+        if self.view_cy is None: self.view_cy = cy_def
 
     # ---------- Zoom ----------
     def _apply_zoom(self):
+        # Applies the current zoom level and view center to the matplotlib axes
         if self.img_arr is None:
-            self.ax.set_xlim(-100, 100)
-            self.ax.set_ylim(100, -100)
+            # Handle case with no image: Set default limits?
+            self.ax.set_xlim(0, 100)
+            self.ax.set_ylim(100, 0)
             return
 
         H, W = self.img_arr.shape[:2]
-        self._ensure_view_center()
+        self._ensure_view_center()  # Ensure view_cx, view_cy are set
 
-        if self.zoom_val <= 0:
-            self.ax.set_xlim(-0.5, W - 0.5)
-            self.ax.set_ylim(H - 0.5, -0.5)
+        x0_full, x1_full = -0.5, W - 0.5
+        y0_full, y1_full = H - 0.5, -0.5  # y-axis inverted for imshow
+
+        if self.zoom_val <= 0:  # Zoom level 0 means full view
+            self.ax.set_xlim(x0_full, x1_full)
+            self.ax.set_ylim(y0_full, y1_full)
             return
 
+        # Calculate zoom window size (L)
         min_dim = min(H, W)
-        L = int(round(min_dim - (min_dim - 50) * (self.zoom_val / 100.0)))
-        L = max(50, min_dim if L < 50 else L)
-        half = L / 2.0
+        # Linear interpolation for zoom size: L ranges from min_dim (at 0%) down to 50px (at 100%)
+        L = max(50.0, min_dim - (min_dim - 50.0) * (self.zoom_val / 100.0))
+
+        # Maintain square aspect ratio for the zoom *window*
+        half_w, half_h = L / 2.0, L / 2.0
 
         cx = float(self.view_cx);
         cy = float(self.view_cy)
-        x0 = max(-0.5, cx - half);
-        x1 = min(W - 0.5, cx + half)
-        y0 = max(-0.5, cy - half);
-        y1 = min(H - 0.5, cy + half)
 
-        if (x1 - x0) < L:
-            if x0 <= -0.5:
-                x1 = x0 + L
-            elif x1 >= (W - 0.5):
-                x0 = x1 - L
-        if (y1 - y0) < L:
-            if y0 <= -0.5:
-                y1 = y0 + L
-            elif y1 >= (H - 0.5):
-                y0 = y1 - L
+        # Calculate initial window boundaries centered on (cx, cy)
+        x0 = cx - half_w;
+        x1 = cx + half_w
+        y1 = cy - half_h;
+        y0 = cy + half_h  # y-axis is inverted
 
+        # Constrain window boundaries to image limits
+        x0 = max(x0_full, x0);
+        x1 = min(x1_full, x1)
+        y1 = max(y1_full, y1);
+        y0 = min(y0_full, y0)
+
+        # Adjust boundaries if the window became smaller than L due to hitting edges
+        current_w = x1 - x0
+        current_h = y0 - y1  # y0 > y1
+        if current_w < L - 1e-6:  # Check width, allow small tolerance
+            if x0 == x0_full:
+                x1 = min(x1_full, x0 + L)  # Expand right if hit left edge
+            elif x1 == x1_full:
+                x0 = max(x0_full, x1 - L)  # Expand left if hit right edge
+            # Recalculate center if bounds shifted significantly? Optional.
+            # cx = (x0 + x1) / 2.0
+
+        if current_h < L - 1e-6:  # Check height
+            if y1 == y1_full:
+                y0 = min(y0_full, y1 + L)  # Expand down if hit top edge
+            elif y0 == y0_full:
+                y1 = max(y1_full, y0 - L)  # Expand up if hit bottom edge
+            # Recalculate center if bounds shifted? Optional.
+            # cy = (y0 + y1) / 2.0
+
+        # Set the final axes limits
         self.ax.set_xlim(x0, x1)
-        self.ax.set_ylim(y1, y0)
+        self.ax.set_ylim(y0, y1)  # ymax, ymin
 
     def _on_zoom_change(self, val=None):
         try:
+            # If called by slider, 'val' is a string representation
+            # If called internally (e.g., scroll), 'val' might be float or None
             new_val = float(val) if val is not None else self.zoom_val
-            self.zoom_val = int(round(new_val))
+            new_zoom = max(0, min(100, int(round(new_val))))  # Clamp between 0 and 100
         except (ValueError, TypeError):
-            self.zoom_val = 0
+            new_zoom = 0  # Default to 0 on error
 
-        if hasattr(self, "zoom_var"):
-            current_slider_val = int(round(self.zoom_var.get()))
-            if current_slider_val != self.zoom_val:
-                self.zoom_var.set(self.zoom_val)
+        if new_zoom != self.zoom_val:  # Only update if value changed
+            self.zoom_val = new_zoom
+            # Update slider if it exists and its value differs
+            if hasattr(self, "zoom_var"):
+                current_slider_val = int(round(self.zoom_var.get()))
+                if current_slider_val != self.zoom_val:
+                    self.zoom_var.set(self.zoom_val)
 
-        self._update_zoom_hint()
-        self._clear_tooltip()
-        self._redraw()
+            self._update_zoom_hint()
+            self._clear_tooltip()  # Clear tooltip on zoom change
+            self._redraw()  # Redraw with new zoom level
 
     def _on_scroll(self, event):
+        # Handles zooming with the mouse wheel
         if event.xdata is None or event.ydata is None:
-            return
+            return  # Don't zoom if cursor is outside axes
 
+        # --- Zoom centering ---
+        # Set the view center to the cursor position *before* changing zoom level
+        self.view_cx = event.xdata
+        self.view_cy = event.ydata
+
+        # Determine zoom direction and step
         zoom_step = 5
-        if event.button == 'up':
-            self.zoom_val += zoom_step
-        elif event.button == 'down':
-            self.zoom_val -= zoom_step
+        if event.button == 'up':  # Scroll up zooms in
+            new_zoom_val = self.zoom_val + zoom_step
+        elif event.button == 'down':  # Scroll down zooms out
+            new_zoom_val = self.zoom_val - zoom_step
+        else:
+            return  # Not a recognized scroll event
 
-        self.zoom_val = max(0, min(100, self.zoom_val))
-        self._on_zoom_change()
+        # Clamp and apply the new zoom value
+        new_zoom_val = max(0, min(100, new_zoom_val))
+        self._on_zoom_change(new_zoom_val)  # Use the common handler
 
     # ---------- Mouse / Keyboard events ----------
     def _on_key(self, e):
+        # Handles key presses on the canvas
         if e.key == "escape":
-            self._clear_tooltip()
-            if self._merge_seed_idx is not None:
-                self._clear_merge_seed()
+            # Clear tooltip, cancel measurement preview, cancel merge selection
+            cleared_tooltip = self._tooltip is not None
+            cleared_measure = self._cancel_measurement_preview()
+            cleared_merge = self._clear_merge_seed()
+            if cleared_tooltip or cleared_measure or cleared_merge:
+                self._redraw()  # Redraw if any state was cleared
+            if not (cleared_tooltip or cleared_measure or cleared_merge):
+                self._set_status("Escape pressed, no action taken.")
+
+
         elif e.key in {"enter", "return"}:
-            if self._merge_selected_with_radius():
-                self._redraw()
+            # Finalize merge operation if a seed point is selected
+            if self._merge_seed_idx is not None:
+                if self._merge_selected_with_radius():
+                    self._redraw()  # Redraw after successful merge
+                # Status is set within _merge_selected_with_radius
+            else:
+                self._set_status("Enter pressed, no merge point selected.")
 
     def _on_down(self, e):
-        pos = self._img_xy(e)
-        self._clear_tooltip()
+        # Handles mouse button presses on the canvas
+        pos_yx = self._img_xy(e)  # Get coordinates in (y, x) format
+        self._clear_tooltip()  # Clear tooltip on any click
 
-        if pos is not None:
-            self._last_cursor_pos = (float(pos[0]), float(pos[1]))
+        # Store last known cursor position
+        if pos_yx is not None:
+            self._last_cursor_pos = (float(pos_yx[0]), float(pos_yx[1]))
         else:
             self._last_cursor_pos = None
 
+        # --- Middle Mouse Button (Button 2) ---
         if e.button == 2:
-            if pos is None:
-                return
-            y, x = pos
-            idx = self._near_idx(y, x, pix_tol=8)
+            if pos_yx is None: return  # Click outside axes
+            y, x = pos_yx
+            idx = self._near_idx(y, x, pix_tol=8)  # Find nearest point
             if idx is not None:
-                self._show_tooltip_for_idx(idx)
+                self._show_tooltip_for_idx(idx)  # Show info tooltip
             return
 
-        if e.button == 1 and not (e.key and "shift" in e.key):
-            if pos is None:
-                return
-            y, x = pos
+        # --- Left Mouse Button (Button 1) ---
+        if e.button == 1:
+            # --- Shift + Left Click: Start Rectangular Selection ---
+            if e.key and "shift" in e.key.lower():
+                if pos_yx is not None:
+                    self._push_undo()  # Save state before starting rect select
+                    self.rect_start = pos_yx  # Store start corner (y, x)
+                    self._redo.clear()
+                    self._set_status("Drag to select points for deletion.")
+                return  # Don't do other actions when shift is held
+
+            # --- Normal Left Click ---
+            if pos_yx is None: return  # Click outside axes
+
+            y, x = pos_yx
+
+            # --- Click on Center? ---
             if self._center_hit(y, x):
-                self._clear_merge_seed()
-                self._push_undo()
+                self._clear_merge_seed()  # Cancel merge selection
+                self._cancel_measurement_preview()  # Cancel measurement
+                self._push_undo()  # Save state before dragging center
                 self.center_dragging = True
                 self._redo.clear()
+                self._set_status("Dragging center overlay. Release to finish.")
+                self._redraw()  # Show visual feedback? (Optional)
                 return
 
-            i = self._near_idx(y, x)
-            if i is None:
-                self._clear_merge_seed()
-                self._push_undo()
-                self.points = np.vstack([self.points, [y, x]])
-                sampled = self._sample_intensities(np.array([[y, x]]))[0]
-                self.values = np.append(self.values, sampled)
-                self._redo.clear()
-            else:
-                self._select_merge_seed(i)
-                self._start_measurement(i)
-
-        elif e.button == 3:
-            if pos is None:
-                return
-            y, x = pos
+            # --- Click Near a Point? ---
             i = self._near_idx(y, x)
             if i is not None:
-                self._push_undo()
-                self.points = np.delete(self.points, i, axis=0)
-                self.values = np.delete(self.values, i, axis=0)
-                if self._merge_seed_idx is not None:
-                    if i == self._merge_seed_idx:
-                        self._clear_merge_seed()
-                    elif i < self._merge_seed_idx:
-                        self._merge_seed_idx -= 1
-                        if 0 <= self._merge_seed_idx < len(self.points):
-                            self._merge_seed_origin = (
-                                float(self.points[self._merge_seed_idx, 0]),
-                                float(self.points[self._merge_seed_idx, 1]),
-                            )
+                # If measurement is active, finalize it
+                if self._measure_active:
+                    self._finalize_measurement(i)
+                else:
+                    # If not measuring, select point for merge OR start measurement
+                    self._select_merge_seed(i)
+                    self._start_measurement(i)  # Start measurement mode simultaneously
+                    self._set_status("Point selected. Drag to measure distance or press Enter to merge.")
+
+            # --- Click on Empty Area? ---
+            else:
+                self._clear_merge_seed()  # Cancel merge selection
+                self._cancel_measurement_preview()  # Cancel measurement
+                self._push_undo()  # Save state before adding point
+                # Add new point
+                self.points = np.vstack([self.points, [y, x]])
+                # Sample its intensity
+                sampled_value = self._sample_intensities(np.array([[y, x]]))[0]
+                self.values = np.append(self.values, sampled_value)
                 self._redo.clear()
+                self._set_status(f"Added point at ({x:.1f}, {y:.1f}).")
 
-        elif e.button == 1 and e.key and "shift" in e.key:
-            if pos is not None:
-                self._last_cursor_pos = (float(pos[0]), float(pos[1]))
-            self._push_undo()
-            self.rect_start = pos
-            self._redo.clear()
+        # --- Right Mouse Button (Button 3) ---
+        elif e.button == 3:
+            if pos_yx is None: return  # Click outside axes
+            y, x = pos_yx
+            i = self._near_idx(y, x)  # Find point to delete
+            if i is not None:
+                self._push_undo()  # Save state before deleting
 
+                # --- Update merge seed if the deleted point was the seed ---
+                deleted_point_was_seed = (i == self._merge_seed_idx)
+                index_shift = 0
+                if self._merge_seed_idx is not None and i < self._merge_seed_idx:
+                    index_shift = -1  # Adjust index if point before seed is deleted
+
+                # Delete point and value
+                self.points = np.delete(self.points, i, axis=0)
+                if self.values is not None and len(self.values) > i:
+                    self.values = np.delete(self.values, i, axis=0)
+                else:
+                    # Resample if values array was inconsistent
+                    self.values = self._sample_intensities(self.points)
+
+                # --- Update merge seed state ---
+                if deleted_point_was_seed:
+                    self._clear_merge_seed()  # Clear if seed was deleted
+                elif index_shift != 0 and self._merge_seed_idx is not None:
+                    self._merge_seed_idx += index_shift  # Adjust index
+                    # Update origin based on new index
+                    if 0 <= self._merge_seed_idx < len(self.points):
+                        new_y, new_x = self.points[self._merge_seed_idx]
+                        self._merge_seed_origin = (float(new_y), float(new_x))
+                    else:  # Should not happen, but clear if index becomes invalid
+                        self._clear_merge_seed()
+
+                self._redo.clear()
+                self._set_status("Deleted point.")
+
+        # Redraw after any action (add, delete, select)
         self._redraw()
 
     def _on_move(self, e):
-        pos = self._img_xy(e)
-        keep = self._measure_active
-        self._clear_tooltip(keep_measure=keep, keep_preview=keep)
+        # Handles mouse movement over the canvas
+        pos_yx = self._img_xy(e)  # Get coordinates (y, x)
 
-        if pos is not None:
-            self._last_cursor_pos = (float(pos[0]), float(pos[1]))
+        # Update last cursor position (used for merge radius)
+        if pos_yx is not None:
+            self._last_cursor_pos = (float(pos_yx[0]), float(pos_yx[1]))
         else:
             self._last_cursor_pos = None
 
-        if self.center_dragging and pos is not None:
-            y, x = pos
-            if self.overlay is None:
-                self.overlay = {}
+        # --- Dragging Center ---
+        if self.center_dragging and pos_yx is not None:
+            y, x = pos_yx
+            if self.overlay is None: self.overlay = {}  # Ensure exists
             self.overlay["center"] = {"x": float(x), "y": float(y)}
-            self._redraw()
-            return
+            # Update view center dynamically while dragging? Optional, can feel jerky.
+            # self.view_cx = float(x)
+            # self.view_cy = float(y)
+            self._redraw()  # Redraw to show center moving
+            self._set_status("Dragging center...")  # Update status
+            return  # Don't do other move actions while dragging center
 
+        # --- Updating Measurement Preview ---
         if self._measure_active:
-            self._update_measurement_preview(pos)
+            self._update_measurement_preview(pos_yx)  # Update dashed line
+            # Don't return here, allow rect drag simultaneously if needed? No, measure takes priority.
             return
 
+        # --- Updating Rectangular Selection ---
         if self.rect_start and e.xdata is not None and e.ydata is not None:
-            y0, x0 = self.rect_start
-            y1, x1 = e.ydata, e.xdata
-            self._redraw()
+            y0, x0 = self.rect_start  # Start corner (y, x)
+            y1, x1 = e.ydata, e.xdata  # Current corner (y, x)
+
+            # --- Draw the rectangle ---
+            # Remove previous rectangle artist if it exists
+            if self.rect_artist is not None:
+                try:
+                    self.rect_artist.remove()
+                except Exception:
+                    pass
+                self.rect_artist = None
+
+            # Preserve zoom
+            current_xlim = self.ax.get_xlim()
+            current_ylim = self.ax.get_ylim()
+
+            # Create new rectangle patch (x, y, width, height for Rectangle)
+            rect_x = min(x0, x1)
+            rect_y = min(y0, y1)
+            rect_w = abs(x1 - x0)
+            rect_h = abs(y1 - y0)
             self.rect_artist = self.ax.add_patch(
-                plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec="red", ls="--", lw=1.5)
+                plt.Rectangle((rect_x, rect_y), rect_w, rect_h,
+                              fill=False, ec="red", ls="--", lw=1.5, zorder=15)
             )
-            self.canvas.draw_idle()
-            return
+
+            # Restore zoom
+            self.ax.set_xlim(current_xlim)
+            self.ax.set_ylim(current_ylim)
+
+            self.canvas.draw_idle()  # Update canvas to show rectangle
+            return  # Don't do other move actions
 
     def _on_up(self, e):
-        keep = self._measure_active
-        self._clear_tooltip(keep_measure=keep, keep_preview=keep)
+        # Handles mouse button releases on the canvas
 
+        # --- Releasing after Dragging Center ---
         if self.center_dragging:
             self.center_dragging = False
-            self._apply_center_filters()
-            if self.overlay and self.overlay.get("center"):
+            self._apply_center_filters()  # Remove points now outside radii
+            # Update view center permanently after drag
+            if self.overlay and isinstance(self.overlay.get("center"), dict):
                 self.view_cx = float(self.overlay["center"]["x"])
                 self.view_cy = float(self.overlay["center"]["y"])
             self._redraw()
+            self._set_status("Center position updated.")
             return
 
+        # --- Releasing after Measurement Start (potential finalize) ---
         if self._measure_active:
-            pos = self._img_xy(e)
+            # Measurement is finalized only by clicking a *second point* (handled in _on_down)
+            # Releasing button in empty space or on same point cancels preview
+            pos_yx = self._img_xy(e)
             end_idx = None
-            if pos is not None:
-                end_idx = self._near_idx(pos[0], pos[1])
-            self._finalize_measurement(end_idx)
+            if pos_yx is not None:
+                end_idx = self._near_idx(pos_yx[0], pos_yx[1])
+
+            # If released on the start point or empty space, just cancel the preview drawing
+            if end_idx is None or end_idx == self._measure_start_idx:
+                if self._cancel_measurement_preview():
+                    self._redraw()  # Redraw if preview was cleared
+                    self._set_status("Measurement cancelled.")
+                # Important: Don't reset _measure_active here, it's reset in _finalize or _cancel
+            # If released on a *different* point, _finalize_measurement was already called in _on_down
             return
 
+        # --- Releasing after Rectangular Selection ---
         if self.rect_start:
-            y0, x0 = self.rect_start;
-            y1, x1 = e.ydata, e.xdata
-            if y1 is not None and x1 is not None:
+            y0, x0 = self.rect_start;  # Start corner (y, x)
+            # Ensure coordinates exist on release
+            if e.ydata is not None and e.xdata is not None:
+                y1, x1 = e.ydata, e.xdata  # End corner (y, x)
+
+                # Determine bounds
                 ymin, ymax = sorted([y0, y1]);
                 xmin, xmax = sorted([x0, x1])
-                mask = ~((self.points[:, 0] >= ymin) & (self.points[:, 0] <= ymax) &
-                         (self.points[:, 1] >= xmin) & (self.points[:, 1] <= xmax))
-                if self._merge_seed_idx is not None:
-                    if self._merge_seed_idx >= len(mask) or not mask[self._merge_seed_idx]:
-                        self._clear_merge_seed()
+
+                # Find points within the rectangle
+                points_in_rect_mask = (
+                        (self.points[:, 0] >= ymin) & (self.points[:, 0] <= ymax) &
+                        (self.points[:, 1] >= xmin) & (self.points[:, 1] <= xmax)
+                )
+                num_to_delete = np.count_nonzero(points_in_rect_mask)
+
+                if num_to_delete > 0:
+                    # --- Update merge seed index before deleting points ---
+                    new_merge_seed_idx = None
+                    if self._merge_seed_idx is not None:
+                        # Check if seed is *not* being deleted
+                        if not points_in_rect_mask[self._merge_seed_idx]:
+                            # Calculate how many points *before* the seed are being deleted
+                            num_deleted_before_seed = np.count_nonzero(points_in_rect_mask[:self._merge_seed_idx])
+                            new_merge_seed_idx = self._merge_seed_idx - num_deleted_before_seed
+                        # If seed is being deleted, new_merge_seed_idx remains None
+
+                    # --- Delete points ---
+                    mask_to_keep = ~points_in_rect_mask
+                    self.points = self.points[mask_to_keep]
+                    if self.values is not None and len(self.values) == len(mask_to_keep) + num_to_delete:
+                        self.values = self.values[mask_to_keep]
                     else:
-                        new_idx = int(np.count_nonzero(mask[: self._merge_seed_idx + 1]) - 1)
-                        self._merge_seed_idx = new_idx
-                self.points = self.points[mask]
-                if len(self.values) == len(mask):
-                    self.values = self.values[mask]
+                        self.values = self._sample_intensities(self.points)  # Resample if inconsistent
+
+                    # --- Update merge seed state ---
+                    self._merge_seed_idx = new_merge_seed_idx
+                    if self._merge_seed_idx is not None:
+                        # Update origin to current position
+                        current_y, current_x = self.points[self._merge_seed_idx]
+                        self._merge_seed_origin = (float(current_y), float(current_x))
+                    else:
+                        self._merge_seed_origin = None  # Clear if seed was deleted or invalid
+
+                    self._set_status(f"Deleted {num_to_delete} points in selection.")
                 else:
-                    self.values = self._sample_intensities(self.points)
-                if self._merge_seed_idx is not None and self._merge_seed_idx < len(self.points):
-                    self._merge_seed_origin = (
-                        float(self.points[self._merge_seed_idx, 0]),
-                        float(self.points[self._merge_seed_idx, 1]),
-                    )
+                    self._set_status("Rectangular selection finished, no points deleted.")
+
+            # --- Cleanup rectangle drawing ---
             self.rect_start = None
             if self.rect_artist is not None:
-                self.rect_artist.remove();
+                try:
+                    self.rect_artist.remove()
+                except Exception:
+                    pass
                 self.rect_artist = None
-            self._redraw()
+            self._redraw()  # Redraw to remove rectangle and show updated points
+            return
 
     # ---------- Draw ----------
     def _redraw(self):
@@ -1179,196 +1618,161 @@ class PointEditor(tk.Frame):
             self.ax.imshow(self.img_arr, cmap="gray", interpolation="nearest")
         self.ax.axis("off")
 
-        if self.overlay and self.overlay.get("center"):
-            cy = float(self.overlay["center"].get("y", 0))
-            cx = float(self.overlay["center"].get("x", 0))
-            self.ax.scatter([cx], [cy], s=36, c="red", marker="o")
-            dead = float(self.overlay.get("dead_radius") or 0)
-            sr = float(self.overlay.get("search_radius") or 0)
-            for R in [dead, sr]:
-                if R > 0:
-                    self.ax.add_patch(Circle((cx, cy), R, fill=False, ls="--", lw=2.0, ec="red"))
+        # Draw Center and Radii Overlay
+        if self.overlay and isinstance(self.overlay.get("center"), dict):
+            center_data = self.overlay["center"]
+            cy = float(center_data.get("y", 0))
+            cx = float(center_data.get("x", 0))
+            self.ax.scatter([cx], [cy], s=40, c="red", marker="o", zorder=5)  # Increase size slightly
+            dead = float(self.overlay.get("dead_radius", 0))
+            sr = float(self.overlay.get("search_radius", 0))
+            # Draw radii only if > 0
+            if dead > 0:
+                self.ax.add_patch(Circle((cx, cy), dead, fill=False, ls="--", lw=1.5, ec="red", zorder=4))
+            if sr > 0:
+                self.ax.add_patch(Circle((cx, cy), sr, fill=False, ls=":", lw=1.0, ec="red", zorder=4))
 
-        if len(self.points):
-            if (
-                    self._merge_seed_idx is not None
-                    and 0 <= self._merge_seed_idx < len(self.points)
-            ):
-                mask = np.ones(len(self.points), dtype=bool)
+        # Draw Points
+        if self.points is not None and len(self.points) > 0:
+            points_to_draw = self.points
+            colors = 'cyan'  # Default color
+            sizes = 22  # Default size
+            zorder = 3
+
+            # Highlight the merge seed point if selected
+            if self._merge_seed_idx is not None and 0 <= self._merge_seed_idx < len(self.points):
+                seed_y, seed_x = points_to_draw[self._merge_seed_idx]
+                # Draw non-seed points first
+                mask = np.ones(len(points_to_draw), dtype=bool)
                 mask[self._merge_seed_idx] = False
                 if np.any(mask):
-                    self.ax.scatter(
-                        self.points[mask, 1],
-                        self.points[mask, 0],
-                        s=22,
-                        alpha=0.9,
-                        marker="o",
-                        linewidths=0.5,
-                        edgecolors="black",
-                    )
-                seed_y = float(self.points[self._merge_seed_idx, 0])
-                seed_x = float(self.points[self._merge_seed_idx, 1])
-                self.ax.scatter(
-                    [seed_x],
-                    [seed_y],
-                    s=38,
-                    alpha=0.95,
-                    marker="o",
-                    linewidths=0.8,
-                    edgecolors="black",
-                    c="#ffd34d",
-                )
+                    self.ax.scatter(points_to_draw[mask, 1], points_to_draw[mask, 0],
+                                    s=sizes, c=colors, alpha=0.8, marker="o",
+                                    linewidths=0.5, edgecolors="black", zorder=zorder)
+                # Draw seed point highlighted
+                self.ax.scatter([seed_x], [seed_y], s=42, c="#ffd34d",  # Yellowish color
+                                alpha=0.95, marker="o", linewidths=0.8, edgecolors="black", zorder=zorder + 1)
             else:
-                self.ax.scatter(
-                    self.points[:, 1],
-                    self.points[:, 0],
-                    s=22,
-                    alpha=0.9,
-                    marker="o",
-                    linewidths=0.5,
-                    edgecolors="black",
-                )
+                # Draw all points normally if no seed selected
+                self.ax.scatter(points_to_draw[:, 1], points_to_draw[:, 0],
+                                s=sizes, c=colors, alpha=0.9, marker="o",
+                                linewidths=0.5, edgecolors="black", zorder=zorder)
 
+        # Draw Measurement Overlays (solid line + text, or dashed preview line)
         self._draw_measurement_overlays()
+
+        # Apply Zoom
         self._apply_zoom()
+
+        # Update Canvas
         self.canvas.draw_idle()
 
     # ---------- Анализ ----------
     def _start_analysis(self):
-        saved_spots_path = self._save_points()
-        if saved_spots_path is None or self.input_json_path is None:
-            messagebox.showerror("Analysis Error", "Could not save points or input JSON path is missing.")
+        # --- Ensure output directory and save points first ---
+        try:
+            saved_spots_path = self._save_points()  # This now saves both files and returns spots.json path
+            # The output dir is determined and created within _save_points
+            output_dir = saved_spots_path.parent
+            # The saed_input.edited.json is also saved by _save_points
+            payload_path = output_dir / "fibo_input.json"  # Define standard payload name
+
+        except (ValueError, OSError, Exception) as e:
+            messagebox.showerror("Save Error", f"Cannot proceed to analysis. Failed to save points/files:\n{e}")
             return
 
-        self._set_status("Preparing data for analysis…")
-
-        base_dir = self.input_json_path.parent
-        base_name = self.input_json_path.stem.replace("_saed_input", "")
-        fibo_input_path = base_dir / f"{base_name}_fibo_input.json"
-
-        payload_path = None
+        # --- Prepare the payload for fibonachi_analysis ---
         try:
+            # Most data is already in saed_input.edited.json, just need to reference it?
+            # Or recreate the payload structure? Recreating is safer.
+
+            # Reload the just saved saed_input.edited.json to get consistent data?
+            # Or use current instance state? Using instance state is simpler here.
+
+            abs_image_path = self.image_path.resolve() if self.image_path else None
+
+            overlay_center_data = None
+            if self.overlay and isinstance(self.overlay.get("center"), dict):
+                center_data = self.overlay["center"]
+                overlay_center_data = {"x": float(center_data["x"]), "y": float(center_data["y"])}
+
+            # Get geometric center if possible
+            geo_center_data = None
             if self.img_arr is not None:
-                geo_cy = (self.img_arr.shape[0] - 1) / 2.0
-                geo_cx = (self.img_arr.shape[1] - 1) / 2.0
-            else:
-                geo_cy = geo_cx = None
+                H, W = self.img_arr.shape[:2]
+                geo_center_data = {"x": (W - 1) / 2.0, "y": (H - 1) / 2.0}
 
-            points_list = []
-            if len(self.points):
-                if self._percent_map is not None:
-                    H, W = self._percent_map.shape[:2]
-                elif self.img_arr is not None:
-                    H, W = self.img_arr.shape[:2]
-                else:
-                    H = W = None
-                for idx, (y, x) in enumerate(self.points.tolist()):
-                    inten = None
-                    if H is not None:
-                        yi = max(0, min(H - 1, int(round(y))))
-                        xi = max(0, min(W - 1, int(round(x))))
-                        if self._percent_map is not None:
-                            inten = float(self._percent_map[yi, xi])
-                        elif self.img_arr is not None:
-                            raw_val = float(self.img_arr[yi, xi])
-                            if self._percent_lookup is not None:
-                                inten = float(
-                                    map_values_to_percent(
-                                        np.array([raw_val], dtype=float), *self._percent_lookup
-                                    )[0]
-                                )
-                            else:
-                                inten = raw_val
-                    if inten is None and idx < len(self.values):
-                        inten = float(self.values[idx])
-                    points_list.append({"x": float(x), "y": float(y), "intensity": inten})
-
-            overlay_center = None
-            if self.overlay and isinstance(self.overlay, dict) and self.overlay.get("center") is not None:
-                c = self.overlay["center"]
-                overlay_center = {"x": float(c.get("x")), "y": float(c.get("y"))}
-
-            dead_val = None
-            search_val = None
-            if self.overlay:
-                if self.overlay.get("dead_radius") is not None:
-                    dead_val = float(self.overlay.get("dead_radius"))
-                if self.overlay.get("search_radius") is not None:
-                    search_val = float(self.overlay.get("search_radius"))
+            # Use current points/values from instance
+            pts_list = []
+            current_values = self._sample_intensities(self.points)
+            for i, (y, x) in enumerate(self.points):
+                intensity = float(current_values[i]) if i < len(current_values) else 0.0
+                pts_list.append({"y": float(y), "x": float(x), "intensity": intensity})
 
             payload = {
-                "image": str(self.image_path.name) if self.image_path else None,  # Relative path
+                "image": str(abs_image_path) if abs_image_path else None,
                 "preproc_mode": self._preproc_settings.mode,
                 "preproc": self._preproc_settings.to_json(),
-                "points": points_list,
+                "points": pts_list,
                 "centers": {
-                    "geometric": {"x": float(geo_cx), "y": float(geo_cy)} if geo_cx is not None else None,
-                    "overlay": overlay_center
+                    "geometric": geo_center_data,
+                    "overlay": overlay_center_data
                 },
                 "radii": {
-                    "dead": dead_val,
-                    "search": search_val
+                    "dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
+                    "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0
                 },
-                "spots_json": str(saved_spots_path.name) if saved_spots_path else None  # Relative path
+                # Pass path to the spots file generated by _save_points
+                "spots_json": str(saved_spots_path.resolve())
             }
 
-            fibo_input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            payload_path = fibo_input_path
-
+            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._set_status("Prepared data for analysis…")
 
         except Exception as e:
-            payload_path = None
-            messagebox.showerror("Data preparation error", f"Failed to prepare data for fibonachi_analysis:\n{e}")
+            messagebox.showerror("Data Preparation Error",
+                                 f"Failed to create analysis payload ({payload_path.name}):\n{e}")
+            return  # Stop if payload creation fails
 
-        used_controller = False
-        if self.controller is not None and payload_path is not None:
+        # --- Launch analysis via controller ---
+        if self.controller is not None:
             try:
-                self.controller.open_analysis(payload_path, self.image_path, saved_spots_path)
-                self._set_status("Analysis opened in tab")
-                used_controller = True
+                # Pass the absolute path of the generated payload
+                self.controller.open_analysis(payload_path.resolve(), abs_image_path, saved_spots_path.resolve())
+                # Status is updated by controller on successful tab switch
             except Exception as e:
-                messagebox.showerror("Launch error", f"Failed to switch to the analyzer:\n{e}")
+                # Log the error for debugging
+                print(f"Error calling controller.open_analysis: {e}")
+                # Display a user-friendly message
+                messagebox.showerror("Launch Error",
+                                     f"Failed to switch to the analysis tab. Please check the data and try again.\nDetails: {e}")
+        else:
+            # Fallback for standalone mode (optional)
+            messagebox.showwarning("Standalone Mode", "Cannot switch to analysis tab. Controller not available.")
+            # If you still need external launch:
+            # try:
+            #     # ... code to launch fibonachi_analysis.exe ...
+            #     self._set_status("External analysis started (standalone mode)")
+            # except Exception as e:
+            #     messagebox.showerror("Launch Error", f"Failed to launch external analysis:\n{e}")
 
-        if not used_controller:
-            try:
-                if getattr(sys, "frozen", False):
-                    fibexe = Path(sys.executable).with_name("fibonachi_analysis.exe")
-                else:
-                    fibexe = Path(__file__).with_name("fibonachi_analysis.exe")
-                cmd = [str(fibexe)]
-                if payload_path is not None: cmd += ["--payload", str(payload_path)]
-                if self.image_path is not None: cmd += ["--image", str(self.image_path)]
-                if saved_spots_path is not None: cmd += ["--points", str(saved_spots_path)]
-                subprocess.Popen(cmd, shell=False)
-                self._set_status("External analysis started")
-            except Exception as e:
-                messagebox.showerror("Launch error", f"Failed to launch fibonachi_analysis.exe:\n{e}")
-
-        if self.img_arr is None or len(self.points) == 0:
-            # messagebox.showinfo("Analysis", "No image or points available for analysis.")
-            return
-
-        cy, cx = (self.img_arr.shape[0] - 1) / 2.0, (self.img_arr.shape[1] - 1) / 2.0
-        radii, angles = pol_from((cy, cx), self.points)
-        rc, labels, _ = cluster_rings(radii)
-        ring_means = [np.mean(radii[labels == i]) for i in np.unique(labels)] if len(rc) else []
-        sym = symmetry_scores(angles, radii, ring_means)
-
-        lines = ["SAED Symmetry Analysis (Quick Report)", "=======================", "",
-                 f"File: {self.image_path}",
-                 f"Saved: {saved_spots_path.name if saved_spots_path else '-'}",
-                 f"Points: {len(self.points)}", "", "Symmetries:"]
-        for k, v in sorted(sym.items(), key=lambda kv: -kv[1]):
-            lines.append(f"  {k:>7}: {v:.3f}")
-        self._show_report("\n".join(lines))
-
-    def _show_report(self, text: str):
+    def _show_report(self, text: str):  # Kept for potential future use, but not called by _start_analysis now
         win = tk.Toplevel(self)
         win.title("SAED Report")
-        txt = tk.Text(win, wrap="word")
+        txt = tk.Text(win, wrap="word", padx=10, pady=10, state=tk.DISABLED)  # Start disabled
         txt.pack(fill=tk.BOTH, expand=True)
-        txt.insert("1.0", text)
-        txt.config(state=tk.DISABLED)
+
+        # Use tags for basic formatting
+        txt.tag_configure("header", font=("TkDefaultFont", 12, "bold", "underline"))
+        txt.tag_configure("bold", font=("TkDefaultFont", 10, "bold"))
+
+        txt.config(state=tk.NORMAL)  # Enable for inserting
+        lines = text.splitlines()
+        if lines:
+            txt.insert("1.0", lines[0] + "\n", "header")  # First line as header
+            txt.insert(tk.END, "\n".join(lines[1:]))  # Insert rest
+
+        txt.config(state=tk.DISABLED)  # Disable again
         self._set_status("Symmetry report generated")
 
 
@@ -1387,8 +1791,11 @@ class PointEditorApp(tk.Tk):
 # -------- CLI ---------
 def _parse_args(argv):
     import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--input", type=str, required=False, help="Path to saed_input.json")
+
+    p = argparse.ArgumentParser(description="SAED Point Editor")
+    # Make --input optional for standalone startup
+    p.add_argument("--input", type=str, required=False, default=None,
+                   help="Optional path to saed_input.json to load on startup.")
     return p.parse_args(argv)
 
 
