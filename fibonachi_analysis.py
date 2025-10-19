@@ -609,6 +609,17 @@ class FibonacciAnalysisFrame(tk.Frame):
         # Set initial mode AFTER lst is created
         self._set_analysis_mode('sl')
 
+    # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ: ДОБАВЛЕН МЕТОД _set_status >>>
+    def _set_status(self, text: str):
+        if hasattr(self, "status") and self.status.winfo_exists():
+            self.status.configure(text=text)
+        # Also propagate to controller if it exists
+        if self.controller is not None and hasattr(self.controller, "set_status"):
+            try:
+                self.controller.set_status(f"Analysis: {text}")
+            except Exception:
+                pass
+    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
     def _initial_load(self):
         base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) if getattr(sys, 'frozen', False) else Path(__file__).parent
@@ -1147,7 +1158,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         analysis_data = {
             'type': 'sl',
             'indices': indices,
-            'dialog_pos': chain.mean(axis=0)[::-1].tolist(), # (x,y) <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
+            'dialog_pos': chain.mean(axis=0)[::-1].tolist(), # (x,y)
             'data': {
                 'sl_chain': sl_chain,
                 'ratio': ratio,
@@ -1171,7 +1182,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         analysis_data = {
             'type': 'ratio',
             'indices': indices,
-            'dialog_pos': chain.mean(axis=0)[::-1].tolist(), # (x,y) <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
+            'dialog_pos': chain.mean(axis=0)[::-1].tolist(), # (x,y)
             'data': {
                 'ratios': ratios_for_display, # Store the calculated neighboring ratios
                 'mean_ratio': mean_ratio,
@@ -1192,7 +1203,7 @@ class FibonacciAnalysisFrame(tk.Frame):
                 analysis_data = {
                     'type': 'polygon',
                     'indices': indices,
-                    'dialog_pos': self.points[indices[-1]][::-1].tolist(), # (x,y) <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
+                    'dialog_pos': self.points[indices[-1]][::-1].tolist(), # (x,y)
                     'data': {
                         'area': area,
                         'label': f'P{poly_num}'
