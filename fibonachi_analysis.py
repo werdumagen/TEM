@@ -1,5 +1,5 @@
 from __future__ import annotations
-import sys, json, math, argparse
+import sys, json, math, argparse # Добавил argparse
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -16,9 +16,9 @@ from matplotlib.patches import Circle, Polygon as MplPolygon
 
 from preproc import PreprocSettings, load_grayscale_with_preproc
 
-# <<< ИМПОРТ ЛОГИКИ >>>
+# Импортируем всю логику из нового файла
 from fibonachi_analysis_utils import *
-# <<< ИМПОРТ GUI-УТИЛИТ >>>
+# Импортируем GUI-утилиты
 from analysis_gui_utils import AnalysisConfirmationDialog, _Tooltip, HoverTooltip
 
 
@@ -26,14 +26,9 @@ if not hasattr(tk, "Notebook") and hasattr(ttk, "Notebook"):
     tk.Notebook = ttk.Notebook
 
 
-#
-# Классы AnalysisConfirmationDialog, _Tooltip, и HoverTooltip УДАЛЕНЫ ОТСЮДА
-#
-
-
 # Эта функция используется в __main__, поэтому остается здесь
 def _parse_cli(argv=None):
-    import argparse
+    # import argparse # Убрали импорт отсюда, т.к. он теперь вверху файла
     p = argparse.ArgumentParser(description="fibonachi_analysis — load input data")
     p.add_argument("--payload", type=str, default=None, help="Path to fibo_input.json")
     p.add_argument("--image", type=str, default=None, help="Path to the image (fallback)")
@@ -161,6 +156,11 @@ class FibonacciAnalysisFrame(tk.Frame):
             # Update UI
             self._redraw_canvas()
             self._update_display_for_active_analysis()
+
+            # <<< ДОБАВЛЕН ВЫЗОВ _flash_right_scroll >>>
+            self._flash_right_scroll()
+            # <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
             if self.controller:
                 self.controller.set_status(f"Restored analysis session from {Path(fibo_input_path).name}")
 
