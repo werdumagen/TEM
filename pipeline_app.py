@@ -600,6 +600,10 @@ class TabbedPipelineApp(tk.Tk):
         header = ttk.Frame(self, padding=(20, 18, 20, 12))
         header.pack(side=tk.TOP, fill=tk.X)
         header.grid_columnconfigure(0, weight=1) # Allow title label to expand
+        header.grid_columnconfigure(1, weight=0) # Column for byline
+        header.grid_columnconfigure(2, weight=0) # Column for test button
+        header.grid_columnconfigure(3, weight=0) # Column for help button
+
         ttk.Label(header, text="SAED Symmetry — Suite", style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header, text="A single pipeline for electron diffraction processing from loading to analysis.",
@@ -608,17 +612,25 @@ class TabbedPipelineApp(tk.Tk):
         ttk.Label(header, text="by RL 9-11 2025 v2.61 ", style="Byline.TLabel").grid(
             row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)
         )
+
+        # --- Test Close Logic Button (moved here) ---
+        test_close_button = ttk.Button(header, text="Test Close Logic", command=self._on_close_window)
+        test_close_button.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(12, 0))
+        # --- End Move ---
+
         ttk.Button(header, text="Help", command=self._show_help).grid(
-            row=0, column=2, rowspan=2, sticky="ne"
+            row=0, column=3, rowspan=2, sticky="ne", padx=(12, 0) # Changed column to 3
         )
 
         # --- License Info ---
         self.license_label = ttk.Label(header, text="", style="License.TLabel", wraplength=720, justify="left")
-        self.license_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        self.license_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0)) # Spans first 2 columns
         self.license_button = ttk.Button(
             header, text="Enter License Key", command=self._prompt_for_license, style="Accent.TButton",
         )
-        self.license_button.grid(row=2, column=2, sticky="e", padx=(12, 0), pady=(12, 0))
+        # Place license button in the last column, aligned right
+        self.license_button.grid(row=2, column=3, sticky="e", padx=(12, 0), pady=(12, 0)) # Changed column to 3
+
 
         # --- Main Content Area (Tabs) ---
         content = ttk.Frame(self, padding=(20, 0, 20, 12))
@@ -626,12 +638,7 @@ class TabbedPipelineApp(tk.Tk):
 
         # --- Status Bar ---
         self.status_var = tk.StringVar(value="Ready")
-
-        # --- ДОБАВИТЬ ЭТУ КНОПКУ ДЛЯ ТЕСТА ---
-        test_close_button = ttk.Button(self, text="Test Close Logic", command=self._on_close_window)
-        test_close_button.pack(side=tk.BOTTOM, pady=5)
-        # --- КОНЕЦ ДОБАВЛЕНИЯ КНОПКИ ---
-
+        # --- REMOVED test button from here ---
         status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8), relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
