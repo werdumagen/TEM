@@ -603,13 +603,13 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         # Key bindings
         self.bind_all('<Return>', self._on_enter_key)
-        self.bind_all('<Delete>', self._on_delete_key)
+        self.bind_all('<Delete>', self._on_delete_key) # Changed from BackSpace to Delete
         self.bind_all('<Escape>', self._on_escape_key)
 
         # Set initial mode AFTER lst is created
         self._set_analysis_mode('sl')
 
-    # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ: ДОБАВЛЕН МЕТОД _set_status >>>
+
     def _set_status(self, text: str):
         if hasattr(self, "status") and self.status.winfo_exists():
             self.status.configure(text=text)
@@ -619,7 +619,6 @@ class FibonacciAnalysisFrame(tk.Frame):
                 self.controller.set_status(f"Analysis: {text}")
             except Exception:
                 pass
-    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
     def _initial_load(self):
         base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) if getattr(sys, 'frozen', False) else Path(__file__).parent
@@ -627,11 +626,11 @@ class FibonacciAnalysisFrame(tk.Frame):
         if auto:
             try:
                 self.load_json(auto)
-                self.status.config(text=f'Loaded: {auto.name}')
+                self._set_status(f'Loaded: {auto.name}') # Use _set_status
             except Exception as e:
                 messagebox.showerror('Load error', str(e))
         else:
-            self.status.config(text='JSON not found. Select a file manually.')
+            self._set_status('JSON not found. Select a file manually.') # Use _set_status
 
     # --- NEW: Core Analysis Management ---
 
@@ -670,7 +669,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.pending_analysis = None
         self._redraw_canvas()
         self._update_display_for_active_analysis()
-        self.status.config(text=f"Analysis #{self.active_analysis_idx + 1} saved.")
+        self._set_status(f"Analysis #{self.active_analysis_idx + 1} saved.") # Use _set_status
 
     def _reject_pending_analysis(self, ask_user=True):
         if self.pending_analysis is None: return
@@ -682,7 +681,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.pending_analysis = None
         self._redraw_canvas()
         self._update_display_for_active_analysis()
-        self.status.config(text="Analysis discarded.")
+        self._set_status("Analysis discarded.") # Use _set_status
 
     def _update_display_for_active_analysis(self):
         # Clear all info panels first
@@ -853,7 +852,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             else:
                 indices = self._collect_points_along_segment(self.anchor_idx, j, self.max_dist_line)
                 if len(indices) < (3 if self.analysis_mode == 'ratio' else 2):
-                    self.status.config(text=f"Not enough points found for {self.analysis_mode} analysis.")
+                    self._set_status(f"Not enough points found for {self.analysis_mode} analysis.") # Use _set_status
                     self.anchor_idx = None
                     self._redraw_canvas()
                     return
@@ -900,7 +899,7 @@ class FibonacciAnalysisFrame(tk.Frame):
                 self.active_analysis_idx = best_idx
                 self._redraw_canvas()
                 self._update_display_for_active_analysis()
-                self.status.config(text=f"Analysis #{best_idx + 1} is now active.")
+                self._set_status(f"Analysis #{best_idx + 1} is now active.") # Use _set_status
 
     def _on_motion(self, event):
         if event.xdata is None or event.ydata is None or self.points is None: return
@@ -934,10 +933,41 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self.pending_analysis:
             self._accept_pending_analysis()
 
+    # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ: МОДИФИКАЦИЯ _on_delete_key >>>
     def _on_delete_key(self, event):
-        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)): return
+        # Ignore if focus is on an input widget
+        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
+            return
+
+        # If there's a pending analysis, reject it
         if self.pending_analysis:
             self._reject_pending_analysis(ask_user=False)
+            return # Don't delete saved analysis if pending was rejected
+
+        # Check if an analysis is active (selected)
+        if self.active_analysis_idx is not None and 0 <= self.active_analysis_idx < len(self.permanent_analyses):
+            idx_to_delete = self.active_analysis_idx
+            analysis_label = f"#{idx_to_delete + 1}" # Simple label for message
+            if self.permanent_analyses[idx_to_delete]['type'] == 'polygon':
+                 analysis_label = self.permanent_analyses[idx_to_delete]['data'].get('label', analysis_label)
+
+            # Ask for confirmation
+            if messagebox.askyesno("Delete Analysis", f"Are you sure you want to delete analysis '{analysis_label}'?", parent=self):
+                try:
+                    del self.permanent_analyses[idx_to_delete]
+                    # Reset active index (or move to previous/next if desired)
+                    self.active_analysis_idx = None # Simplest approach
+                    # Update UI
+                    self._redraw_canvas()
+                    self._update_display_for_active_analysis()
+                    self._set_status(f"Deleted analysis '{analysis_label}'.")
+                except IndexError:
+                     self._set_status("Error deleting analysis: Index out of bounds.")
+            else:
+                 self._set_status("Deletion cancelled.")
+        else:
+             self._set_status("No analysis selected to delete.")
+    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
     def _on_escape_key(self, event):
         if self.pending_analysis:
@@ -946,7 +976,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             self.anchor_idx = None
             self.polygon_current_idx.clear()
             self._redraw_canvas()
-            self.status.config(text="Selection cancelled.")
+            self._set_status("Selection cancelled.") # Use _set_status
 
     # --- Drawing Logic (Modified) ---
 
@@ -1070,11 +1100,14 @@ class FibonacciAnalysisFrame(tk.Frame):
         if not meta or 'analysis_idx' not in meta: return
 
         analysis_idx = meta['analysis_idx']
+        # <<< ИСПРАВЛЕНИЕ: Проверка, что индекс все еще действителен >>>
+        if analysis_idx >= len(self.permanent_analyses):
+             return # Analysis might have been deleted
+
         analysis_type = meta['type']
-
-        if analysis_idx >= len(self.permanent_analyses): return
-
         analysis_data = self.permanent_analyses[analysis_idx]
+        # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
+
 
         if analysis_type == 'sl':
             self._highlight_word_V1(analysis_data, meta['i0'], meta['n'])
@@ -1166,7 +1199,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             }
         }
         self._prompt_for_confirmation(analysis_data)
-        self.status.config(text=f"Chain analysis complete. Please confirm or reject.")
+        self._set_status(f"Chain analysis complete. Please confirm or reject.") # Use _set_status
 
     def run_ratio_analysis(self, indices: List[int]):
         chain = self.points[indices].copy()
@@ -1189,7 +1222,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             }
         }
         self._prompt_for_confirmation(analysis_data)
-        self.status.config(text=f"Ratio analysis complete. Please confirm or reject.")
+        self._set_status(f"Ratio analysis complete. Please confirm or reject.") # Use _set_status
 
     def _handle_polygon_click(self, point_idx: int):
         if point_idx in self.polygon_current_idx:
@@ -1211,15 +1244,15 @@ class FibonacciAnalysisFrame(tk.Frame):
                 }
                 self.polygon_current_idx.clear()
                 self._prompt_for_confirmation(analysis_data)
-                self.status.config(text="Polygon closed. Please confirm or reject.")
+                self._set_status("Polygon closed. Please confirm or reject.") # Use _set_status
             else:
-                self.status.config(text="Vertex already added or polygon too small.")
+                self._set_status("Vertex already added or polygon too small.") # Use _set_status
             return
 
         # Adding a vertex
         self.polygon_current_idx.append(point_idx)
         self._redraw_canvas()
-        self.status.config(text=f"Polygon vertices: {len(self.polygon_current_idx)}. Click first point to close.")
+        self._set_status(f"Polygon vertices: {len(self.polygon_current_idx)}. Click first point to close.") # Use _set_status
 
     # --- Utility and Helper functions ---
 
@@ -1230,27 +1263,32 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def load_json(self, json_path: Path):
         self.fibo_input_path = json_path # Store for session saving
-        self.img_path, self.points, self.center, self.dead, self.srch, self.preproc = load_input(json_path)
-        self.img_arr = None
-        if self.img_path:
-            try:
-                self.img_arr = load_grayscale_with_preproc(self.img_path, self.preproc)
-            except Exception as exc:
-                messagebox.showerror('Error', f'Failed to prepare the image:\n{exc}')
+        try:
+            self.img_path, self.points, self.center, self.dead, self.srch, self.preproc = load_input(json_path)
+            self.img_arr = None
+            if self.img_path:
+                try:
+                    self.img_arr = load_grayscale_with_preproc(self.img_path, self.preproc)
+                except Exception as exc:
+                    messagebox.showerror('Error', f'Failed to prepare the image:\n{exc}')
 
-        # Reset everything
-        self.permanent_analyses.clear()
-        self.pending_analysis = None
-        self.active_analysis_idx = None
-        self.anchor_idx = None
-        self.polygon_current_idx.clear()
-        self._reject_pending_analysis(ask_user=False)
-        self._reset_zoom_state()
-        self._redraw_canvas()
-        self._update_display_for_active_analysis()
+            # Reset everything
+            self.permanent_analyses.clear()
+            self.pending_analysis = None
+            self.active_analysis_idx = None
+            self.anchor_idx = None
+            self.polygon_current_idx.clear()
+            self._reject_pending_analysis(ask_user=False)
+            self._reset_zoom_state()
+            self._redraw_canvas()
+            self._update_display_for_active_analysis()
 
-        self.status.config(text=f'Loaded: {json_path.name}')
-        self._flash_right_scroll()
+            self._set_status(f'Loaded: {json_path.name}') # Use _set_status
+            self._flash_right_scroll()
+        except Exception as e:
+             messagebox.showerror('Load Error', f'Failed to load analysis input file "{json_path.name}":\n{e}')
+             self._set_status(f'Error loading {json_path.name}')
+
 
     def _polygon_area(self, idxs: List[int]) -> float:
         if self.points is None or len(idxs) < 3: return 0.0
@@ -1312,7 +1350,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             'ratio': 'Ratio mode: Left Click to select two endpoints.',
             'polygon': 'Polygon mode: Left Click to add vertices, close on the first point.',
         }
-        if hasattr(self, 'status'): self.status.config(text=hints.get(mode))
+        self._set_status(hints.get(mode,"")) # Use _set_status
         for key, btn in self.mode_buttons.items():
             if btn.cget('state') != tk.DISABLED: btn.config(relief='sunken' if key == mode else 'raised')
 
@@ -1393,7 +1431,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         p = filedialog.asksaveasfilename(defaultextension='.png', filetypes=[('PNG', '*.png')])
         if p:
             self.fig.savefig(p, dpi=150)
-            self.status.config(text=f'Saved: {Path(p).name}')
+            self._set_status(f'Saved: {Path(p).name}') # Use _set_status
 
     def _clear_rubber_lines(self):
         removed = False

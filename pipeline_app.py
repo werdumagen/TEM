@@ -733,51 +733,24 @@ class TabbedPipelineApp(tk.Tk):
             messagebox.showerror("Save Error", f"Failed to save session:\n{e}")
             return False
 
-
+    # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ: МОДИФИКАЦИЯ _on_close_window >>>
     def _on_close_window(self) -> None:
         """Prompts to save on close, then destroys the window."""
-        # Use tk.Toplevel to ensure the dialog is on top
-        dialog = tk.Toplevel(self)
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.title("Confirm Exit")
-        dialog.geometry("300x100") # Adjust size as needed
+        # Ask the user using messagebox
+        result = messagebox.askyesnocancel(
+            "Confirm Exit",
+            "Save current session before closing?",
+            parent=self # Ensure dialog is modal to the main window
+        )
 
-        label = ttk.Label(dialog, text="Save current session before closing?")
-        label.pack(pady=10)
-
-        button_frame = ttk.Frame(dialog)
-        button_frame.pack(pady=10)
-
-        saved = False # Flag to track if save was attempted
-
-        def yes_action():
-            nonlocal saved
-            if self._on_save_shortcut(): # Attempt save
-                 saved = True # Mark as saved successfully or attempted
-            dialog.destroy()
-            self.destroy() # Close main window
-
-        def no_action():
-            dialog.destroy()
+        if result is True: # User chose "Yes"
+            if self._on_save_shortcut(): # Attempt to save
+                self.destroy() # Close main window if save succeeded
+            # else: Do nothing, save failed, let the user retry or close without saving later.
+        elif result is False: # User chose "No"
             self.destroy() # Close main window without saving
-
-        def cancel_action():
-            dialog.destroy() # Only close the dialog
-
-        yes_button = ttk.Button(button_frame, text="Yes", command=yes_action)
-        yes_button.pack(side=tk.LEFT, padx=5)
-        no_button = ttk.Button(button_frame, text="No", command=no_action)
-        no_button.pack(side=tk.LEFT, padx=5)
-        cancel_button = ttk.Button(button_frame, text="Cancel", command=cancel_action)
-        cancel_button.pack(side=tk.LEFT, padx=5)
-
-        # Center the dialog (optional but good practice)
-        dialog.update_idletasks()
-        x = self.winfo_rootx() + (self.winfo_width() // 2) - (dialog.winfo_width() // 2)
-        y = self.winfo_rooty() + (self.winfo_height() // 2) - (dialog.winfo_height() // 2)
-        dialog.geometry(f"+{x}+{y}")
-
+        # else: User chose "Cancel" (result is None), do nothing.
+    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
 
 def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
