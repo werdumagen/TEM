@@ -714,12 +714,12 @@ class TabbedPipelineApp(tk.Tk):
         """Saves the current session state to saed_session.json in the output folder."""
         # Check if controller and launcher exist
         if not hasattr(self, 'controller') or not hasattr(self.controller, 'launcher'):
-            messagebox.showerror("Save Error", "Application components not fully initialized.")
+            messagebox.showerror("Save Error", "Application components not fully initialized.", parent=self)
             return False
 
         output_dir_str = self.controller.launcher.ent_out.get()
         if not output_dir_str:
-            messagebox.showerror("Save Error", "Please specify an 'Output folder' in the Launcher tab first.")
+            messagebox.showerror("Save Error", "Please specify an 'Output folder' in the Launcher tab first.", parent=self)
             return False
 
         output_dir = Path(output_dir_str)
@@ -730,26 +730,34 @@ class TabbedPipelineApp(tk.Tk):
             # Status update already done in controller.save_session
             return True
         except Exception as e:
-            messagebox.showerror("Save Error", f"Failed to save session:\n{e}")
+            # Show error relative to main window
+            messagebox.showerror("Save Error", f"Failed to save session:\n{e}", parent=self)
             return False
 
-    # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ: МОДИФИКАЦИЯ _on_close_window >>>
+    # <<< ИСПРАВЛЕННАЯ ФУНКЦИЯ _on_close_window >>>
     def _on_close_window(self) -> None:
         """Prompts to save on close, then destroys the window."""
-        # Ask the user using messagebox
         result = messagebox.askyesnocancel(
             "Confirm Exit",
             "Save current session before closing?",
-            parent=self # Ensure dialog is modal to the main window
+            parent=self # Make dialog modal to this window
         )
 
-        if result is True: # User chose "Yes"
-            if self._on_save_shortcut(): # Attempt to save
-                self.destroy() # Close main window if save succeeded
-            # else: Do nothing, save failed, let the user retry or close without saving later.
-        elif result is False: # User chose "No"
-            self.destroy() # Close main window without saving
-        # else: User chose "Cancel" (result is None), do nothing.
+        if result is True: # Yes
+            save_successful = self._on_save_shortcut() # Attempt save
+            if save_successful:
+                self.destroy() # Close if save worked
+            else:
+                # Inform the user that save failed and window stays open
+                messagebox.showwarning(
+                    "Save Failed",
+                    "Could not save the session. Please check the output folder and try again.\n\nThe application will remain open.",
+                    parent=self
+                )
+                # Keep the window open - do nothing more here
+        elif result is False: # No
+            self.destroy() # Close without saving
+        # else: Cancel (result is None), do nothing - window stays open
     # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
 
