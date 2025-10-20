@@ -234,6 +234,7 @@ class LicenseManager:
             self._save(data)
             return data
 
+
     def _save(self, data: dict[str, Optional[str]]) -> None:
         if winreg is None:
             return
@@ -255,12 +256,13 @@ class LicenseManager:
         try:
             # Handle potential timezone info if present (though unlikely from registry)
             if value.endswith('Z'):
-                value = value[:-1] + '+00:00'
+                 value = value[:-1] + '+00:00'
             return datetime.fromisoformat(value)
         except ValueError:
-            # Fallback if the format is somehow corrupted
+             # Fallback if the format is somehow corrupted
             print(f"Warning: Corrupted trial start date '{value}'. Resetting trial.")
             return self._now()
+
 
     def _normalize_key(self, key: str) -> str:
         cleaned = key.replace("-", "").replace(" ", "").upper()
@@ -268,6 +270,7 @@ class LicenseManager:
             raise ValueError("Empty license key")
         # Ensure it fits the XXXX-... format even if input is slightly off
         return "-".join(textwrap.wrap(cleaned.ljust(24, 'X')[:24], 4))
+
 
     def _validate_license_key(self, key: str) -> bool:
         cleaned = key.replace("-", "").upper()
@@ -290,13 +293,14 @@ class LicenseManager:
         if not self._validate_license_key(normalized):
             raise ValueError("Invalid license key")
         self._data["license_key"] = normalized
-        self._data["licensed_at"] = self._now().isoformat()  # Optional: record activation time
+        self._data["licensed_at"] = self._now().isoformat() # Optional: record activation time
         self._save(self._data)
 
     def clear_license(self) -> None:
         # Reset trial start date as well when clearing license
         self._data = self._default_data()
         self._save(self._data)
+
 
     def trial_start(self) -> datetime:
         return self._parse_timestamp(self._data.get("trial_start"))
@@ -309,13 +313,14 @@ class LicenseManager:
         return self._now() >= self.trial_expiration()
 
     def trial_days_remaining(self) -> int:
-        if self.has_valid_license(): return 0  # No trial days remaining if licensed
+        if self.has_valid_license(): return 0 # No trial days remaining if licensed
         expiration = self.trial_expiration()
         now = self._now()
         if now >= expiration: return 0
         remaining = expiration - now
         # Calculate remaining days, rounding up
         return remaining.days + (1 if remaining.seconds > 0 or remaining.microseconds > 0 else 0)
+
 
     def status_message(self) -> str:
         if self.has_valid_license():
@@ -330,6 +335,7 @@ class LicenseManager:
             f"Trial mode: {remaining} {plural} remaining (expires on {expiration.date():%Y-%m-%d}). "
             "Enter a license key to unlock the full version permanently."
         )
+
 
 
 if TYPE_CHECKING:
@@ -377,8 +383,9 @@ class PipelineController:
             try:
                 tab_text = self.notebook.tab(current, "text")
                 self.set_status(f"Opened tab: {tab_text}")
-            except tk.TclError:  # Handle case where tab might be briefly invalid during changes
+            except tk.TclError: # Handle case where tab might be briefly invalid during changes
                 self.set_status("Switching tabs...")
+
 
     def open_editor(self, saed_json_path: Path | str) -> None:
         path = Path(saed_json_path)
@@ -386,27 +393,28 @@ class PipelineController:
             raise FileNotFoundError(f"Editor input file not found: {path}")
         try:
             self.editor.load_input_json(path, push_undo=False)
-            self.notebook.select(self.editor)  # Switch to editor tab
+            self.notebook.select(self.editor) # Switch to editor tab
             self.set_status(f"Editor: Loaded {path.name}")
         except Exception as exc:
             messagebox.showerror("Error", f"Failed to load data into the editor:\n{exc}")
 
     def open_analysis(
-            self,
-            payload_path: Path | str,
-            image_path: Optional[Path | str],  # These might be redundant if payload has all info
-            spots_json: Optional[Path | str],  # These might be redundant if payload has all info
+        self,
+        payload_path: Path | str,
+        image_path: Optional[Path | str], # These might be redundant if payload has all info
+        spots_json: Optional[Path | str], # These might be redundant if payload has all info
     ) -> None:
         path = Path(payload_path)
         if not path.exists():
-            raise FileNotFoundError(f"Analysis input file not found: {path}")
+             raise FileNotFoundError(f"Analysis input file not found: {path}")
         try:
             # Pass the main payload path to load_json
             self.analysis.load_json(path)
-            self.notebook.select(self.analysis)  # Switch to analysis tab
+            self.notebook.select(self.analysis) # Switch to analysis tab
             self.set_status(f"Analysis: Loaded {path.name}")
         except Exception as exc:
             messagebox.showerror("Error", f"Failed to load data into the analyzer:\n{exc}")
+
 
     # --- Session Save/Load Methods ---
 
@@ -416,7 +424,7 @@ class PipelineController:
             'launcher': self.launcher.get_state(),
             'editor': self.editor.get_state(),
             'analysis': self.analysis.get_state(),
-            'active_tab': self.notebook.index(self.notebook.select())  # Save current tab index
+            'active_tab': self.notebook.index(self.notebook.select()) # Save current tab index
         }
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -424,7 +432,8 @@ class PipelineController:
             self.set_status(f"Session saved to {Path(filepath).name}")
         except Exception as e:
             messagebox.showerror("Save Error", f"Could not write session file:\n{e}")
-            raise  # Re-raise for the caller to know
+            raise # Re-raise for the caller to know
+
 
     def load_session_from_file(self, filepath: Path | str) -> None:
         """Load state from JSON and apply to all tabs."""
@@ -441,22 +450,23 @@ class PipelineController:
             if 'launcher' in state:
                 self.launcher.set_state(state['launcher'])
             else:
-                messagebox.showwarning("Load Warning",
-                                       "Session file missing 'launcher' state. Some settings may be default.")
+                 messagebox.showwarning("Load Warning", "Session file missing 'launcher' state. Some settings may be default.")
+
 
             # Now load editor and analysis state
             if 'editor' in state:
                 self.editor.set_state(state['editor'])
             else:
-                messagebox.showwarning("Load Warning", "Session file missing 'editor' state. Editor may be empty.")
-                self.editor.set_state({})  # Clear editor state if missing
+                 messagebox.showwarning("Load Warning", "Session file missing 'editor' state. Editor may be empty.")
+                 self.editor.set_state({}) # Clear editor state if missing
+
 
             if 'analysis' in state:
                 self.analysis.set_state(state['analysis'])
             else:
-                messagebox.showwarning("Load Warning",
-                                       "Session file missing 'analysis' state. Analysis tab may be empty.")
-                self.analysis.set_state({})  # Clear analysis state if missing
+                 messagebox.showwarning("Load Warning", "Session file missing 'analysis' state. Analysis tab may be empty.")
+                 self.analysis.set_state({}) # Clear analysis state if missing
+
 
             # Restore the active tab
             active_tab_index = state.get('active_tab', 0)
@@ -465,9 +475,9 @@ class PipelineController:
                 if 0 <= active_tab_index < self.notebook.index('end'):
                     self.notebook.select(active_tab_index)
                 else:
-                    self.notebook.select(0)  # Fallback to first tab
+                    self.notebook.select(0) # Fallback to first tab
             except tk.TclError:
-                self.notebook.select(0)  # Fallback on error
+                self.notebook.select(0) # Fallback on error
 
             self.set_status(f"Session loaded from {path.name}")
 
@@ -476,15 +486,15 @@ class PipelineController:
             raise
         except Exception as e:
             messagebox.showerror("Load Error", f"An unexpected error occurred while loading the session:\n{e}")
-            raise  # Re-raise for debugging
+            raise # Re-raise for debugging
 
 
 def _show_splash(
-        root: tk.Tk,
-        *,
-        logo_path: Path | str | None = None,
-        duration_ms: int = 3000,
-        background: str = "#59c6f1",  # This is the argument with the default value
+    root: tk.Tk,
+    *,
+    logo_path: Path | str | None = None,
+    duration_ms: int = 3000,
+    background: str = "#59c6f1", # This is the argument with the default value
 ) -> None:
     if duration_ms <= 0:
         root.deiconify()
@@ -494,7 +504,7 @@ def _show_splash(
     splash.overrideredirect(True)
     # --- FIX: Use the 'background' argument directly ---
     splash.configure(background=background)
-    frame = tk.Frame(splash, background=background)  # Also use it here
+    frame = tk.Frame(splash, background=background) # Also use it here
     # --- End FIX ---
     frame.pack(fill=tk.BOTH, expand=True)
 
@@ -511,14 +521,15 @@ def _show_splash(
                     # Fallback for systems without Pillow, might not handle all formats
                     logo_image = tk.PhotoImage(file=str(logo_file))
             else:
-                print(f"Warning: Splash logo not found at {logo_file}")
-        except Exception as e:  # Catch potential errors from Image.open or tk.PhotoImage
+                 print(f"Warning: Splash logo not found at {logo_file}")
+        except Exception as e: # Catch potential errors from Image.open or tk.PhotoImage
             print(f"Warning: Could not load splash logo: {e}")
-            logo_image = None  # Ensure it's None on failure
+            logo_image = None # Ensure it's None on failure
+
 
     if logo_image is not None:
         logo_label = tk.Label(frame, image=logo_image, background=background)
-        logo_label.image = logo_image  # Keep a reference!
+        logo_label.image = logo_image # Keep a reference!
         logo_label.pack(padx=32, pady=24)
     else:
         # Fallback text if logo fails or isn't provided
@@ -527,28 +538,28 @@ def _show_splash(
             foreground="#ffffff", font=("TkDefaultFont", 18, "bold"), padx=36, pady=28,
         ).pack()
 
-    splash.update_idletasks()  # Ensure dimensions are calculated
+    splash.update_idletasks() # Ensure dimensions are calculated
     width = splash.winfo_reqwidth()
     height = splash.winfo_reqheight()
     screen_width = splash.winfo_screenwidth()
     screen_height = splash.winfo_screenheight()
     x = (screen_width // 2) - (width // 2)
     y = (screen_height // 2) - (height // 2)
-    splash.geometry(f"{width}x{height}+{x}+{y}")  # Center the splash screen
+    splash.geometry(f"{width}x{height}+{x}+{y}") # Center the splash screen
 
     def _close_splash() -> None:
         try:
             if splash.winfo_exists():
                 splash.destroy()
-            if root.winfo_exists():  # Check if main window still exists
-                root.deiconify()  # Show main window
+            if root.winfo_exists(): # Check if main window still exists
+                root.deiconify() # Show main window
         except tk.TclError:
-            pass  # Ignore errors if widgets are already destroyed
+             pass # Ignore errors if widgets are already destroyed
+
 
     # Ensure the close function runs even if the app closes early
     splash.after(duration_ms, _close_splash)
-    root.protocol("WM_DELETE_WINDOW",
-                  lambda: (_close_splash(), root.destroy()))  # Handle main window close during splash
+    root.protocol("WM_DELETE_WINDOW", lambda: (_close_splash(), root.destroy())) # Handle main window close during splash
 
 
 class TabbedPipelineApp(tk.Tk):
@@ -558,7 +569,7 @@ class TabbedPipelineApp(tk.Tk):
         super().__init__()
         self.license_manager = license_manager
         if not show_initially:
-            self.withdraw()  # Hide main window initially
+            self.withdraw() # Hide main window initially
         self.title("SAED Symmetry — Suite")
         self.geometry("1520x980")
         self.resizable(True, True)
@@ -569,12 +580,12 @@ class TabbedPipelineApp(tk.Tk):
         # Prefer 'clam', 'alt', 'default' in that order
         preferred_themes = ['clam', 'alt', 'default']
         for theme in preferred_themes:
-            if theme in available_themes:
-                try:
-                    style.theme_use(theme)
-                    break
-                except tk.TclError:
-                    continue
+             if theme in available_themes:
+                  try:
+                       style.theme_use(theme)
+                       break
+                  except tk.TclError:
+                       continue
         # Define custom styles
         style.configure("Header.TLabel", font=("TkDefaultFont", 18, "bold"))
         style.configure("Subheader.TLabel", font=("TkDefaultFont", 11))
@@ -584,10 +595,11 @@ class TabbedPipelineApp(tk.Tk):
         style.configure("TNotebook.Tab", padding=(16, 8))
         style.configure("License.TLabel", font=("TkDefaultFont", 10))
 
+
         # --- Header ---
         header = ttk.Frame(self, padding=(20, 18, 20, 12))
         header.pack(side=tk.TOP, fill=tk.X)
-        header.grid_columnconfigure(0, weight=1)  # Allow title label to expand
+        header.grid_columnconfigure(0, weight=1) # Allow title label to expand
         ttk.Label(header, text="SAED Symmetry — Suite", style="Header.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header, text="A single pipeline for electron diffraction processing from loading to analysis.",
@@ -614,13 +626,18 @@ class TabbedPipelineApp(tk.Tk):
 
         # --- Status Bar ---
         self.status_var = tk.StringVar(value="Ready")
+
+        # --- ДОБАВИТЬ ЭТУ КНОПКУ ДЛЯ ТЕСТА ---
+        test_close_button = ttk.Button(self, text="Test Close Logic", command=self._on_close_window)
+        test_close_button.pack(side=tk.BOTTOM, pady=5)
+        # --- КОНЕЦ ДОБАВЛЕНИЯ КНОПКИ ---
+
         status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8), relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
         # --- Initialize Controller (and its tabs) ---
-        self.controller = PipelineController(content, status_callback=self._update_status,
-                                             license_manager=self.license_manager)
-        self.controller.set_status("Opened tab: Launcher")  # Initial status
+        self.controller = PipelineController(content, status_callback=self._update_status, license_manager=self.license_manager)
+        self.controller.set_status("Opened tab: Launcher") # Initial status
 
         # Refresh license banner after controller is initialized
         self._refresh_license_banner()
@@ -628,6 +645,8 @@ class TabbedPipelineApp(tk.Tk):
         # --- Bind save/close events ---
         self.bind_all("<Control-s>", self._on_save_shortcut)
         self.protocol("WM_DELETE_WINDOW", self._on_close_window)
+        print("DEBUG: WM_DELETE_WINDOW protocol handler SET") # <-- НОВАЯ ОТЛАДКА
+
 
     def _update_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -641,10 +660,11 @@ class TabbedPipelineApp(tk.Tk):
         else:
             self.license_button.configure(text="Enter License Key")
 
+
     def _prompt_for_license(self) -> None:
         prompt_message = "Enter the permanent license key provided by the publisher:"
         dialog = LicenseDialog(self, "License Key", prompt_message)
-        key = dialog.result  # This will be None if cancelled
+        key = dialog.result # This will be None if cancelled
         if key is None:
             self._update_status("License entry cancelled.")
             return
@@ -656,13 +676,14 @@ class TabbedPipelineApp(tk.Tk):
             messagebox.showerror("License Key", "The provided license key is invalid. Please try again.")
             self._update_status("Invalid license key entered.")
 
-        self._refresh_license_banner()  # Update banner regardless of success
+        self._refresh_license_banner() # Update banner regardless of success
+
 
     def _show_help(self) -> None:
         help_window = tk.Toplevel(self)
         help_window.title("About the application")
-        help_window.transient(self)  # Make it behave like a dialog relative to the main window
-        help_window.grab_set()  # Prevent interaction with main window while help is open
+        help_window.transient(self) # Make it behave like a dialog relative to the main window
+        help_window.grab_set() # Prevent interaction with main window while help is open
         help_window.resizable(False, False)
 
         frame = ttk.Frame(help_window, padding=(20, 16))
@@ -693,6 +714,7 @@ class TabbedPipelineApp(tk.Tk):
         button_frame.pack(fill=tk.X, pady=(20, 0))
         ttk.Button(button_frame, text="Close", command=help_window.destroy).pack(side=tk.RIGHT)
 
+
     # --- Session Save/Load Handlers ---
 
     # <<< НАЧАЛО _on_save_shortcut С ОТЛАДКОЙ >>>
@@ -711,16 +733,15 @@ class TabbedPipelineApp(tk.Tk):
 
         if not output_dir_str:
             print("DEBUG: ERROR - Output dir is EMPTY, returning False")  # <-- ОТЛАДКА 6
-            messagebox.showerror("Save Error", "Please specify an 'Output folder' in the Launcher tab first.",
-                                 parent=self)
+            messagebox.showerror("Save Error", "Please specify an 'Output folder' in the Launcher tab first.", parent=self)
             return False
 
         output_dir = Path(output_dir_str)
         try:
-            output_dir.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
+            output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
             filepath = output_dir / "saed_session.json"
             print(f"DEBUG: Attempting to save session to: {filepath}")  # <-- ОТЛАДКА 7
-            self.controller.save_session(filepath)  # Delegate saving to controller
+            self.controller.save_session(filepath) # Delegate saving to controller
             print("DEBUG: save_session SUCCEEDED, returning True")  # <-- ОТЛАДКА 8
             # Status update already done in controller.save_session
             return True
@@ -729,7 +750,6 @@ class TabbedPipelineApp(tk.Tk):
             # Show error relative to main window
             messagebox.showerror("Save Error", f"Failed to save session:\n{e}", parent=self)
             return False
-
     # <<< КОНЕЦ _on_save_shortcut С ОТЛАДКОЙ >>>
 
     # <<< ИСПРАВЛЕННАЯ ФУНКЦИЯ _on_close_window С ОТЛАДКОЙ >>>
@@ -740,19 +760,19 @@ class TabbedPipelineApp(tk.Tk):
         result = messagebox.askyesnocancel(
             "Confirm Exit",
             "Save current session before closing?",
-            parent=self  # Make dialog modal to this window
+            parent=self # Make dialog modal to this window
         )
 
         print(f"DEBUG: messagebox result is: {result!r}")  # <-- ОТЛАДКА 2
 
-        if result is True:  # Yes
+        if result is True: # Yes
             print("DEBUG: User selected 'Yes'. Calling _on_save_shortcut()...")
-            save_successful = self._on_save_shortcut()  # Attempt save
+            save_successful = self._on_save_shortcut() # Attempt save
             print(f"DEBUG: _on_save_shortcut result is: {save_successful}")  # <-- ОТЛАДКА 3
 
             if save_successful:
                 print("DEBUG: Save was successful, calling self.destroy()")
-                self.destroy()  # Close if save worked
+                self.destroy() # Close if save worked
             else:
                 print("DEBUG: Save FAILED, window stays open.")
                 # Inform the user that save failed and window stays open
@@ -762,10 +782,10 @@ class TabbedPipelineApp(tk.Tk):
                     parent=self
                 )
                 # Keep the window open - do nothing more here
-        elif result is False:  # No
+        elif result is False: # No
             print("DEBUG: User selected 'No', calling self.destroy()")
-            self.destroy()  # Close without saving
-        else:  # Cancel (result is None)
+            self.destroy() # Close without saving
+        else: # Cancel (result is None)
             print("DEBUG: User selected 'Cancel', doing nothing.")
             # do nothing - window stays open
     # <<< КОНЕЦ ИСПРАВЛЕНИЯ С ОТЛАДКОЙ >>>
@@ -773,14 +793,14 @@ class TabbedPipelineApp(tk.Tk):
 
 def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
     root = tk.Tk()
-    root.withdraw()  # Keep root hidden
+    root.withdraw() # Keep root hidden
     message = (
         "The 3-day trial period has ended. "
         "Please enter a valid license key to unlock the full version permanently."
     )
     # Ensure dialog is transient to the hidden root
     dialog = LicenseDialog(root, "Trial Expired", message)
-    key = dialog.result  # Blocks until dialog is closed
+    key = dialog.result # Blocks until dialog is closed
     activated = False
     if key:
         try:
@@ -789,19 +809,18 @@ def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
             messagebox.showinfo("License Key", "License activated successfully. Thank you!", parent=root)
             activated = True
         except ValueError:
-            # Use root as parent for messagebox
-            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.",
-                                 parent=root)
-            activated = False  # Explicitly set to False on error
+             # Use root as parent for messagebox
+            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.", parent=root)
+            activated = False # Explicitly set to False on error
 
-    root.destroy()  # Clean up hidden root window
+    root.destroy() # Clean up hidden root window
     return activated
 
 
 def main(
-        *,
-        splash_logo: Path | str | None = None,
-        splash_duration_ms: int = 3000,
+    *,
+    splash_logo: Path | str | None = None,
+    splash_duration_ms: int = 3000,
 ) -> None:
     license_manager = LicenseManager()
 
@@ -810,15 +829,15 @@ def main(
         activated = _show_trial_expired_dialog(license_manager)
         if not activated:
             print("Trial expired and no valid license provided. Exiting.")
-            return  # Exit if trial expired and activation failed/cancelled
+            return # Exit if trial expired and activation failed/cancelled
 
     # If license is okay (or trial active), proceed to create main app
-    app = TabbedPipelineApp(license_manager, show_initially=False)  # Keep hidden for splash
+    app = TabbedPipelineApp(license_manager, show_initially=False) # Keep hidden for splash
 
     # Show splash screen, which will deiconify the app window when done
     _show_splash(app, logo_path=splash_logo, duration_ms=splash_duration_ms)
 
-    app.mainloop()  # Start the Tkinter event loop
+    app.mainloop() # Start the Tkinter event loop
 
 
 def _build_cli_parser() -> argparse.ArgumentParser:
@@ -844,19 +863,20 @@ if __name__ == "__main__":
         # Determine logo path, checking if default exists
         default_logo_path = _resource_path("logo.png")
         if args.splash_logo:
-            logo_path_to_use = args.splash_logo
+             logo_path_to_use = args.splash_logo
         elif default_logo_path.exists():
-            logo_path_to_use = default_logo_path
+             logo_path_to_use = default_logo_path
         else:
-            logo_path_to_use = None  # No logo found or specified
+             logo_path_to_use = None # No logo found or specified
 
         if logo_path_to_use:
             logo = logo_path_to_use
-            splash_duration = 3000  # Default duration if logo exists
+            splash_duration = 3000 # Default duration if logo exists
         else:
-            # If no logo, maybe a shorter splash or text-only splash?
-            # For now, keep duration but logo will be None
-            splash_duration = 2000  # Shorter splash if text only
-            print("Note: No splash logo found or specified.")
+             # If no logo, maybe a shorter splash or text-only splash?
+             # For now, keep duration but logo will be None
+             splash_duration = 2000 # Shorter splash if text only
+             print("Note: No splash logo found or specified.")
+
 
     main(splash_logo=logo, splash_duration_ms=splash_duration)
