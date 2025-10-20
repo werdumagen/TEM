@@ -1,5 +1,5 @@
 from __future__ import annotations
-import sys, json, math
+import sys, json, math, argparse
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -16,176 +16,23 @@ from matplotlib.patches import Circle, Polygon as MplPolygon
 
 from preproc import PreprocSettings, load_grayscale_with_preproc
 
+# <<< ИМПОРТ ЛОГИКИ >>>
+from fibonachi_analysis_utils import *
+# <<< ИМПОРТ GUI-УТИЛИТ >>>
+from analysis_gui_utils import AnalysisConfirmationDialog, _Tooltip, HoverTooltip
+
+
 if not hasattr(tk, "Notebook") and hasattr(ttk, "Notebook"):
     tk.Notebook = ttk.Notebook
 
 
-class AnalysisConfirmationDialog(tk.Toplevel):
-    """A small, borderless dialog with accept/reject buttons."""
-    def __init__(self, parent, accept_callback, reject_callback, x, y):
-        super().__init__(parent)
-        self.accept_callback = accept_callback
-        self.reject_callback = reject_callback
+#
+# Классы AnalysisConfirmationDialog, _Tooltip, и HoverTooltip УДАЛЕНЫ ОТСЮДА
+#
 
-        # Make window borderless and stay on top
-        self.overrideredirect(True)
-        self.wm_attributes("-topmost", True)
 
-        # Positioning
-        self.geometry(f"+{int(x)}+{int(y)}")
-
-        # Frame for content
-        frame = tk.Frame(self, background='white', highlightbackground="black", highlightthickness=1)
-        frame.pack()
-
-        try:
-            # Attempt to load icons if available
-            # Green checkmark icon
-            check_icon_data = b"iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAADnSURBVDhPnY5BCsJgEETfZsE3iCDeQDxD8SbeoZ15gJcQvEknl3Zl7wYKSJb58nwzBpkfOElYmJqgmz8hJ04m6A6STpyUaA7STpySaA/STpyEaA/STpyBaA/STpyCaA/STpyBaA/STpyBaA/STpwoBeoGg2/iV0WwM9vxvUvAtb2P6b0LoTVQ5A0oVbQ6/hbNsgV/ycb/1k/gC6jX8f79wJ24+2WqlwCWv5u0FhROO2LgZ1xU8f07gW0e5Z0E0s+B3A/yQ+wlgQ/y1A/q5f/gB/829kFh2BfTQAAAABJRU5ErkJggg=="
-            self.check_img = tk.PhotoImage(data=check_icon_data)
-            btn_accept = tk.Button(frame, image=self.check_img, command=self.accept_callback, borderwidth=0, relief="flat", bg="white")
-
-            # Red cross icon
-            cross_icon_data = b"iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACYSURBVDhPzY1BCsAwCEMv9xVeQPEMxTcUvEBv15kXkLwJ7+7sSxWE+C8L/5nF5H8gA8fS4qQfMBNf9CdoFvGkbyAaxJOnIFrEk6cgWsSTpyAaxJOvIFrEk68gWsSTr6BaxJOvIFrEk68gWsSTr6AaxJMnA7hX5oAZuDmz+W8Crf130/oWQLuAZ38DToPj/5v/6/4BN8V2yEaG41QAAAAASUVORK5CYII="
-            self.cross_img = tk.PhotoImage(data=cross_icon_data)
-            btn_reject = tk.Button(frame, image=self.cross_img, command=self.reject_callback, borderwidth=0, relief="flat", bg="white")
-
-        except tk.TclError: # Fallback to text if icons fail
-            btn_accept = tk.Button(frame, text="✔", command=self.accept_callback, fg="green", relief="flat", bg="white")
-            btn_reject = tk.Button(frame, text="✖", command=self.reject_callback, fg="red", relief="flat", bg="white")
-
-        btn_accept.pack(side="left", padx=2, pady=2)
-        btn_reject.pack(side="left", padx=2, pady=2)
-
-class _Tooltip:
-    # ... (code for Tooltip remains unchanged)
-    def __init__(self, widget: tk.Widget, text: str, *, delay: int = 400):
-        self.widget = widget
-        self.text = text
-        self.delay = max(0, int(delay))
-        self._after_id: Optional[str] = None
-        self._tip_window: Optional[tk.Toplevel] = None
-        self._last_pointer: Optional[tuple[int, int]] = None
-        widget.bind("<Enter>", self._on_enter, add="+")
-        widget.bind("<Leave>", self._on_leave, add="+")
-        widget.bind("<Motion>", self._on_motion, add="+")
-
-    def _on_enter(self, event):
-        self._last_pointer = (event.x_root, event.y_root)
-        self._schedule()
-
-    def _on_leave(self, _event):
-        self._cancel()
-        self._hide()
-
-    def _on_motion(self, event):
-        self._last_pointer = (event.x_root, event.y_root)
-        self._position()
-
-    def _schedule(self):
-        self._cancel()
-        self._after_id = self.widget.after(self.delay, self._show)
-
-    def _cancel(self):
-        if self._after_id is not None:
-            self.widget.after_cancel(self._after_id)
-            self._after_id = None
-
-    def _show(self):
-        if self._tip_window is not None or not self.text:
-            return
-        tip = tk.Toplevel(self.widget)
-        tip.wm_overrideredirect(True)
-        tip.wm_attributes("-topmost", True)
-        label = tk.Label(
-            tip, text=self.text, justify="left", background="#ffffe0",
-            relief="solid", borderwidth=1, wraplength=360,
-        )
-        label.pack(ipadx=8, ipady=4)
-        self._tip_window = tip
-        self._position()
-
-    def _hide(self):
-        if self._tip_window is not None:
-            self._tip_window.destroy()
-            self._tip_window = None
-
-    def _position(self):
-        if self._tip_window is None:
-            return
-        tip = self._tip_window
-        tip.update_idletasks()
-        width = tip.winfo_reqwidth()
-        height = tip.winfo_reqheight()
-        if self._last_pointer is not None:
-            x, y = self._last_pointer
-        else:
-            x = self.widget.winfo_rootx() + self.widget.winfo_width()
-            y = self.widget.winfo_rooty() + self.widget.winfo_height()
-        x += 12
-        y += 10
-        root = self.widget.winfo_toplevel()
-        root.update_idletasks()
-        left = root.winfo_rootx()
-        top = root.winfo_rooty()
-        right = left + root.winfo_width()
-        bottom = top + root.winfo_height()
-        if x + width > right - 4:
-            x = right - width - 4
-        if y + height > bottom - 4:
-            y = bottom - height - 4
-        x = max(x, left + 4)
-        y = max(y, top + 4)
-        tip.wm_geometry(f"+{int(x)}+{int(y)}")
-
-class HoverTooltip:
-    # ... (code for HoverTooltip remains unchanged)
-    def __init__(self, widget: tk.Widget, text: str, delay: int = 400):
-        self.widget = widget
-        self.text = text
-        self.delay = delay
-        self._after_id: Optional[str] = None
-        self._window: Optional[tk.Toplevel] = None
-        widget.bind("<Enter>", self._schedule)
-        widget.bind("<Leave>", self._hide)
-        widget.bind("<ButtonPress>", self._hide)
-
-    def _schedule(self, _event=None):
-        self._cancel()
-        self._after_id = self.widget.after(self.delay, self._show)
-
-    def _cancel(self):
-        if self._after_id is not None:
-            try:
-                self.widget.after_cancel(self._after_id)
-            except Exception:
-                pass
-            self._after_id = None
-
-    def _show(self):
-        self._after_id = None
-        if self._window is not None:
-            return
-        x = self.widget.winfo_pointerx() + 16
-        y = self.widget.winfo_pointery() + 12
-        self._window = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(tw, text=self.text, background="#2f2f2f", foreground="white",
-                         relief="solid", borderwidth=1, padx=6, pady=3, justify=tk.LEFT)
-        label.pack()
-
-    def _hide(self, _event=None):
-        self._cancel()
-        if self._window is not None:
-            try:
-                self._window.destroy()
-            except Exception:
-                pass
-            self._window = None
-
+# Эта функция используется в __main__, поэтому остается здесь
 def _parse_cli(argv=None):
-    # ... (code remains unchanged)
     import argparse
     p = argparse.ArgumentParser(description="fibonachi_analysis — load input data")
     p.add_argument("--payload", type=str, default=None, help="Path to fibo_input.json")
@@ -193,146 +40,6 @@ def _parse_cli(argv=None):
     p.add_argument("--points", type=str, default=None, help="Path to JSON with points (fallback)")
     return p.parse_args(argv)
 
-def _candidate_dirs(extra_image: Optional[Path]) -> List[Path]:
-    # ... (code remains unchanged)
-    cands: List[Path] = []
-    try:
-        cands.append(Path.cwd())
-    except Exception:
-        pass
-    if getattr(sys, "frozen", False):
-        try:
-            cands.append(Path(sys.executable).resolve().parent)
-        except Exception:
-            pass
-        try:
-            cands.append(Path(getattr(sys, "_MEIPASS")))
-        except Exception:
-            pass
-    else:
-        try:
-            cands.append(Path(__file__).resolve().parent)
-        except Exception:
-            pass
-    if extra_image:
-        try:
-            cands.append(extra_image.resolve().parent)
-        except Exception:
-            pass
-    uniq, seen = [], set()
-    for d in cands:
-        rp = str(d.resolve())
-        if rp not in seen:
-            uniq.append(d);
-            seen.add(rp)
-    return uniq
-
-def _autofind_json(extra_image: Optional[Path]) -> Optional[Path]:
-    # ... (code remains unchanged)
-    pats = ["fibo_input.json", "*fibo*input*.json", "*.fibo.json", "*.json"]
-    for base in _candidate_dirs(extra_image):
-        for pat in pats:
-            try:
-                for p in base.glob(pat):
-                    name = p.name.lower()
-                    if "fibo" in name and "input" in name:
-                        return p.resolve()
-                    if pat == "*.json":
-                        try:
-                            obj = json.loads(p.read_text(encoding="utf-8"))
-                            if isinstance(obj, dict) and "image" in obj and "points" in obj:
-                                return p.resolve()
-                        except Exception:
-                            pass
-            except Exception:
-                continue
-    return None
-
-def find_default_json(base_dir: Path) -> Optional[Path]:
-    # ... (code remains unchanged)
-    cand = base_dir / "fibo_input.json"
-    if cand.exists():
-        try:
-            d = json.loads(cand.read_text(encoding="utf-8"))
-            if "image" in d and "points" in d:
-                return cand.resolve()
-        except Exception:
-            pass
-    for p in base_dir.glob("*.json"):
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-            if "image" in d and "points" in d:
-                return p.resolve()
-        except Exception:
-            pass
-    return _autofind_json(None)
-
-def load_input(json_path: Path):
-    # ... (code remains unchanged)
-    d = json.loads(json_path.read_text(encoding='utf-8'))
-    img = Path(d['image']) if d.get('image') else None
-    if not img:
-        raise RuntimeError("JSON does not contain the key 'image'.")
-    pts = np.array([[float(p['y']), float(p['x'])] for p in d.get('points', [])], float)
-    center = None;
-    dead = 0.0;
-    srch = 0.0
-    if isinstance(d.get('centers'), dict):
-        c = d['centers'].get('overlay') or d['centers'].get('geometric')
-        if c and 'x' in c and 'y' in c:
-            center = (float(c['y']), float(c['x']))
-    if isinstance(d.get('radii'), dict):
-        if d['radii'].get('dead') is not None:  dead = float(d['radii']['dead'])
-        if d['radii'].get('search') is not None: srch = float(d['radii']['search'])
-    fallback_mode = d.get('preproc_mode')
-    if not isinstance(fallback_mode, str):
-        fallback_mode = None
-    preproc = PreprocSettings.from_json(d.get('preproc'), fallback_mode=fallback_mode)
-    return img, pts, center, dead, srch, preproc
-
-def cluster_lengths(lengths: np.ndarray):
-    # ... (code remains unchanged)
-    if lengths.size == 0:
-        return np.array([], dtype=int), float("nan"), float("nan"), 0, 1
-    c0, c1 = float(lengths.min()), float(lengths.max())
-    if c0 == c1:
-        lab = np.zeros(len(lengths), dtype=int)
-        return lab, c0, float("nan"), 0, 1
-    lab = np.zeros(len(lengths), dtype=int)
-    for _ in range(60):
-        d0 = np.abs(lengths - c0)
-        d1 = np.abs(lengths - c1)
-        lab = (d1 < d0).astype(int)
-        nc0 = float(lengths[lab == 0].mean()) if np.any(lab == 0) else c0
-        nc1 = float(lengths[lab == 1].mean()) if np.any(lab == 1) else c1
-        if abs(nc0 - c0) < 1e-6 and abs(nc1 - c1) < 1e-6:
-            c0, c1 = nc0, nc1;
-            break
-        c0, c1 = nc0, nc1
-    m0 = float(lengths[lab == 0].mean()) if np.any(lab == 0) else float("nan")
-    m1 = float(lengths[lab == 1].mean()) if np.any(lab == 1) else float("nan")
-    if (not math.isnan(m0)) and (not math.isnan(m1)) and m0 > m1:
-        lab = 1 - lab
-        m0, m1 = m1, m0
-    return lab, m0, m1, 0, 1
-
-def fib_list_upto(n: int) -> List[int]:
-    # ... (code remains unchanged)
-    if n <= 0: return []
-    seq = [1, 1]
-    while seq[-1] < n:
-        seq.append(seq[-1] + seq[-2])
-    return [k for k in seq if k <= n]
-
-def gen_fibonacci_words(max_len: int, start: str = "L") -> List[str]:
-    # ... (code remains unchanged)
-    if max_len <= 0: return []
-    words = ["L" if start.upper() == "L" else "S"]
-    while len(words[-1]) <= max_len:
-        nxt = "".join(("LS" if ch == "L" else "L") for ch in words[-1])
-        if len(nxt) > max_len: break
-        words.append(nxt)
-    return words
 
 class FibonacciAnalysisFrame(tk.Frame):
     def __init__(self, master: tk.Misc, controller=None, auto_load: bool = True, license_manager=None):
@@ -622,6 +329,7 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def _initial_load(self):
         base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) if getattr(sys, 'frozen', False) else Path(__file__).parent
+        # find_default_json ТЕПЕРЬ ИМПОРТИРУЕТСЯ ИЗ UTILS
         auto = find_default_json(base)
         if auto:
             try:
@@ -740,6 +448,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self._set_sl_text(''.join(SL))
 
         max_len_ref = max(groups.keys(), default=min(len(SL), 34))
+        # gen_fibonacci_words ТЕПЕРЬ ИМПОРТИРУЕТСЯ ИЗ UTILS
         self.txt_words.configure(state='normal'); self.txt_words.delete('1.0', tk.END)
         for w in gen_fibonacci_words(max_len=max_len_ref, start='L'):
             self.txt_words.insert(tk.END, f'len={len(w)} → {w}\n')
@@ -933,7 +642,6 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self.pending_analysis:
             self._accept_pending_analysis()
 
-    # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ: МОДИФИКАЦИЯ _on_delete_key >>>
     def _on_delete_key(self, event):
         # Ignore if focus is on an input widget
         if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)):
@@ -967,7 +675,6 @@ class FibonacciAnalysisFrame(tk.Frame):
                  self._set_status("Deletion cancelled.")
         else:
              self._set_status("No analysis selected to delete.")
-    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
     def _on_escape_key(self, event):
         if self.pending_analysis:
@@ -1089,9 +796,7 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def _draw_list_selection_highlight(self):
         """Draws the bright green highlight for the selected listbox item."""
-        # --- FIX: Check if lst exists before accessing ---
         if not hasattr(self, 'lst'): return
-        # --- End FIX ---
         sel = self.lst.curselection()
         if not sel: return
 
@@ -1100,19 +805,15 @@ class FibonacciAnalysisFrame(tk.Frame):
         if not meta or 'analysis_idx' not in meta: return
 
         analysis_idx = meta['analysis_idx']
-        # <<< ИСПРАВЛЕНИЕ: Проверка, что индекс все еще действителен >>>
         if analysis_idx >= len(self.permanent_analyses):
              return # Analysis might have been deleted
 
         analysis_type = meta['type']
         analysis_data = self.permanent_analyses[analysis_idx]
-        # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
-
 
         if analysis_type == 'sl':
             self._highlight_word_V1(analysis_data, meta['i0'], meta['n'])
         elif analysis_type == 'ratio':
-            # Highlight requires index of *second* segment (k), not first
             self._highlight_ratio_pair_V1(analysis_data, meta['k'], meta['k'] + 1)
         elif analysis_type == 'polygon':
             self._highlight_polygon_V1(analysis_data)
@@ -1171,6 +872,7 @@ class FibonacciAnalysisFrame(tk.Frame):
     def run_analysis(self, indices: List[int]):
         chain = self.points[indices].copy()
         seg = np.linalg.norm(np.diff(chain, axis=0), axis=1)
+        # cluster_lengths, fib_list_upto ТЕПЕРЬ ИМПОРТИРУЮТСЯ ИЗ UTILS
         labels, Slen, Llen, sidx, lidx = cluster_lengths(seg)
         sl_chain = ['S' if labels[i] == sidx else 'L' for i in range(len(seg))]
         ratio = (Llen / Slen) if (Slen and not math.isnan(Slen) and Slen > 0) else float('nan')
@@ -1264,6 +966,7 @@ class FibonacciAnalysisFrame(tk.Frame):
     def load_json(self, json_path: Path):
         self.fibo_input_path = json_path # Store for session saving
         try:
+            # load_input ТЕПЕРЬ ИМПОРТИРУЕТСЯ ИЗ UTILS
             self.img_path, self.points, self.center, self.dead, self.srch, self.preproc = load_input(json_path)
             self.img_arr = None
             if self.img_path:
