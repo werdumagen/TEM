@@ -614,12 +614,12 @@ class TabbedPipelineApp(tk.Tk):
         )
 
         # --- Test Close Logic Button (moved here) ---
-        test_close_button = ttk.Button(header, text="Test Close Logic", command=self._on_close_window)
-        test_close_button.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(12, 0))
+        # test_close_button = ttk.Button(header, text="Test Close Logic", command=self._on_close_window) # УДАЛЕНО ДЛЯ ЧИСТОТЫ
+        # test_close_button.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(12, 0))                 # УДАЛЕНО ДЛЯ ЧИСТОТЫ
         # --- End Move ---
 
         ttk.Button(header, text="Help", command=self._show_help).grid(
-            row=0, column=3, rowspan=2, sticky="ne", padx=(12, 0) # Changed column to 3
+            row=0, column=3, rowspan=2, sticky="ne", padx=(12, 0) # Используем column=3
         )
 
         # --- License Info ---
@@ -629,7 +629,7 @@ class TabbedPipelineApp(tk.Tk):
             header, text="Enter License Key", command=self._prompt_for_license, style="Accent.TButton",
         )
         # Place license button in the last column, aligned right
-        self.license_button.grid(row=2, column=3, sticky="e", padx=(12, 0), pady=(12, 0)) # Changed column to 3
+        self.license_button.grid(row=2, column=3, sticky="e", padx=(12, 0), pady=(12, 0)) # Используем column=3
 
 
         # --- Main Content Area (Tabs) ---
@@ -638,7 +638,6 @@ class TabbedPipelineApp(tk.Tk):
 
         # --- Status Bar ---
         self.status_var = tk.StringVar(value="Ready")
-        # --- REMOVED test button from here ---
         status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8), relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -652,7 +651,7 @@ class TabbedPipelineApp(tk.Tk):
         # --- Bind save/close events ---
         self.bind_all("<Control-s>", self._on_save_shortcut)
         self.protocol("WM_DELETE_WINDOW", self._on_close_window)
-        print("DEBUG: WM_DELETE_WINDOW protocol handler SET") # <-- НОВАЯ ОТЛАДКА
+        # print("DEBUG: WM_DELETE_WINDOW protocol handler SET") # УДАЛЕНО ДЛЯ ЧИСТОТЫ
 
 
     def _update_status(self, message: str) -> None:
@@ -724,22 +723,16 @@ class TabbedPipelineApp(tk.Tk):
 
     # --- Session Save/Load Handlers ---
 
-    # <<< НАЧАЛО _on_save_shortcut С ОТЛАДКОЙ >>>
+    # <<< НАЧАЛО _on_save_shortcut БЕЗ ОТЛАДКИ >>>
     def _on_save_shortcut(self, event=None) -> bool:
         """Saves the current session state to saed_session.json in the output folder."""
-        print("DEBUG: _on_save_shortcut CALLED")  # <-- ОТЛАДКА 4
-
         # Check if controller and launcher exist
         if not hasattr(self, 'controller') or not hasattr(self.controller, 'launcher'):
-            print("DEBUG: ERROR - Controller or launcher not found")
             messagebox.showerror("Save Error", "Application components not fully initialized.", parent=self)
             return False
 
         output_dir_str = self.controller.launcher.ent_out.get()
-        print(f"DEBUG: Output dir string from launcher: {output_dir_str!r}")  # <-- ОТЛАДКА 5
-
         if not output_dir_str:
-            print("DEBUG: ERROR - Output dir is EMPTY, returning False")  # <-- ОТЛАДКА 6
             messagebox.showerror("Save Error", "Please specify an 'Output folder' in the Launcher tab first.", parent=self)
             return False
 
@@ -747,41 +740,29 @@ class TabbedPipelineApp(tk.Tk):
         try:
             output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
             filepath = output_dir / "saed_session.json"
-            print(f"DEBUG: Attempting to save session to: {filepath}")  # <-- ОТЛАДКА 7
             self.controller.save_session(filepath) # Delegate saving to controller
-            print("DEBUG: save_session SUCCEEDED, returning True")  # <-- ОТЛАДКА 8
             # Status update already done in controller.save_session
             return True
         except Exception as e:
-            print(f"DEBUG: ERROR - save_session FAILED with exception: {e}")  # <-- ОТЛАДКА 9
             # Show error relative to main window
             messagebox.showerror("Save Error", f"Failed to save session:\n{e}", parent=self)
             return False
-    # <<< КОНЕЦ _on_save_shortcut С ОТЛАДКОЙ >>>
+    # <<< КОНЕЦ _on_save_shortcut БЕЗ ОТЛАДКИ >>>
 
-    # <<< ИСПРАВЛЕННАЯ ФУНКЦИЯ _on_close_window С ОТЛАДКОЙ >>>
+    # <<< ИСПРАВЛЕННАЯ ФУНКЦИЯ _on_close_window БЕЗ ОТЛАДКИ >>>
     def _on_close_window(self) -> None:
         """Prompts to save on close, then destroys the window."""
-        print("\nDEBUG: _on_close_window CALLED")  # <-- ОТЛАДКА 1
-
         result = messagebox.askyesnocancel(
             "Confirm Exit",
             "Save current session before closing?",
             parent=self # Make dialog modal to this window
         )
 
-        print(f"DEBUG: messagebox result is: {result!r}")  # <-- ОТЛАДКА 2
-
         if result is True: # Yes
-            print("DEBUG: User selected 'Yes'. Calling _on_save_shortcut()...")
             save_successful = self._on_save_shortcut() # Attempt save
-            print(f"DEBUG: _on_save_shortcut result is: {save_successful}")  # <-- ОТЛАДКА 3
-
             if save_successful:
-                print("DEBUG: Save was successful, calling self.destroy()")
                 self.destroy() # Close if save worked
             else:
-                print("DEBUG: Save FAILED, window stays open.")
                 # Inform the user that save failed and window stays open
                 messagebox.showwarning(
                     "Save Failed",
@@ -790,12 +771,9 @@ class TabbedPipelineApp(tk.Tk):
                 )
                 # Keep the window open - do nothing more here
         elif result is False: # No
-            print("DEBUG: User selected 'No', calling self.destroy()")
             self.destroy() # Close without saving
-        else: # Cancel (result is None)
-            print("DEBUG: User selected 'Cancel', doing nothing.")
-            # do nothing - window stays open
-    # <<< КОНЕЦ ИСПРАВЛЕНИЯ С ОТЛАДКОЙ >>>
+        # else: Cancel (result is None), do nothing - window stays open
+    # <<< КОНЕЦ ИСПРАВЛЕНИЯ БЕЗ ОТЛАДКИ >>>
 
 
 def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
