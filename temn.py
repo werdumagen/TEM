@@ -55,11 +55,10 @@ def detect_spots_by_centroid(  # 39
 ) -> np.ndarray:  # 44
     """
     Detects spots using centroiding of connected components (blobs).
-    НОВАЯ ЛОГИКА (v2):
-    Использует 'processed_pixels_mask', чтобы гарантировать, что каждый блоб
-    анализируется только один раз, при самом высоком пороге.
-    Проверка близости cKDTree используется для фильтрации отдельных,
-    но слишком близких блобов.
+    НОВАЯ ЛОГИКА (v3):
+    Использует 'master_blob_map' (карта пикселей одобренных блобов).
+    Новый центроид игнорируется, если он попадает в пиксели
+    уже одобренного блоба (найденного при более высоком пороге).
     """
     if cKDTree is None:
         raise RuntimeError(
@@ -70,8 +69,8 @@ def detect_spots_by_centroid(  # 39
     # 1. Используем карту перцентилей
     percent_map, _, _ = compute_percentile_map(arr)  # 47
 
-    # 1Б. Маска для уже обработанных пикселей
-    processed_pixels_mask = np.zeros((H, W), dtype=np.uint8)
+    # 1Б. Маска для пикселей, принадлежащих *одобренным* блобам
+    master_blob_map = np.zeros((H, W), dtype=np.uint8)
 
     # 2. Генерируем шаги перцентилей
     steps = sorted(list(set(list(range(100, int(user_perc), -5)) + [int(user_perc)])), reverse=True)
@@ -88,83 +87,84 @@ def detect_spots_by_centroid(  # 39
     # 3. Итерируем по шагам от 100 вниз
     for th_value in steps:
         # 4. Бинарная маска для текущего перцентиля
-        current_binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 53
+        current_binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)
 
-        # 4Б. *** КЛЮЧЕВОЙ ШАГ ***
-        # Игнорируем пиксели, которые уже были частью блоба при более высоком пороге
-        current_binary_mask[processed_pixels_mask > 0] = 0
+        # 5. Находим *все* компоненты (блобы) на этом уровне
+        num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(
+            current_binary_mask, connectivity=8
+        )
 
-        # 5. Находим *новые* компоненты (блобы)
-        num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(  # 55
-            current_binary_mask,  # 56
-            connectivity=8  # 8-сторонняя связность
-        )  # 57
+        if num_labels <= 1:
+            continue  # Нет блобов на этом уровне
 
-        # 5Б. Добавляем пиксели *новых* блобов в общую маску
-        if num_labels > 1:
-            processed_pixels_mask[labels_map > 0] = 1
+        # 6. Собираем информацию о блобах этого уровня
+        current_batch_points: List[Tuple[float, float, float, int]] = []  # (y, x, v, label_index)
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < min_area:
+                continue
 
-        current_batch_points: List[Tuple[float, float, float]] = []
+            cx, cy = centroids[i]
+            yi, xi = int(round(cy)), int(round(cx))
+            if 0 <= yi < H and 0 <= xi < W:
+                v = float(percent_map[yi, xi])
+                current_batch_points.append((cy, cx, v, i))  # Сохраняем 'i' (индекс блоба)
 
-        # 6. Итерируем по *новым* блобам (0 - фон, пропускаем)
-        for i in range(1, num_labels):  # 61
-            area = stats[i, cv2.CC_STAT_AREA]  # 62
-
-            # 7. Фильтр по МИНИМАЛЬНОЙ площади
-            if area < min_area:  # 64
-                continue  # Пропускаем слишком маленькие блобы
-
-            # 8. Получаем центроид (cx, cy)
-            cx, cy = centroids[i]  # 66
-
-            # 9. Получаем интенсивность в точке центроида
-            yi, xi = int(round(cy)), int(round(cx))  # 68
-            if 0 <= yi < H and 0 <= xi < W:  # 69
-                # Используем интенсивность из карты перцентилей
-                v = float(percent_map[yi, xi])  # 70
-                current_batch_points.append((float(cy), float(cx), float(v)))  # Сохраняем как (y, x, v)
-
-        if not current_batch_points:
-            continue
-
-        # 10. Сортируем точки *текущей* пачки по яркости (сначала самые яркие)
+        # 7. Сортируем *текущую* пачку по яркости (сначала самые яркие)
         current_batch_points.sort(key=lambda t: -t[2], reverse=True)
 
         newly_added_coords_this_batch: List[List[float]] = []  # (y, x)
+        newly_added_labels_this_batch: List[int] = []  # Храним индексы одобренных блобов
 
-        # 11. Фильтруем точки этой пачки по близости
-        for (y, x, v) in current_batch_points:
-            point_coord = np.array([y, x])
+        # 8. Фильтруем точки этой пачки
+        for (y, x, v, label_index) in current_batch_points:
+
+            # 8A. ПРОВЕРКА НА ВКЛЮЧЕНИЕ: Центроид попал в *уже одобренный* блоб?
+            yi, xi = int(round(y)), int(round(x))
+            if master_blob_map[yi, xi] > 0:
+                continue  # Да, попал. Игнорируем этот центроид.
+
+            # 8B. ПРОВЕРКА НА БЛИЗОСТЬ: Слишком близко к другому *одобренному* центроиду?
+            point_coord = [y, x]
             min_dist_sq = float('inf')
 
-            # 11a. Проверяем относительно дерева *всех* уже добавленных точек
+            # Проверяем относительно дерева *всех* ранее одобренных точек
             if kept_coords_tree is not None:
                 dist, _ = kept_coords_tree.query(point_coord, k=1)
                 min_dist_sq = min(min_dist_sq, dist ** 2)
 
-            # 11b. Проверяем относительно точек, добавленных *в этой* пачке (на случай близких блобов)
+            # Проверяем относительно точек, одобренных *в этой пачке*
             if newly_added_coords_this_batch:
                 dists_sq_batch = np.sum((np.array(newly_added_coords_this_batch) - point_coord) ** 2, axis=1)
                 min_dist_sq = min(min_dist_sq, np.min(dists_sq_batch))
 
-            # 11c. Если точка достаточно далеко, добавляем ее
-            if min_dist_sq >= prox_threshold_sq:
-                kept_points_final.append((y, x, v))
-                newly_added_coords_this_batch.append([y, x])
-                kept_coords_list.append([y, x])  # Добавляем в *общий* список для дерева
+            if min_dist_sq < prox_threshold_sq:
+                continue  # Да, слишком близко. Игнорируем.
 
-        # 12. Перестраиваем kD-дерево, если в *этой* пачке были добавлены *новые* точки
-        if newly_added_coords_this_batch:
-            kept_coords_tree = cKDTree(kept_coords_list)  # Перестраиваем из общего списка
+            # 8C. ОДОБРЕНИЕ: Точка прошла обе проверки
+            kept_points_final.append((y, x, v))
+            newly_added_coords_this_batch.append([y, x])
+            newly_added_labels_this_batch.append(label_index)
 
-    # 13. Сортируем финальный список по яркости
-    kept_points_final.sort(key=lambda t: -t[2], reverse=True)  # 72
+        # 9. Обновляем master_blob_map И kD-Tree
+        if newly_added_labels_this_batch:
+            # Обновляем kD-Tree
+            kept_coords_list.extend(newly_added_coords_this_batch)
+            kept_coords_tree = cKDTree(kept_coords_list)
 
-    # 14. Ограничиваем по max_spots
-    if len(kept_points_final) > max_spots:  # 74
-        kept_points_final = kept_points_final[:max_spots]  # 75
-    # 76
-    return np.array(kept_points_final, dtype=float) if kept_points_final else np.zeros((0, 3), dtype=float)  # 77
+            # Обновляем карту блобов: помечаем все пиксели,
+            # принадлежащие одобренным блобам *этой пачки*
+            mask_to_add = np.isin(labels_map, newly_added_labels_this_batch)
+            master_blob_map[mask_to_add] = 1
+
+    # 10. Сортируем финальный список по яркости
+    kept_points_final.sort(key=lambda t: -t[2], reverse=True)
+
+    # 11. Ограничиваем по max_spots
+    if len(kept_points_final) > max_spots:
+        kept_points_final = kept_points_final[:max_spots]
+
+    return np.array(kept_points_final, dtype=float) if kept_points_final else np.zeros((0, 3), dtype=float)
 
 
 # 78
