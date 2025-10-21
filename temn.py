@@ -18,9 +18,16 @@ from __future__ import annotations  # 17
 import json, subprocess, sys, cv2  # 19
 from pathlib import Path  # 20
 from dataclasses import dataclass  # 21
-from typing import Tuple, Dict, Any  # 22
+from typing import Tuple, Dict, Any, List  # 22
 # 23
 import numpy as np  # 24
+
+try:
+    from scipy.spatial import cKDTree
+except ImportError:
+    cKDTree = None
+    print("ПРЕДУПРЕЖДЕНИЕ: scipy не найден. Детекция точек с проверкой близости (proximity) не будет работать.")
+
 # 25
 from percentile_utils import compute_percentile_map  # 26
 from preproc import PreprocSettings, load_grayscale_with_preproc  # 27
@@ -41,62 +48,112 @@ class CenterResult:  # 34
 # 38
 def detect_spots_by_centroid(  # 39
         arr: np.ndarray,  # 40
-        perc: float = 99.0,  # 41
+        user_perc: float = 99.0,  # 41
         min_area: int = 3,  # 42
         max_spots: int = 6000,  # 43
+        proximity_threshold: float = 4.0,  # Новый параметр
 ) -> np.ndarray:  # 44
     """
     Detects spots using centroiding of connected components (blobs).
-    This is more robust for flat or saturated peaks than local maxima search.
+    НОВАЯ ЛОГИКА:
+    Итерирует по перцентилям [100, 95, ..., user_perc], собирая точки.
+    Точки, найденные на более высоких перцентилях, имеют приоритет.
+    Новая точка добавляется, только если она > proximity_threshold px от всех уже добавленных.
     """
+    if cKDTree is None:
+        raise RuntimeError(
+            "Пакет 'scipy' не найден. Он необходим для функции detect_spots_by_centroid. Установите его: pip install scipy")
+
     H, W = arr.shape  # 45
     # 46
-    # 1. Use percentile map to get a robust threshold value
+    # 1. Используем карту перцентилей для получения надежного порога
     percent_map, _, _ = compute_percentile_map(arr)  # 47
-    try:  # 48
-        perc_val = float(np.clip(perc, 0.0, 100.0))  # 49
-        th_value = float(np.percentile(percent_map, perc_val))  # 50
-    except (ValueError, IndexError):  # 51
-        th_value = 99.0  # Fallback
-    # 52
-    # 2. Create binary mask based on threshold
-    # We use the percentile map as input as it's already contrast-enhanced
-    binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 53
-    # 54
-    # 3. Find all connected components ("islands" or "blobs")
-    num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(  # 55
-        binary_mask,  # 56
-        connectivity=8  # Use 8-way connectivity
-    )  # 57
-    # 58
-    kept = []  # 59
-    # 60
-    # 4. Iterate over all found labels (label 0 is the background, skip it)
-    for i in range(1, num_labels):  # 61
-        area = stats[i, cv2.CC_STAT_AREA]  # 62
-        # 63
-        # 5. Filter blobs ONLY by MINIMUM area (to remove noise)
-        if area < min_area:  # 64
-            continue  # Skip blobs that are too small
-        # 65
-        # 6. Get the centroid (cx, cy)
-        cx, cy = centroids[i]  # 66
-        # 67
-        # 7. Get intensity at the centroid position for sorting
-        yi, xi = int(round(cy)), int(round(cx))  # 68
-        if 0 <= yi < H and 0 <= xi < W:  # 69
-            # Use intensity from percentile map
-            v = float(percent_map[yi, xi])  # 70
-            kept.append((float(cy), float(cx), float(v)))  # Store as (y, x, v)
-    # 71
-    # 8. Sort by brightness (highest first)
-    kept.sort(key=lambda t: -t[2])  # 72
-    # 73
-    # 9. Limit to max_spots
-    if len(kept) > max_spots:  # 74
-        kept = kept[:max_spots]  # 75
+
+    # 2. Генерируем шаги перцентилей
+    # (например, user_perc=74 -> [100, 95, 90, 85, 80, 75, 74])
+    steps = sorted(list(set(list(range(100, int(user_perc), -5)) + [user_perc])), reverse=True)
+
+    kept_points_final: List[Tuple[float, float, float]] = []  # (y, x, v)
+    kept_coords_tree: cKDTree | None = None
+
+    prox_threshold_sq = proximity_threshold ** 2
+
+    # 3. Итерируем по шагам от 100 вниз
+    for th_value in steps:
+        # 4. Бинарная маска для текущего перцентиля
+        binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 53
+
+        # 5. Находим все компоненты (блобы)
+        num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(  # 55
+            binary_mask,  # 56
+            connectivity=8  # 8-сторонняя связность
+        )  # 57
+
+        current_batch_points: List[Tuple[float, float, float]] = []
+
+        # 6. Итерируем по всем найденным блобам (0 - фон, пропускаем)
+        for i in range(1, num_labels):  # 61
+            area = stats[i, cv2.CC_STAT_AREA]  # 62
+
+            # 7. Фильтр по МИНИМАЛЬНОЙ площади
+            if area < min_area:  # 64
+                continue  # Пропускаем слишком маленькие блобы
+
+            # 8. Получаем центроид (cx, cy)
+            cx, cy = centroids[i]  # 66
+
+            # 9. Получаем интенсивность в точке центроида
+            yi, xi = int(round(cy)), int(round(cx))  # 68
+            if 0 <= yi < H and 0 <= xi < W:  # 69
+                # Используем интенсивность из карты перцентилей
+                v = float(percent_map[yi, xi])  # 70
+                current_batch_points.append((float(cy), float(cx), float(v)))  # Сохраняем как (y, x, v)
+
+        if not current_batch_points:
+            continue
+
+        # 10. Сортируем точки *текущей* пачки по яркости (сначала самые яркие)
+        current_batch_points.sort(key=lambda t: -t[2], reverse=True)
+
+        newly_added_to_batch_coords: List[List[float]] = []  # (y, x)
+
+        # 11. Фильтруем точки этой пачки по близости
+        for (y, x, v) in current_batch_points:
+            point_coord = np.array([y, x])
+            min_dist_sq = float('inf')
+
+            # 11a. Проверяем относительно дерева *уже добавленных* точек из *предыдущих* пачек
+            if kept_coords_tree is not None:
+                dist, _ = kept_coords_tree.query(point_coord, k=1)
+                min_dist_sq = min(min_dist_sq, dist ** 2)
+
+            # 11b. Проверяем относительно точек, добавленных *в этой* пачке
+            if newly_added_to_batch_coords:
+                dists_sq_batch = np.sum((np.array(newly_added_to_batch_coords) - point_coord) ** 2, axis=1)
+                min_dist_sq = min(min_dist_sq, np.min(dists_sq_batch))
+
+            # 11c. Если точка достаточно далеко, добавляем ее
+            if min_dist_sq >= prox_threshold_sq:
+                kept_points_final.append((y, x, v))
+                newly_added_to_batch_coords.append([y, x])
+
+        # 12. Обновляем kD-дерево новыми точками из этой пачки
+        if newly_added_to_batch_coords:
+            if kept_coords_tree is None:
+                kept_coords_tree = cKDTree(newly_added_to_batch_coords)
+            else:
+                # Перестраиваем дерево, включая старые и новые точки
+                all_kept_coords = np.vstack([kept_coords_tree.data, newly_added_to_batch_coords])
+                kept_coords_tree = cKDTree(all_kept_coords)
+
+    # 13. Сортируем финальный список по яркости
+    kept_points_final.sort(key=lambda t: -t[2], reverse=True)  # 72
+
+    # 14. Ограничиваем по max_spots
+    if len(kept_points_final) > max_spots:  # 74
+        kept_points_final = kept_points_final[:max_spots]  # 75
     # 76
-    return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)  # 77
+    return np.array(kept_points_final, dtype=float) if kept_points_final else np.zeros((0, 3), dtype=float)  # 77
 
 
 # 78
@@ -251,15 +308,22 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         )  # 348
         self.cmb_pre.current(0)  # 349
         self.cmb_pre.grid(row=0, column=1, sticky="w", padx=6, pady=4)  # 350
-        # (УДАЛЕНЫ bind и виджеты CLAHE)
+
+        # --- НОВЫЙ ВИДЖЕТ ДЛЯ H_PARAM ---
+        self.spn_h_param = self._spin_param(
+            pre_box, 1, "NLM h_param", 0.3,
+            from_=0.01, to=2.0, increment=0.01, format_str="%.2f"
+        )
+        # --- КОНЕЦ НОВОГО ВИДЖЕТА ---
+
         # 360
         ttk.Label(  # 361
             pre_box,  # 362
-            text="Select 'NLM Denoising' for noise reduction (uses scikit-image, h=0.3).", # (ИЗМЕНЕНО)
+            text="Select 'NLM Denoising' for noise reduction (uses scikit-image) and adjust 'h_param'.",  # (ИЗМЕНЕНО)
             # 363
             wraplength=520,  # 364
             foreground="#555555"  # 365
-        ).grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 0))  # 366
+        ).grid(row=3, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 0))  # 366 (row изменен на 3)
         # 367
         scroll_host = ttk.Frame(outer)  # 368
         scroll_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)  # 369
@@ -486,6 +550,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
             "center_x": self.ent_cx.get(),
             "center_y": self.ent_cy.get(),
             "preproc_mode": self.cmb_pre.get(),
+            "h_param": self.spn_h_param.get(),  # <-- НОВЫЙ
             # (УДАЛЕНЫ clahe_clip, clahe_tiles)
             "detect_perc": self.spn_perc.get(),
             # (УДАЛЕНЫ merge_perc, merge_radius, merge_tol)
@@ -525,6 +590,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         # (УДАЛЕН _on_preproc_change(None))
 
         # Set Spinbox values safely, providing defaults
+        self._set_spinbox_value(self.spn_h_param, state.get("h_param", 0.3))  # <-- НОВЫЙ
         # (УДАЛЕНЫ clahe_clip, clahe_tiles)
         self._set_spinbox_value(self.spn_perc, state.get("detect_perc", 99.0))
         # (УДАЛЕНЫ merge_perc, merge_radius, merge_tol)
@@ -571,11 +637,12 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
 
             # --- preprocessing (ИЗМЕНЕНО) ---
             pre_mode = self.cmb_pre.get()
+            h_param_val = float(self.spn_h_param.get())  # <-- НОВЫЙ
+
             if pre_mode == "NLM Denoising":
-                # Использует h=0.3 по умолчанию из preproc.py
-                settings = PreprocSettings(mode="nlm")
-            else: # "No processing"
-                settings = PreprocSettings(mode="raw")
+                settings = PreprocSettings(mode="nlm", h_param=h_param_val)  # <-- ИСПОЛЬЗУЕМ h_param_val
+            else:  # "No processing"
+                settings = PreprocSettings(mode="raw", h_param=h_param_val)  # <-- Передаем в любом случае
 
             # --- Load image ---
             try:
@@ -604,22 +671,19 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
 
             # --- Peak detection and refinement ---
             # --- MODIFIED: Call new function ---
-            pts = detect_spots_by_centroid(
-                arr, perc=perc, min_area=min_area, max_spots=max_pts
-            )
-
-            if len(pts) == 0:
-                print("Warning: No spots detected initially.")  # Use print for non-critical warning
-                # Optionally try lower percentile if no spots found
-                lower_perc = max(85.0, perc - 5.0)  # Example fallback
-                print(f"Retrying spot detection with percentile {lower_perc:.1f}%...")
-                # --- MODIFIED: Call new function in fallback ---
+            try:
                 pts = detect_spots_by_centroid(
-                    arr, perc=lower_perc, min_area=min_area, max_spots=max_pts
+                    arr, perc=perc, min_area=min_area, max_spots=max_pts,
+                    proximity_threshold=4.0  # Используем новый жестко заданный порог
                 )
-                if len(pts) == 0:
-                    messagebox.showwarning("Detection Warning",
-                                           "No spots detected even with lower threshold. Proceeding without points.")
+            except RuntimeError as e:
+                messagebox.showerror("Dependency Error", str(e))
+                return  # Остановка, если, например, scipy отсутствует
+
+            # --- УДАЛЕН БЛОК ПОВТОРНОГО ПОИСКА ---
+            if len(pts) == 0:
+                messagebox.showwarning("Detection Warning",
+                                       f"No spots detected using percentile {perc:.1f}% and min. area {min_area} px. Proceeding without points.")
 
             # Refine center even if few points, refine_center_antipodal handles low point counts
             center = refine_center_antipodal((center0.cy, center0.cx), pts, tol_ang_deg=tol_ang, tol_rel_r=tol_relr,
