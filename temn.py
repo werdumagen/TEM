@@ -34,8 +34,8 @@ def detect_spots_by_centroid(
     max_spots: int = 6000,
 ) -> np.ndarray:
     """
-    Detects spots using centroiding of connected components (blobs).
-    Filters only by minimum area.
+    Detects spots using centroiding. Uses percentile map for thresholding,
+    but original array intensity for sorting.
     """
     H, W = arr.shape
     percent_map, _, _ = compute_percentile_map(arr)
@@ -43,13 +43,12 @@ def detect_spots_by_centroid(
         perc_val = float(np.clip(perc, 0.0, 100.0))
         th_value = float(np.percentile(percent_map, perc_val))
     except (ValueError, IndexError):
-        th_value = 99.0  # Fallback
+        th_value = 99.0
 
     binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)
 
     num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(
-        binary_mask,
-        connectivity=8
+        binary_mask, connectivity=8
     )
 
     kept = []
@@ -61,9 +60,13 @@ def detect_spots_by_centroid(
         cx, cy = centroids[i]
         yi, xi = int(round(cy)), int(round(cx))
         if 0 <= yi < H and 0 <= xi < W:
-            v = float(percent_map[yi, xi])
+            # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+            # Берем яркость из исходного предобработанного изображения arr
+            v = float(arr[yi, xi])
+            # ----------------------
             kept.append((float(cy), float(cx), float(v))) # Store as (y, x, v)
 
+    # Сортируем по яркости из arr
     kept.sort(key=lambda t: -t[2])
 
     if len(kept) > max_spots:
