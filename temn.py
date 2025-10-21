@@ -55,10 +55,11 @@ def detect_spots_by_centroid(  # 39
 ) -> np.ndarray:  # 44
     """
     Detects spots using centroiding of connected components (blobs).
-    НОВАЯ ЛОГИКА:
-    Итерирует по перцентилям [100, 95, ..., user_perc], собирая точки.
-    Точки, найденные на более высоких перцентилях, имеют приоритет.
-    Новая точка добавляется, только если она > proximity_threshold px от всех уже добавленных.
+    НОВАЯ ЛОГИКА (v2):
+    Использует 'processed_pixels_mask', чтобы гарантировать, что каждый блоб
+    анализируется только один раз, при самом высоком пороге.
+    Проверка близости cKDTree используется для фильтрации отдельных,
+    но слишком близких блобов.
     """
     if cKDTree is None:
         raise RuntimeError(
@@ -66,14 +67,20 @@ def detect_spots_by_centroid(  # 39
 
     H, W = arr.shape  # 45
     # 46
-    # 1. Используем карту перцентилей для получения надежного порога
+    # 1. Используем карту перцентилей
     percent_map, _, _ = compute_percentile_map(arr)  # 47
 
+    # 1Б. Маска для уже обработанных пикселей
+    processed_pixels_mask = np.zeros((H, W), dtype=np.uint8)
+
     # 2. Генерируем шаги перцентилей
-    # (например, user_perc=74 -> [100, 95, 90, 85, 80, 75, 74])
-    steps = sorted(list(set(list(range(100, int(user_perc), -5)) + [user_perc])), reverse=True)
+    steps = sorted(list(set(list(range(100, int(user_perc), -5)) + [int(user_perc)])), reverse=True)
+    if user_perc not in steps:
+        steps.append(user_perc)
+        steps.sort(reverse=True)
 
     kept_points_final: List[Tuple[float, float, float]] = []  # (y, x, v)
+    kept_coords_list: List[List[float]] = []  # (y, x) - для дерева
     kept_coords_tree: cKDTree | None = None
 
     prox_threshold_sq = proximity_threshold ** 2
@@ -81,17 +88,25 @@ def detect_spots_by_centroid(  # 39
     # 3. Итерируем по шагам от 100 вниз
     for th_value in steps:
         # 4. Бинарная маска для текущего перцентиля
-        binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 53
+        current_binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 53
 
-        # 5. Находим все компоненты (блобы)
+        # 4Б. *** КЛЮЧЕВОЙ ШАГ ***
+        # Игнорируем пиксели, которые уже были частью блоба при более высоком пороге
+        current_binary_mask[processed_pixels_mask > 0] = 0
+
+        # 5. Находим *новые* компоненты (блобы)
         num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(  # 55
-            binary_mask,  # 56
+            current_binary_mask,  # 56
             connectivity=8  # 8-сторонняя связность
         )  # 57
 
+        # 5Б. Добавляем пиксели *новых* блобов в общую маску
+        if num_labels > 1:
+            processed_pixels_mask[labels_map > 0] = 1
+
         current_batch_points: List[Tuple[float, float, float]] = []
 
-        # 6. Итерируем по всем найденным блобам (0 - фон, пропускаем)
+        # 6. Итерируем по *новым* блобам (0 - фон, пропускаем)
         for i in range(1, num_labels):  # 61
             area = stats[i, cv2.CC_STAT_AREA]  # 62
 
@@ -115,36 +130,32 @@ def detect_spots_by_centroid(  # 39
         # 10. Сортируем точки *текущей* пачки по яркости (сначала самые яркие)
         current_batch_points.sort(key=lambda t: -t[2], reverse=True)
 
-        newly_added_to_batch_coords: List[List[float]] = []  # (y, x)
+        newly_added_coords_this_batch: List[List[float]] = []  # (y, x)
 
         # 11. Фильтруем точки этой пачки по близости
         for (y, x, v) in current_batch_points:
             point_coord = np.array([y, x])
             min_dist_sq = float('inf')
 
-            # 11a. Проверяем относительно дерева *уже добавленных* точек из *предыдущих* пачек
+            # 11a. Проверяем относительно дерева *всех* уже добавленных точек
             if kept_coords_tree is not None:
                 dist, _ = kept_coords_tree.query(point_coord, k=1)
                 min_dist_sq = min(min_dist_sq, dist ** 2)
 
-            # 11b. Проверяем относительно точек, добавленных *в этой* пачке
-            if newly_added_to_batch_coords:
-                dists_sq_batch = np.sum((np.array(newly_added_to_batch_coords) - point_coord) ** 2, axis=1)
+            # 11b. Проверяем относительно точек, добавленных *в этой* пачке (на случай близких блобов)
+            if newly_added_coords_this_batch:
+                dists_sq_batch = np.sum((np.array(newly_added_coords_this_batch) - point_coord) ** 2, axis=1)
                 min_dist_sq = min(min_dist_sq, np.min(dists_sq_batch))
 
             # 11c. Если точка достаточно далеко, добавляем ее
             if min_dist_sq >= prox_threshold_sq:
                 kept_points_final.append((y, x, v))
-                newly_added_to_batch_coords.append([y, x])
+                newly_added_coords_this_batch.append([y, x])
+                kept_coords_list.append([y, x])  # Добавляем в *общий* список для дерева
 
-        # 12. Обновляем kD-дерево новыми точками из этой пачки
-        if newly_added_to_batch_coords:
-            if kept_coords_tree is None:
-                kept_coords_tree = cKDTree(newly_added_to_batch_coords)
-            else:
-                # Перестраиваем дерево, включая старые и новые точки
-                all_kept_coords = np.vstack([kept_coords_tree.data, newly_added_to_batch_coords])
-                kept_coords_tree = cKDTree(all_kept_coords)
+        # 12. Перестраиваем kD-дерево, если в *этой* пачке были добавлены *новые* точки
+        if newly_added_coords_this_batch:
+            kept_coords_tree = cKDTree(kept_coords_list)  # Перестраиваем из общего списка
 
     # 13. Сортируем финальный список по яркости
     kept_points_final.sort(key=lambda t: -t[2], reverse=True)  # 72
@@ -316,6 +327,9 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         )
         # --- КОНЕЦ НОВОГО ВИДЖЕТА ---
 
+        # *** НОВАЯ СВЯЗЬ (BIND) ДЛЯ ВКЛ/ВЫКЛ h_param ***
+        self.cmb_pre.bind("<<ComboboxSelected>>", self._on_preproc_change)
+
         # 360
         ttk.Label(  # 361
             pre_box,  # 362
@@ -444,7 +458,8 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         bottom_filler.grid(row=2, column=0, sticky="ew")  # 491
         bottom_filler.grid_propagate(False)  # 492
         # 493
-        # (УДАЛЕН _on_preproc_change(None))
+        # *** ВЫЗОВ ДЛЯ УСТАНОВКИ НАЧАЛЬНОГО СОСТОЯНИЯ ***
+        self._on_preproc_change(None)
         # 494
 
     # 495
@@ -481,7 +496,20 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         if delta != 0:
             self._scroll_canvas.yview_scroll(delta, "units")
 
-    # (УДАЛЕН метод _on_preproc_change)
+    # --- НОВЫЙ МЕТОД ---
+    def _on_preproc_change(self, event=None):
+        """Обновляет состояние спинбокса h_param в зависимости от выбранного режима."""
+        if not hasattr(self, 'cmb_pre') or not hasattr(self, 'spn_h_param'):
+            return  # Виджеты еще не созданы
+
+        try:
+            mode = self.cmb_pre.get()
+            if mode == "NLM Denoising":
+                self.spn_h_param.configure(state='normal')
+            else:
+                self.spn_h_param.configure(state='readonly')
+        except tk.TclError:
+            pass  # Ошибка, если виджет разрушен
 
     # 529
     def _spin_param(self, parent, row, label, default, *, from_, to, increment, format_str=None):  # 530
@@ -587,7 +615,8 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         elif isinstance(self.cmb_pre, ttk.Combobox):
             self.cmb_pre.current(0)  # Default if not in state
 
-        # (УДАЛЕН _on_preproc_change(None))
+        # *** ВЫЗЫВАЕМ КОЛЛБЭК ПОСЛЕ УСТАНОВКИ ЗНАЧЕНИЯ ***
+        self._on_preproc_change(None)
 
         # Set Spinbox values safely, providing defaults
         self._set_spinbox_value(self.spn_h_param, state.get("h_param", 0.3))  # <-- НОВЫЙ
@@ -673,7 +702,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
             # --- MODIFIED: Call new function ---
             try:
                 pts = detect_spots_by_centroid(
-                    arr, perc=perc, min_area=min_area, max_spots=max_pts,
+                    arr, user_perc=perc, min_area=min_area, max_spots=max_pts,  # <-- ИСПРАВЛЕНО
                     proximity_threshold=4.0  # Используем новый жестко заданный порог
                 )
             except RuntimeError as e:
