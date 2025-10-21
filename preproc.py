@@ -21,7 +21,7 @@ class PreprocSettings:
     """Настройки предобработки изображения перед детекцией."""
 
     mode: str = "raw"
-    h_param: float = 1.0  # Параметр H для NLM
+    h_param: float = 0.3  # Параметр H для NLM (ИЗМЕНЕНО)
 
     def normalized(self) -> "PreprocSettings":
         mode = (self.mode or "").lower()
@@ -42,7 +42,7 @@ class PreprocSettings:
     def from_json(cls, data: Any, *, fallback_mode: str | None = None) -> "PreprocSettings":
         """Создаёт настройки из словаря/строки, с откатом к fallback_mode."""
         mode = fallback_mode or "raw"
-        h = 1.0
+        h = 0.3  # Используем новый h_param по умолчанию
 
         if isinstance(data, dict):
             raw_mode = data.get("mode")
@@ -55,6 +55,10 @@ class PreprocSettings:
             mode = data
         elif fallback_mode is not None:
             mode = fallback_mode
+
+        # Применяем h=0.3, если h не был явно указан в data
+        if isinstance(data, dict) and data.get("h_param") is None:
+            h = 0.3
 
         return cls(mode=mode, h_param=h).normalized()
 
@@ -85,7 +89,7 @@ def load_grayscale_with_preproc(path: Path | str, settings: PreprocSettings) -> 
         # Применяем NLM Denoising
         denoised_float = skres.denoise_nl_means(
             img_float,
-            h=float(cfg.h_param),
+            h=float(cfg.h_param),  # Использует h=0.3 по умолчанию
             fast_mode=True,
             channel_axis=None  # для оттенков серого
         )

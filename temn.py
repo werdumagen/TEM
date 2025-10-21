@@ -5,17 +5,16 @@
     "========================\n"  # 5
     "What's new:\n"  # 6
     "  • Preprocessing switch:\n"  # 7
-    "      - 'Standard' (equalize + GaussianBlur)\n"  # 8
-    "      - 'No processing' (raw grayscale)\n"  # 9
-    "      - 'CLAHE' (local equalization) with configurable clipLimit and tile size.\n"  # 10
-    "  • All preprocessing happens ONLY here; the image editor is untouched.\n"  # 11
-    "The rest of the functionality is unchanged: manual/auto center, antipodal refinement, dead zone, search radius, launching the editor.\n"  # 12
-    "\n"  # 13
-    "Additionally:\n"  # 14
-    "  • Save points together with their intensity in a single saed_input.json file.\n"  # 15
-    "  • saed_editor launches with a single --input argument (path to saed_input.json).\n"  # 16
-)  # 17
-from __future__ import annotations  # 18
+    "      - 'No processing' (raw grayscale)\n"  # 8
+    "      - 'NLM Denoising' (h=0.3)\n"  # 9
+    "  • All preprocessing happens ONLY here; the image editor is untouched.\n"  # 10
+    "The rest of the functionality is unchanged: manual/auto center, antipodal refinement, dead zone, search radius, launching the editor.\n"  # 11
+    "\n"  # 12
+    "Additionally:\n"  # 13
+    "  • Save points together with their intensity in a single saed_input.json file.\n"  # 14
+    "  • saed_editor launches with a single --input argument (path to saed_input.json).\n"  # 15
+)  # 16
+from __future__ import annotations  # 17
 import json, subprocess, sys, cv2  # 19
 from pathlib import Path  # 20
 from dataclasses import dataclass  # 21
@@ -102,173 +101,7 @@ def detect_spots_by_centroid(  # 39
 
 # 78
 # 79
-def merge_spots_by_intensity(  # 80
-        pts: np.ndarray,  # 81
-        radius: float,  # 82
-        tol_percent: float,  # 83
-        *,  # 84
-        min_intensity: float | None = None,  # 85
-        line_image: np.ndarray | None = None,  # 86
-        percentile_map: np.ndarray | None = None,  # 87
-) -> np.ndarray:  # 88
-    # ... (function code remains unchanged) ... # 106
-    if pts.size == 0:  # 107
-        return pts  # 108
-    radius = float(radius)  # 109
-    tol = max(0.0, float(tol_percent) / 100.0)  # 110
-    if radius <= 0.0:  # 111
-        return np.asarray(pts, dtype=float)  # 112
-    # 113
-    pts = np.asarray(pts, dtype=float)  # 114
-    if min_intensity is not None:  # 115
-        mask = pts[:, 2] >= float(min_intensity)  # 116
-    else:  # 117
-        mask = np.ones(len(pts), dtype=bool)  # 118
-    # 119
-    to_merge = pts[mask]  # 120
-    untouched = pts[~mask]  # 121
-    if to_merge.size == 0:  # 122
-        return pts  # 123
-    # 124
-    intensity_map: np.ndarray | None  # 125
-    if percentile_map is not None:  # 126
-        intensity_map = np.asarray(percentile_map, dtype=float)  # 127
-    elif line_image is not None:  # 128
-        percent, _, _ = compute_percentile_map(np.asarray(line_image, dtype=float))  # 129
-        intensity_map = percent  # 130
-    else:  # 131
-        intensity_map = None  # 132
-    # 133
-    rad2 = radius * radius  # 134
-    used = np.zeros(len(to_merge), dtype=bool)  # 135
-    order = np.argsort(-to_merge[:, 2])  # start from the brightest  # 136
-    merged: list[tuple[float, float, float]] = []  # 137
-
-    # 138
-    def within_tol(a: float, b: float) -> bool:  # 139
-        hi = max(a, b)  # 140
-        if hi == 0.0:  # 141
-            return abs(a - b) == 0.0  # 142
-        return abs(a - b) <= tol * hi + 1e-12  # 143
-
-    # 144
-    H = W = None  # 145
-    if intensity_map is not None and intensity_map.ndim == 2:  # 146
-        H, W = intensity_map.shape  # 147
-    else:  # 148
-        intensity_map = None  # 149
-
-    # 150
-    def clamp_round(val: float, hi: int) -> int:  # 151
-        return int(min(max(round(float(val)), 0), hi))  # 152
-
-    # 153
-    def bresenham_line(y0: int, x0: int, y1: int, x1: int) -> list[tuple[int, int]]:  # 154
-        points: list[tuple[int, int]] = []  # 155
-        dy = abs(y1 - y0)  # 156
-        dx = abs(x1 - x0)  # 157
-        sy = 1 if y0 < y1 else -1  # 158
-        sx = 1 if x0 < x1 else -1  # 159
-        err = dx - dy  # 160
-        while True:  # 161
-            points.append((y0, x0))  # 162
-            if y0 == y1 and x0 == x1:  # 163
-                break  # 164
-            e2 = err * 2  # 165
-            if e2 > -dy:  # 166
-                err -= dy  # 167
-                x0 += sx  # 168
-            if e2 < dx:  # 169
-                err += dx  # 170
-                y0 += sy  # 171
-        return points  # 172
-
-    # 173
-    def has_intensity_dip(idx_a: int, idx_b: int) -> bool:  # 174
-        if intensity_map is None or H is None or W is None:  # 175
-            return False  # 176
-        base_val = min(float(to_merge[idx_a, 2]), float(to_merge[idx_b, 2]))  # 177
-        if base_val <= 0.0:  # 178
-            return False  # 179
-        y0 = clamp_round(to_merge[idx_a, 0], H - 1)  # 180
-        x0 = clamp_round(to_merge[idx_a, 1], W - 1)  # 181
-        y1 = clamp_round(to_merge[idx_b, 0], H - 1)  # 182
-        x1 = clamp_round(to_merge[idx_b, 1], W - 1)  # 183
-        pixels = bresenham_line(y0, x0, y1, x1)  # 184
-        if len(pixels) <= 2:  # 185
-            return False  # 186
-        limit = base_val * (1.0 - tol)  # 187
-        for (yy, xx) in pixels[1:-1]:  # 188
-            if 0 <= yy < H and 0 <= xx < W:  # 189
-                if float(intensity_map[yy, xx]) + 1e-9 < limit:  # 190
-                    return True  # 191
-        return False  # 192
-
-    # 193
-    for idx in order:  # 194
-        if used[idx]:  # 195
-            continue  # 196
-        # 197
-        cluster = [idx]  # 198
-        sum_y = float(to_merge[idx, 0])  # 199
-        sum_x = float(to_merge[idx, 1])  # 200
-        intensities = [float(to_merge[idx, 2])]  # 201
-        sum_v = intensities[0]  # 202
-        # 203
-        neighbors = []  # 204
-        base_y, base_x = to_merge[idx, 0], to_merge[idx, 1]  # 205
-        for j in range(len(to_merge)):  # 206
-            if j == idx or used[j]:  # 207
-                continue  # 208
-            dy = to_merge[j, 0] - base_y  # 209
-            dx = to_merge[j, 1] - base_x  # 210
-            if dy * dy + dx * dx <= rad2:  # 211
-                neighbors.append(j)  # 212
-        # 213
-        neighbors.sort(key=lambda j: abs(to_merge[j, 2] - intensities[0]))  # 214
-        # 215
-        for j in neighbors:  # 216
-            if used[j]:  # 217
-                continue  # 218
-            if any(has_intensity_dip(existing, j) for existing in cluster):  # 219
-                continue  # 220
-            cand_v = float(to_merge[j, 2])  # 221
-            new_count = len(cluster) + 1  # 222
-            new_avg_v = (sum_v + cand_v) / new_count  # 223
-            if all(within_tol(new_avg_v, val) for val in (*intensities, cand_v)):  # 224
-                cluster.append(j)  # 225
-                intensities.append(cand_v)  # 226
-                sum_y += float(to_merge[j, 0])  # 227
-                sum_x += float(to_merge[j, 1])  # 228
-                sum_v += cand_v  # 229
-        # 230
-        if len(cluster) > 1:  # 231
-            new_count = len(cluster)  # 232
-            new_y = sum_y / new_count  # 233
-            new_x = sum_x / new_count  # 234
-            new_v = sum_v / new_count  # 235
-            if (min_intensity is None or new_v >= min_intensity) and all(  # 236
-                    within_tol(new_v, val) for val in intensities  # 237
-            ):  # 238
-                merged.append((new_y, new_x, new_v))  # 239
-                for j in cluster:  # 240
-                    used[j] = True  # 241
-                continue  # 242
-        # 243
-        # either a single-point cluster or the resulting intensity exceeded the tolerance  # 244
-        for j in cluster:  # 245
-            if not used[j]:  # 246
-                merged.append(tuple(to_merge[j]))  # 247
-                used[j] = True  # 248
-    # 249
-    merged = np.array(merged, dtype=float)  # 250
-    if untouched.size == 0:  # 251
-        return merged  # 252
-    if merged.size == 0:  # 253
-        return untouched  # 254
-    return np.vstack((merged, untouched))  # 255
-
-
+# (Функция merge_spots_by_intensity УДАЛЕНА)
 # 256
 # 257
 def geometric_midpoint(arr: np.ndarray) -> CenterResult:  # 258
@@ -413,24 +246,16 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         ttk.Label(pre_box, text="Mode:").grid(row=0, column=0, sticky="w", padx=6, pady=4)  # 343
         self.cmb_pre = ttk.Combobox(  # 344
             pre_box,  # 345
-            values=["No smoothing", "Standard", "CLAHE"],  # 346
+            values=["No processing", "NLM Denoising"],  # (ИЗМЕНЕНО)
             state="readonly",  # 347
         )  # 348
         self.cmb_pre.current(0)  # 349
         self.cmb_pre.grid(row=0, column=1, sticky="w", padx=6, pady=4)  # 350
-        self.cmb_pre.bind("<<ComboboxSelected>>", self._on_preproc_change)  # 351
-        # 352
-        ttk.Label(pre_box, text="CLAHE clipLimit / tile:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 353
-        self.spn_clip = ttk.Spinbox(pre_box, from_=0.1, to=10.0, increment=0.1, width=8, justify="right")  # 354
-        self._set_spinbox_value(self.spn_clip, 1.5)  # 355
-        self.spn_clip.grid(row=1, column=1, sticky="w", padx=6, pady=4)  # 356
-        self.spn_tile = ttk.Spinbox(pre_box, from_=2, to=64, increment=1, width=8, justify="right")  # 357
-        self._set_spinbox_value(self.spn_tile, 8)  # 358
-        self.spn_tile.grid(row=1, column=2, sticky="w", padx=6, pady=4)  # 359
+        # (УДАЛЕНЫ bind и виджеты CLAHE)
         # 360
         ttk.Label(  # 361
             pre_box,  # 362
-            text="Select CLAHE for images with strong brightness variations. ClipLimit controls contrast, and tile size defines the local processing radius.",
+            text="Select 'NLM Denoising' for noise reduction (uses scikit-image, h=0.3).", # (ИЗМЕНЕНО)
             # 363
             wraplength=520,  # 364
             foreground="#555555"  # 365
@@ -478,18 +303,8 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
             detect_box, 1, "Detection percentile (%)", 99.0,  # 407
             from_=80.0, to=100.0, increment=0.1, format_str="%.1f"  # 408
         )  # 409
-        self.spn_merge_perc = self._spin_param(  # 410
-            detect_box, 2, "Intensity percentile for merging (%)", 95.0,  # 411
-            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 412
-        )  # 413
-        self.spn_merge_rad = self._spin_param(  # 414
-            detect_box, 3, "Peak merging radius (px)", 0,  # 415
-            from_=0, to=50, increment=1  # 416
-        )  # 417
-        self.spn_merge_tol = self._spin_param(  # 418
-            detect_box, 4, "Intensity similarity tolerance (%)", 10.0,  # 419
-            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 420
-        )  # 421
+        # (УДАЛЕНЫ spn_merge_perc, spn_merge_rad, spn_merge_tol)
+        # 421
         # --- MODIFIED: Replaced min_sep/max_area with min_area ---
         self.spn_min_area = self._spin_param(  # 422
             detect_box, 5, "Min. peak area (px)", 3,  # 423
@@ -565,7 +380,8 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         bottom_filler.grid(row=2, column=0, sticky="ew")  # 491
         bottom_filler.grid_propagate(False)  # 492
         # 493
-        self._on_preproc_change(None)  # 494
+        # (УДАЛЕН _on_preproc_change(None))
+        # 494
 
     # 495
     def _activate_scroll(self, _event):  # 496
@@ -601,12 +417,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         if delta != 0:
             self._scroll_canvas.yview_scroll(delta, "units")
 
-    def _on_preproc_change(self, _evt):  # 523
-        mode = self.cmb_pre.get()  # 524
-        clahe_enabled = (mode == "CLAHE")  # 525
-        state = "normal" if clahe_enabled else "disabled"  # 526
-        self.spn_clip.configure(state=state)  # 527
-        self.spn_tile.configure(state=state)  # 528
+    # (УДАЛЕН метод _on_preproc_change)
 
     # 529
     def _spin_param(self, parent, row, label, default, *, from_, to, increment, format_str=None):  # 530
@@ -675,12 +486,9 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
             "center_x": self.ent_cx.get(),
             "center_y": self.ent_cy.get(),
             "preproc_mode": self.cmb_pre.get(),
-            "clahe_clip": self.spn_clip.get(),
-            "clahe_tiles": self.spn_tile.get(),
+            # (УДАЛЕНЫ clahe_clip, clahe_tiles)
             "detect_perc": self.spn_perc.get(),
-            "merge_perc": self.spn_merge_perc.get(),
-            "merge_radius": self.spn_merge_rad.get(),
-            "merge_tol": self.spn_merge_tol.get(),
+            # (УДАЛЕНЫ merge_perc, merge_radius, merge_tol)
             "min_area": self.spn_min_area.get(),  # <-- MODIFIED
             "max_pts": self.spn_maxpts.get(),
             "refine_iters": self.spn_iters.get(),
@@ -714,15 +522,12 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
         elif isinstance(self.cmb_pre, ttk.Combobox):
             self.cmb_pre.current(0)  # Default if not in state
 
-        self._on_preproc_change(None)  # Update UI based on new mode
+        # (УДАЛЕН _on_preproc_change(None))
 
         # Set Spinbox values safely, providing defaults
-        self._set_spinbox_value(self.spn_clip, state.get("clahe_clip", 1.5))
-        self._set_spinbox_value(self.spn_tile, state.get("clahe_tiles", 8))
+        # (УДАЛЕНЫ clahe_clip, clahe_tiles)
         self._set_spinbox_value(self.spn_perc, state.get("detect_perc", 99.0))
-        self._set_spinbox_value(self.spn_merge_perc, state.get("merge_perc", 95.0))
-        self._set_spinbox_value(self.spn_merge_rad, state.get("merge_radius", 0))
-        self._set_spinbox_value(self.spn_merge_tol, state.get("merge_tol", 10.0))
+        # (УДАЛЕНЫ merge_perc, merge_radius, merge_tol)
         self._set_spinbox_value(self.spn_min_area, state.get("min_area", 3))  # <-- MODIFIED
         self._set_spinbox_value(self.spn_maxpts, state.get("max_pts", 6000))
         self._set_spinbox_value(self.spn_iters, state.get("refine_iters", 4))
@@ -754,9 +559,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
 
             # --- Get parameters (as before) ---
             perc = float(self.spn_perc.get())
-            merge_apply_perc = float(self.spn_merge_perc.get())
-            merge_radius = float(self.spn_merge_rad.get())
-            merge_tol = float(self.spn_merge_tol.get())
+            # (УДАЛЕНЫ merge_apply_perc, merge_radius, merge_tol)
             # --- MODIFIED: Get new area parameters ---
             min_area = int(float(self.spn_min_area.get()))
             max_pts = int(float(self.spn_maxpts.get()))
@@ -766,16 +569,13 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
             dead_r = float(self.spn_dead.get())
             search_r = float(self.spn_search.get())
 
-            # --- preprocessing ---
+            # --- preprocessing (ИЗМЕНЕНО) ---
             pre_mode = self.cmb_pre.get()
-            if pre_mode == "No smoothing":
+            if pre_mode == "NLM Denoising":
+                # Использует h=0.3 по умолчанию из preproc.py
+                settings = PreprocSettings(mode="nlm")
+            else: # "No processing"
                 settings = PreprocSettings(mode="raw")
-            elif pre_mode == "Standard":
-                settings = PreprocSettings(mode="standard")
-            else:  # CLAHE
-                clip = float(self.spn_clip.get())
-                tiles = int(float(self.spn_tile.get()))
-                settings = PreprocSettings(mode="clahe", clahe_clip=clip, clahe_tiles=tiles)
 
             # --- Load image ---
             try:
@@ -835,26 +635,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 287
                 if search_r > 0: mask &= (r <= search_r)
                 pts = pts[mask]
 
-            # --- Merging ---
-            if len(pts) > 0 and merge_radius > 0:
-                merge_threshold = None
-                if merge_apply_perc > 0.0:
-                    # Ensure percentile calculation doesn't fail if pts[:, 2] is constant or empty
-                    if len(np.unique(pts[:, 2])) > 1:
-                        try:
-                            merge_threshold = float(np.percentile(pts[:, 2], merge_apply_perc))
-                        except IndexError:  # Handle empty pts array after filtering
-                            pass
-                    elif len(pts) > 0:
-                        merge_threshold = float(pts[0, 2] * (merge_apply_perc / 100.0))  # Fallback if constant
-
-                pts = merge_spots_by_intensity(
-                    pts,
-                    radius=merge_radius,
-                    tol_percent=merge_tol,
-                    min_intensity=merge_threshold,
-                    line_image=arr,  # Pass original preprocessed image for line check
-                )
+            # --- (УДАЛЕН блок Merging) ---
 
             # --- Create saed_input.json in the output directory ---
             points_list = [{"y": float(y), "x": float(x), "intensity": float(v)} for (y, x, v) in pts.tolist()]
