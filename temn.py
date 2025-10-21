@@ -44,296 +44,295 @@ def detect_spots_by_centroid(  # 39
         arr: np.ndarray,  # 40
         perc: float = 99.0,  # 41
         min_area: int = 3,  # 42
-        max_area: int = 500,  # 43
-        max_spots: int = 6000,  # 44
-) -> np.ndarray:  # 45
+        max_spots: int = 6000,  # 43
+) -> np.ndarray:  # 44
     """
     Detects spots using centroiding of connected components (blobs).
     This is more robust for flat or saturated peaks than local maxima search.
     """
-    H, W = arr.shape  # 46
-    # 47
+    H, W = arr.shape  # 45
+    # 46
     # 1. Use percentile map to get a robust threshold value
-    percent_map, _, _ = compute_percentile_map(arr)  # 48
-    try:  # 49
-        perc_val = float(np.clip(perc, 0.0, 100.0))  # 50
-        th_value = float(np.percentile(percent_map, perc_val))  # 51
-    except (ValueError, IndexError):  # 52
+    percent_map, _, _ = compute_percentile_map(arr)  # 47
+    try:  # 48
+        perc_val = float(np.clip(perc, 0.0, 100.0))  # 49
+        th_value = float(np.percentile(percent_map, perc_val))  # 50
+    except (ValueError, IndexError):  # 51
         th_value = 99.0  # Fallback
-    # 53
+    # 52
     # 2. Create binary mask based on threshold
     # We use the percentile map as input as it's already contrast-enhanced
-    binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 54
-    # 55
+    binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 53
+    # 54
     # 3. Find all connected components ("islands" or "blobs")
-    num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(  # 56
-        binary_mask,  # 57
+    num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(  # 55
+        binary_mask,  # 56
         connectivity=8  # Use 8-way connectivity
-    )  # 58
-    # 59
-    kept = []  # 60
-    # 61
+    )  # 57
+    # 58
+    kept = []  # 59
+    # 60
     # 4. Iterate over all found labels (label 0 is the background, skip it)
-    for i in range(1, num_labels):  # 62
-        area = stats[i, cv2.CC_STAT_AREA]  # 63
-        # 64
-        # 5. Filter blobs by their area
-        if not (min_area <= area <= max_area):  # 65
-            continue  # Skip blobs that are too small (noise) or too large (center beam)
-        # 66
+    for i in range(1, num_labels):  # 61
+        area = stats[i, cv2.CC_STAT_AREA]  # 62
+        # 63
+        # 5. Filter blobs ONLY by MINIMUM area (to remove noise)
+        if area < min_area:  # 64
+            continue  # Skip blobs that are too small
+        # 65
         # 6. Get the centroid (cx, cy)
-        cx, cy = centroids[i]  # 67
-        # 68
+        cx, cy = centroids[i]  # 66
+        # 67
         # 7. Get intensity at the centroid position for sorting
-        yi, xi = int(round(cy)), int(round(cx))  # 69
-        if 0 <= yi < H and 0 <= xi < W:  # 70
+        yi, xi = int(round(cy)), int(round(cx))  # 68
+        if 0 <= yi < H and 0 <= xi < W:  # 69
             # Use intensity from percentile map
-            v = float(percent_map[yi, xi])  # 71
+            v = float(percent_map[yi, xi])  # 70
             kept.append((float(cy), float(cx), float(v)))  # Store as (y, x, v)
-    # 72
+    # 71
     # 8. Sort by brightness (highest first)
-    kept.sort(key=lambda t: -t[2])  # 73
-    # 74
+    kept.sort(key=lambda t: -t[2])  # 72
+    # 73
     # 9. Limit to max_spots
-    if len(kept) > max_spots:  # 75
-        kept = kept[:max_spots]  # 76
-    # 77
-    return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)  # 78
+    if len(kept) > max_spots:  # 74
+        kept = kept[:max_spots]  # 75
+    # 76
+    return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)  # 77
 
 
+# 78
 # 79
-# 80
-def merge_spots_by_intensity(  # 81
-        pts: np.ndarray,  # 82
-        radius: float,  # 83
-        tol_percent: float,  # 84
-        *,  # 85
-        min_intensity: float | None = None,  # 86
-        line_image: np.ndarray | None = None,  # 87
-        percentile_map: np.ndarray | None = None,  # 88
-) -> np.ndarray:  # 89
-    # ... (function code remains unchanged) ... # 107
-    if pts.size == 0:  # 108
-        return pts  # 109
-    radius = float(radius)  # 110
-    tol = max(0.0, float(tol_percent) / 100.0)  # 111
-    if radius <= 0.0:  # 112
-        return np.asarray(pts, dtype=float)  # 113
-    # 114
-    pts = np.asarray(pts, dtype=float)  # 115
-    if min_intensity is not None:  # 116
-        mask = pts[:, 2] >= float(min_intensity)  # 117
-    else:  # 118
-        mask = np.ones(len(pts), dtype=bool)  # 119
-    # 120
-    to_merge = pts[mask]  # 121
-    untouched = pts[~mask]  # 122
-    if to_merge.size == 0:  # 123
-        return pts  # 124
-    # 125
-    intensity_map: np.ndarray | None  # 126
-    if percentile_map is not None:  # 127
-        intensity_map = np.asarray(percentile_map, dtype=float)  # 128
-    elif line_image is not None:  # 129
-        percent, _, _ = compute_percentile_map(np.asarray(line_image, dtype=float))  # 130
-        intensity_map = percent  # 131
-    else:  # 132
-        intensity_map = None  # 133
-    # 134
-    rad2 = radius * radius  # 135
-    used = np.zeros(len(to_merge), dtype=bool)  # 136
-    order = np.argsort(-to_merge[:, 2])  # start from the brightest  # 137
-    merged: list[tuple[float, float, float]] = []  # 138
+def merge_spots_by_intensity(  # 80
+        pts: np.ndarray,  # 81
+        radius: float,  # 82
+        tol_percent: float,  # 83
+        *,  # 84
+        min_intensity: float | None = None,  # 85
+        line_image: np.ndarray | None = None,  # 86
+        percentile_map: np.ndarray | None = None,  # 87
+) -> np.ndarray:  # 88
+    # ... (function code remains unchanged) ... # 106
+    if pts.size == 0:  # 107
+        return pts  # 108
+    radius = float(radius)  # 109
+    tol = max(0.0, float(tol_percent) / 100.0)  # 110
+    if radius <= 0.0:  # 111
+        return np.asarray(pts, dtype=float)  # 112
+    # 113
+    pts = np.asarray(pts, dtype=float)  # 114
+    if min_intensity is not None:  # 115
+        mask = pts[:, 2] >= float(min_intensity)  # 116
+    else:  # 117
+        mask = np.ones(len(pts), dtype=bool)  # 118
+    # 119
+    to_merge = pts[mask]  # 120
+    untouched = pts[~mask]  # 121
+    if to_merge.size == 0:  # 122
+        return pts  # 123
+    # 124
+    intensity_map: np.ndarray | None  # 125
+    if percentile_map is not None:  # 126
+        intensity_map = np.asarray(percentile_map, dtype=float)  # 127
+    elif line_image is not None:  # 128
+        percent, _, _ = compute_percentile_map(np.asarray(line_image, dtype=float))  # 129
+        intensity_map = percent  # 130
+    else:  # 131
+        intensity_map = None  # 132
+    # 133
+    rad2 = radius * radius  # 134
+    used = np.zeros(len(to_merge), dtype=bool)  # 135
+    order = np.argsort(-to_merge[:, 2])  # start from the brightest  # 136
+    merged: list[tuple[float, float, float]] = []  # 137
 
-    # 139
-    def within_tol(a: float, b: float) -> bool:  # 140
-        hi = max(a, b)  # 141
-        if hi == 0.0:  # 142
-            return abs(a - b) == 0.0  # 143
-        return abs(a - b) <= tol * hi + 1e-12  # 144
+    # 138
+    def within_tol(a: float, b: float) -> bool:  # 139
+        hi = max(a, b)  # 140
+        if hi == 0.0:  # 141
+            return abs(a - b) == 0.0  # 142
+        return abs(a - b) <= tol * hi + 1e-12  # 143
 
-    # 145
-    H = W = None  # 146
-    if intensity_map is not None and intensity_map.ndim == 2:  # 147
-        H, W = intensity_map.shape  # 148
-    else:  # 149
-        intensity_map = None  # 150
+    # 144
+    H = W = None  # 145
+    if intensity_map is not None and intensity_map.ndim == 2:  # 146
+        H, W = intensity_map.shape  # 147
+    else:  # 148
+        intensity_map = None  # 149
 
-    # 151
-    def clamp_round(val: float, hi: int) -> int:  # 152
-        return int(min(max(round(float(val)), 0), hi))  # 153
+    # 150
+    def clamp_round(val: float, hi: int) -> int:  # 151
+        return int(min(max(round(float(val)), 0), hi))  # 152
 
-    # 154
-    def bresenham_line(y0: int, x0: int, y1: int, x1: int) -> list[tuple[int, int]]:  # 155
-        points: list[tuple[int, int]] = []  # 156
-        dy = abs(y1 - y0)  # 157
-        dx = abs(x1 - x0)  # 158
-        sy = 1 if y0 < y1 else -1  # 159
-        sx = 1 if x0 < x1 else -1  # 160
-        err = dx - dy  # 161
-        while True:  # 162
-            points.append((y0, x0))  # 163
-            if y0 == y1 and x0 == x1:  # 164
-                break  # 165
-            e2 = err * 2  # 166
-            if e2 > -dy:  # 167
-                err -= dy  # 168
-                x0 += sx  # 169
-            if e2 < dx:  # 170
-                err += dx  # 171
-                y0 += sy  # 172
-        return points  # 173
+    # 153
+    def bresenham_line(y0: int, x0: int, y1: int, x1: int) -> list[tuple[int, int]]:  # 154
+        points: list[tuple[int, int]] = []  # 155
+        dy = abs(y1 - y0)  # 156
+        dx = abs(x1 - x0)  # 157
+        sy = 1 if y0 < y1 else -1  # 158
+        sx = 1 if x0 < x1 else -1  # 159
+        err = dx - dy  # 160
+        while True:  # 161
+            points.append((y0, x0))  # 162
+            if y0 == y1 and x0 == x1:  # 163
+                break  # 164
+            e2 = err * 2  # 165
+            if e2 > -dy:  # 166
+                err -= dy  # 167
+                x0 += sx  # 168
+            if e2 < dx:  # 169
+                err += dx  # 170
+                y0 += sy  # 171
+        return points  # 172
 
-    # 174
-    def has_intensity_dip(idx_a: int, idx_b: int) -> bool:  # 175
-        if intensity_map is None or H is None or W is None:  # 176
-            return False  # 177
-        base_val = min(float(to_merge[idx_a, 2]), float(to_merge[idx_b, 2]))  # 178
-        if base_val <= 0.0:  # 179
-            return False  # 180
-        y0 = clamp_round(to_merge[idx_a, 0], H - 1)  # 181
-        x0 = clamp_round(to_merge[idx_a, 1], W - 1)  # 182
-        y1 = clamp_round(to_merge[idx_b, 0], H - 1)  # 183
-        x1 = clamp_round(to_merge[idx_b, 1], W - 1)  # 184
-        pixels = bresenham_line(y0, x0, y1, x1)  # 185
-        if len(pixels) <= 2:  # 186
-            return False  # 187
-        limit = base_val * (1.0 - tol)  # 188
-        for (yy, xx) in pixels[1:-1]:  # 189
-            if 0 <= yy < H and 0 <= xx < W:  # 190
-                if float(intensity_map[yy, xx]) + 1e-9 < limit:  # 191
-                    return True  # 192
-        return False  # 193
+    # 173
+    def has_intensity_dip(idx_a: int, idx_b: int) -> bool:  # 174
+        if intensity_map is None or H is None or W is None:  # 175
+            return False  # 176
+        base_val = min(float(to_merge[idx_a, 2]), float(to_merge[idx_b, 2]))  # 177
+        if base_val <= 0.0:  # 178
+            return False  # 179
+        y0 = clamp_round(to_merge[idx_a, 0], H - 1)  # 180
+        x0 = clamp_round(to_merge[idx_a, 1], W - 1)  # 181
+        y1 = clamp_round(to_merge[idx_b, 0], H - 1)  # 182
+        x1 = clamp_round(to_merge[idx_b, 1], W - 1)  # 183
+        pixels = bresenham_line(y0, x0, y1, x1)  # 184
+        if len(pixels) <= 2:  # 185
+            return False  # 186
+        limit = base_val * (1.0 - tol)  # 187
+        for (yy, xx) in pixels[1:-1]:  # 188
+            if 0 <= yy < H and 0 <= xx < W:  # 189
+                if float(intensity_map[yy, xx]) + 1e-9 < limit:  # 190
+                    return True  # 191
+        return False  # 192
 
-    # 194
-    for idx in order:  # 195
-        if used[idx]:  # 196
-            continue  # 197
-        # 198
-        cluster = [idx]  # 199
-        sum_y = float(to_merge[idx, 0])  # 200
-        sum_x = float(to_merge[idx, 1])  # 201
-        intensities = [float(to_merge[idx, 2])]  # 202
-        sum_v = intensities[0]  # 203
-        # 204
-        neighbors = []  # 205
-        base_y, base_x = to_merge[idx, 0], to_merge[idx, 1]  # 206
-        for j in range(len(to_merge)):  # 207
-            if j == idx or used[j]:  # 208
-                continue  # 209
-            dy = to_merge[j, 0] - base_y  # 210
-            dx = to_merge[j, 1] - base_x  # 211
-            if dy * dy + dx * dx <= rad2:  # 212
-                neighbors.append(j)  # 213
-        # 214
-        neighbors.sort(key=lambda j: abs(to_merge[j, 2] - intensities[0]))  # 215
-        # 216
-        for j in neighbors:  # 217
-            if used[j]:  # 218
-                continue  # 219
-            if any(has_intensity_dip(existing, j) for existing in cluster):  # 220
-                continue  # 221
-            cand_v = float(to_merge[j, 2])  # 222
-            new_count = len(cluster) + 1  # 223
-            new_avg_v = (sum_v + cand_v) / new_count  # 224
-            if all(within_tol(new_avg_v, val) for val in (*intensities, cand_v)):  # 225
-                cluster.append(j)  # 226
-                intensities.append(cand_v)  # 227
-                sum_y += float(to_merge[j, 0])  # 228
-                sum_x += float(to_merge[j, 1])  # 229
-                sum_v += cand_v  # 230
-        # 231
-        if len(cluster) > 1:  # 232
-            new_count = len(cluster)  # 233
-            new_y = sum_y / new_count  # 234
-            new_x = sum_x / new_count  # 235
-            new_v = sum_v / new_count  # 236
-            if (min_intensity is None or new_v >= min_intensity) and all(  # 237
-                    within_tol(new_v, val) for val in intensities  # 238
-            ):  # 239
-                merged.append((new_y, new_x, new_v))  # 240
-                for j in cluster:  # 241
-                    used[j] = True  # 242
-                continue  # 243
-        # 244
-        # either a single-point cluster or the resulting intensity exceeded the tolerance  # 245
-        for j in cluster:  # 246
-            if not used[j]:  # 247
-                merged.append(tuple(to_merge[j]))  # 248
-                used[j] = True  # 249
-    # 250
-    merged = np.array(merged, dtype=float)  # 251
-    if untouched.size == 0:  # 252
-        return merged  # 253
-    if merged.size == 0:  # 254
-        return untouched  # 255
-    return np.vstack((merged, untouched))  # 256
+    # 193
+    for idx in order:  # 194
+        if used[idx]:  # 195
+            continue  # 196
+        # 197
+        cluster = [idx]  # 198
+        sum_y = float(to_merge[idx, 0])  # 199
+        sum_x = float(to_merge[idx, 1])  # 200
+        intensities = [float(to_merge[idx, 2])]  # 201
+        sum_v = intensities[0]  # 202
+        # 203
+        neighbors = []  # 204
+        base_y, base_x = to_merge[idx, 0], to_merge[idx, 1]  # 205
+        for j in range(len(to_merge)):  # 206
+            if j == idx or used[j]:  # 207
+                continue  # 208
+            dy = to_merge[j, 0] - base_y  # 209
+            dx = to_merge[j, 1] - base_x  # 210
+            if dy * dy + dx * dx <= rad2:  # 211
+                neighbors.append(j)  # 212
+        # 213
+        neighbors.sort(key=lambda j: abs(to_merge[j, 2] - intensities[0]))  # 214
+        # 215
+        for j in neighbors:  # 216
+            if used[j]:  # 217
+                continue  # 218
+            if any(has_intensity_dip(existing, j) for existing in cluster):  # 219
+                continue  # 220
+            cand_v = float(to_merge[j, 2])  # 221
+            new_count = len(cluster) + 1  # 222
+            new_avg_v = (sum_v + cand_v) / new_count  # 223
+            if all(within_tol(new_avg_v, val) for val in (*intensities, cand_v)):  # 224
+                cluster.append(j)  # 225
+                intensities.append(cand_v)  # 226
+                sum_y += float(to_merge[j, 0])  # 227
+                sum_x += float(to_merge[j, 1])  # 228
+                sum_v += cand_v  # 229
+        # 230
+        if len(cluster) > 1:  # 231
+            new_count = len(cluster)  # 232
+            new_y = sum_y / new_count  # 233
+            new_x = sum_x / new_count  # 234
+            new_v = sum_v / new_count  # 235
+            if (min_intensity is None or new_v >= min_intensity) and all(  # 236
+                    within_tol(new_v, val) for val in intensities  # 237
+            ):  # 238
+                merged.append((new_y, new_x, new_v))  # 239
+                for j in cluster:  # 240
+                    used[j] = True  # 241
+                continue  # 242
+        # 243
+        # either a single-point cluster or the resulting intensity exceeded the tolerance  # 244
+        for j in cluster:  # 245
+            if not used[j]:  # 246
+                merged.append(tuple(to_merge[j]))  # 247
+                used[j] = True  # 248
+    # 249
+    merged = np.array(merged, dtype=float)  # 250
+    if untouched.size == 0:  # 251
+        return merged  # 252
+    if merged.size == 0:  # 253
+        return untouched  # 254
+    return np.vstack((merged, untouched))  # 255
 
 
+# 256
 # 257
-# 258
-def geometric_midpoint(arr: np.ndarray) -> CenterResult:  # 259
-    H, W = arr.shape  # 260
-    return CenterResult(cy=(H - 1) / 2.0, cx=(W - 1) / 2.0, method="midpoint")  # 261
+def geometric_midpoint(arr: np.ndarray) -> CenterResult:  # 258
+    H, W = arr.shape  # 259
+    return CenterResult(cy=(H - 1) / 2.0, cx=(W - 1) / 2.0, method="midpoint")  # 260
 
 
 def refine_center_antipodal(center: Tuple[float, float], pts: np.ndarray, tol_ang_deg: float = 8.0,
-                            tol_rel_r: float = 0.06, iters: int = 3) -> CenterResult:  # 262
-    cy, cx = float(center[0]), float(center[1])  # 263
-    if len(pts) < 4:  # 264
-        return CenterResult(cy=cy, cx=cx, method="midpoint (fallback)")  # 265
-    for _ in range(max(0, int(iters))):  # 266
+                            tol_rel_r: float = 0.06, iters: int = 3) -> CenterResult:  # 261
+    cy, cx = float(center[0]), float(center[1])  # 262
+    if len(pts) < 4:  # 263
+        return CenterResult(cy=cy, cx=cx, method="midpoint (fallback)")  # 264
+    for _ in range(max(0, int(iters))):  # 265
         dy = pts[:, 0] - cy;
-        dx = pts[:, 1] - cx  # 267
-        r = np.hypot(dx, dy)  # 268
+        dx = pts[:, 1] - cx  # 266
+        r = np.hypot(dx, dy)  # 267
         # Avoid division by zero if a point is exactly at the center
         r_safe = np.where(r > 1e-9, r, 1e-9)
-        u = np.column_stack((dx, dy)) / r_safe[:, None]  # 269
-        cos_thr = -np.cos(np.deg2rad(180.0 - float(tol_ang_deg)))  # 270
-        mids = []  # 271
-        for i in range(len(pts)):  # 272
+        u = np.column_stack((dx, dy)) / r_safe[:, None]  # 268
+        cos_thr = -np.cos(np.deg2rad(180.0 - float(tol_ang_deg)))  # 269
+        mids = []  # 270
+        for i in range(len(pts)):  # 271
             if r[i] < 1e-6: continue  # Skip point if it's too close to center
-            dots = (u @ u[i])  # 273
+            dots = (u @ u[i])  # 272
             # Avoid division by zero for radius tolerance
             max_r_pair = np.maximum(r, r[i])
             # Use np.divide with where clause to handle potential zero denominators
             rel_diff = np.divide(np.abs(r - r[i]), max_r_pair, out=np.zeros_like(r), where=max_r_pair > 1e-9)
             rad_ok = (rel_diff < float(tol_rel_r)) & (max_r_pair > 1e-9)  # Ensure we don't match zero-radius points
 
-            ang_ok = (dots < cos_thr)  # 275
+            ang_ok = (dots < cos_thr)  # 274
             # Exclude self-comparison and points too close to center
             valid_match = rad_ok & ang_ok & (np.arange(len(pts)) != i) & (r > 1e-6)
-            idx = np.where(valid_match)[0]  # 276
-            if idx.size == 0: continue  # 277
+            idx = np.where(valid_match)[0]  # 275
+            if idx.size == 0: continue  # 276
             # Find the best antipodal match among valid candidates
-            j = idx[np.argmin(np.abs(dots[idx] + 1.0))]  # 278
-            yi, xi = pts[i, 0], pts[i, 1]  # 279
-            yj, xj = pts[j, 0], pts[j, 1]  # 280
-            mids.append(((yi + yj) / 2.0, (xi + xj) / 2.0))  # 281
-        if len(mids) < 4: break  # 282 Not enough pairs found
-        mids = np.array(mids, dtype=float)  # 283
+            j = idx[np.argmin(np.abs(dots[idx] + 1.0))]  # 277
+            yi, xi = pts[i, 0], pts[i, 1]  # 278
+            yj, xj = pts[j, 0], pts[j, 1]  # 279
+            mids.append(((yi + yj) / 2.0, (xi + xj) / 2.0))  # 280
+        if len(mids) < 4: break  # 281 Not enough pairs found
+        mids = np.array(mids, dtype=float)  # 282
         # Use median to be robust against outliers
         cy = float(np.median(mids[:, 0]));
-        cx = float(np.median(mids[:, 1]))  # 284
-    return CenterResult(cy=cy, cx=cx, method="antipodal-refined")  # 285
+        cx = float(np.median(mids[:, 1]))  # 283
+    return CenterResult(cy=cy, cx=cx, method="antipodal-refined")  # 284
 
 
-# 286
-# -------------------------- GUI --------------------------  # 287
-class SAEDLauncherFrame(ttk.Frame):  # 288
-    (  # 289
-        "Launcher tab suitable for both the standalone application and notebooks.\n"  # 290
-    )  # 291
+# 285
+# -------------------------- GUI --------------------------  # 286
+class SAEDLauncherFrame(ttk.Frame):  # 287
+    (  # 288
+        "Launcher tab suitable for both the standalone application and notebooks.\n"  # 289
+    )  # 290
 
-    # 292
-    def __init__(self, master: tk.Misc, controller=None):  # 293
-        super().__init__(master)  # 294
-        self.controller = controller  # 295
-        self._scroll_canvas = None  # 296
-        self._scroll_window_id = None  # 297
-        self._build_ui()  # 298
+    # 291
+    def __init__(self, master: tk.Misc, controller=None):  # 292
+        super().__init__(master)  # 293
+        self.controller = controller  # 294
+        self._scroll_canvas = None  # 295
+        self._scroll_window_id = None  # 296
+        self._build_ui()  # 297
 
-    # 299
+    # 298
     def _get_default_output_path(self) -> str:
         """Generates a default output path, avoiding existing directories."""
         if getattr(sys, "frozen", False):
@@ -363,235 +362,231 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
             if counter > 999:  # Safety break
                 return str(base_dir / f"{base_name}_temp_{np.random.randint(1000)}")
 
-    def _build_ui(self):  # 300
-        outer = ttk.Frame(self)  # 301
-        outer.pack(fill=tk.BOTH, expand=True)  # 302
-        # 303
-        fixed = ttk.Frame(outer, padding=(16, 16, 16, 0))  # 304
-        fixed.pack(side=tk.TOP, fill=tk.X)  # 305
-        fixed.grid_columnconfigure(0, weight=1)  # 306
-        # 307
-        data_box = ttk.LabelFrame(fixed, text="Input data", padding=(12, 10, 12, 12))  # 308
-        data_box.grid(row=0, column=0, sticky="nsew")  # 309
-        # 310
+    def _build_ui(self):  # 299
+        outer = ttk.Frame(self)  # 300
+        outer.pack(fill=tk.BOTH, expand=True)  # 301
+        # 302
+        fixed = ttk.Frame(outer, padding=(16, 16, 16, 0))  # 303
+        fixed.pack(side=tk.TOP, fill=tk.X)  # 304
+        fixed.grid_columnconfigure(0, weight=1)  # 305
+        # 306
+        data_box = ttk.LabelFrame(fixed, text="Input data", padding=(12, 10, 12, 12))  # 307
+        data_box.grid(row=0, column=0, sticky="nsew")  # 308
+        # 309
         data_box.grid_columnconfigure(1, weight=1)  # Make entry widgets resizable
-        # 313
-        ttk.Label(data_box, text="Image:").grid(row=0, column=0, sticky="w", padx=6, pady=4)  # 314
-        self.ent_img = ttk.Entry(data_box)  # 315
-        self.ent_img.grid(row=0, column=1, columnspan=2, sticky="we", padx=6, pady=4)  # 316
+        # 312
+        ttk.Label(data_box, text="Image:").grid(row=0, column=0, sticky="w", padx=6, pady=4)  # 313
+        self.ent_img = ttk.Entry(data_box)  # 314
+        self.ent_img.grid(row=0, column=1, columnspan=2, sticky="we", padx=6, pady=4)  # 315
         ttk.Button(data_box, text="Browse…", command=self._browse_img).grid(row=0, column=3, sticky="ew", padx=6,
-                                                                            pady=4)  # 317
-        # 318
-        ttk.Label(data_box, text="Output folder:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 319
-        self.ent_out = ttk.Entry(data_box)  # 320
-        self.ent_out.insert(0, self._get_default_output_path())  # 321
-        self.ent_out.grid(row=1, column=1, sticky="we", padx=6, pady=4)  # 322
+                                                                            pady=4)  # 316
+        # 317
+        ttk.Label(data_box, text="Output folder:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 318
+        self.ent_out = ttk.Entry(data_box)  # 319
+        self.ent_out.insert(0, self._get_default_output_path())  # 320
+        self.ent_out.grid(row=1, column=1, sticky="we", padx=6, pady=4)  # 321
         # --- NEW: "Load Session" Button ---
         ttk.Button(data_box, text="Load Session…", command=self._load_session).grid(row=1, column=2, sticky="ew",
-                                                                                    padx=6, pady=4)  # 323
+                                                                                    padx=6, pady=4)  # 322
         ttk.Button(data_box, text="Choose…", command=self._browse_out).grid(row=1, column=3, sticky="ew", padx=6,
-                                                                            pady=4)  # 324
-        # 325
-        ttk.Label(data_box, text="Center X (optional):").grid(row=2, column=0, sticky="w", padx=6, pady=4)  # 326
-        self.ent_cx = ttk.Entry(data_box, width=12)  # 327
-        self.ent_cx.grid(row=2, column=1, sticky="w", padx=6, pady=4)  # 328
-        ttk.Label(data_box, text="Center Y:").grid(row=2, column=2, sticky="w", padx=6, pady=4)  # 329
-        self.ent_cy = ttk.Entry(data_box, width=12)  # 330
-        self.ent_cy.grid(row=2, column=3, sticky="w", padx=6, pady=4)  # 331
-        # 332
-        ttk.Label(  # 333
-            data_box,  # 334
+                                                                            pady=4)  # 323
+        # 324
+        ttk.Label(data_box, text="Center X (optional):").grid(row=2, column=0, sticky="w", padx=6, pady=4)  # 325
+        self.ent_cx = ttk.Entry(data_box, width=12)  # 326
+        self.ent_cx.grid(row=2, column=1, sticky="w", padx=6, pady=4)  # 327
+        ttk.Label(data_box, text="Center Y:").grid(row=2, column=2, sticky="w", padx=6, pady=4)  # 328
+        self.ent_cy = ttk.Entry(data_box, width=12)  # 329
+        self.ent_cy.grid(row=2, column=3, sticky="w", padx=6, pady=4)  # 330
+        # 331
+        ttk.Label(  # 332
+            data_box,  # 333
             text="Leave the coordinates empty to let the program find the center automatically. Use 'Load Session' to restore a previous state.",
-            # 335
-            wraplength=520,  # 336
-            foreground="#555555"  # 337
-        ).grid(row=3, column=0, columnspan=4, sticky="we", padx=6, pady=(0, 4))  # 338
-        # 339
-        pre_box = ttk.LabelFrame(fixed, text="Preprocessing", padding=(12, 10, 12, 12))  # 340
-        pre_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))  # 341
-        pre_box.grid_columnconfigure(1, weight=1)  # 342
-        # 343
-        ttk.Label(pre_box, text="Mode:").grid(row=0, column=0, sticky="w", padx=6, pady=4)  # 344
-        self.cmb_pre = ttk.Combobox(  # 345
-            pre_box,  # 346
-            values=["No smoothing", "Standard", "CLAHE"],  # 347
-            state="readonly",  # 348
-        )  # 349
-        self.cmb_pre.current(0)  # 350
-        self.cmb_pre.grid(row=0, column=1, sticky="w", padx=6, pady=4)  # 351
-        self.cmb_pre.bind("<<ComboboxSelected>>", self._on_preproc_change)  # 352
-        # 353
-        ttk.Label(pre_box, text="CLAHE clipLimit / tile:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 354
-        self.spn_clip = ttk.Spinbox(pre_box, from_=0.1, to=10.0, increment=0.1, width=8, justify="right")  # 355
-        self._set_spinbox_value(self.spn_clip, 1.5)  # 356
-        self.spn_clip.grid(row=1, column=1, sticky="w", padx=6, pady=4)  # 357
-        self.spn_tile = ttk.Spinbox(pre_box, from_=2, to=64, increment=1, width=8, justify="right")  # 358
-        self._set_spinbox_value(self.spn_tile, 8)  # 359
-        self.spn_tile.grid(row=1, column=2, sticky="w", padx=6, pady=4)  # 360
-        # 361
-        ttk.Label(  # 362
-            pre_box,  # 363
+            # 334
+            wraplength=520,  # 335
+            foreground="#555555"  # 336
+        ).grid(row=3, column=0, columnspan=4, sticky="we", padx=6, pady=(0, 4))  # 337
+        # 338
+        pre_box = ttk.LabelFrame(fixed, text="Preprocessing", padding=(12, 10, 12, 12))  # 339
+        pre_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))  # 340
+        pre_box.grid_columnconfigure(1, weight=1)  # 341
+        # 342
+        ttk.Label(pre_box, text="Mode:").grid(row=0, column=0, sticky="w", padx=6, pady=4)  # 343
+        self.cmb_pre = ttk.Combobox(  # 344
+            pre_box,  # 345
+            values=["No smoothing", "Standard", "CLAHE"],  # 346
+            state="readonly",  # 347
+        )  # 348
+        self.cmb_pre.current(0)  # 349
+        self.cmb_pre.grid(row=0, column=1, sticky="w", padx=6, pady=4)  # 350
+        self.cmb_pre.bind("<<ComboboxSelected>>", self._on_preproc_change)  # 351
+        # 352
+        ttk.Label(pre_box, text="CLAHE clipLimit / tile:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 353
+        self.spn_clip = ttk.Spinbox(pre_box, from_=0.1, to=10.0, increment=0.1, width=8, justify="right")  # 354
+        self._set_spinbox_value(self.spn_clip, 1.5)  # 355
+        self.spn_clip.grid(row=1, column=1, sticky="w", padx=6, pady=4)  # 356
+        self.spn_tile = ttk.Spinbox(pre_box, from_=2, to=64, increment=1, width=8, justify="right")  # 357
+        self._set_spinbox_value(self.spn_tile, 8)  # 358
+        self.spn_tile.grid(row=1, column=2, sticky="w", padx=6, pady=4)  # 359
+        # 360
+        ttk.Label(  # 361
+            pre_box,  # 362
             text="Select CLAHE for images with strong brightness variations. ClipLimit controls contrast, and tile size defines the local processing radius.",
-            # 364
-            wraplength=520,  # 365
-            foreground="#555555"  # 366
-        ).grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 0))  # 367
-        # 368
-        scroll_host = ttk.Frame(outer)  # 369
-        scroll_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)  # 370
-        # 371
-        canvas = tk.Canvas(scroll_host, borderwidth=0, highlightthickness=0)  # 372
-        vscroll = ttk.Scrollbar(scroll_host, orient=tk.VERTICAL, command=canvas.yview)  # 373
-        scrollable = ttk.Frame(canvas, padding=(16, 12, 16, 12))  # 374
-        scrollable.grid_columnconfigure(0, weight=1)  # 375
-        # 376
-        self._scroll_canvas = canvas  # 377
-        self._scroll_window_id = canvas.create_window((0, 0), window=scrollable, anchor="nw")  # 378
-        canvas.configure(yscrollcommand=vscroll.set)  # 379
-        # 380
-        scrollable.bind(  # 381
-            "<Configure>",  # 382
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))  # 383
-        )  # 384
-        canvas.bind(  # 385
-            "<Configure>",  # 386
-            lambda e: canvas.itemconfigure(self._scroll_window_id, width=e.width)  # 387
-        )  # 388
-        # 389
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)  # 390
-        vscroll.pack(side=tk.RIGHT, fill=tk.Y)  # 391
-        # 392
-        scrollable.bind("<Enter>", self._activate_scroll)  # 393
-        scrollable.bind("<Leave>", self._deactivate_scroll)  # 394
-        canvas.bind("<Enter>", self._activate_scroll)  # 395
-        canvas.bind("<Leave>", self._deactivate_scroll)  # 396
-        # 397
-        detect_box = ttk.LabelFrame(scrollable, text="Detector and refinement", padding=(12, 10, 12, 12))  # 398
-        detect_box.grid(row=0, column=0, sticky="nsew")  # 399
-        detect_box.grid_columnconfigure(1, weight=1)  # 400
-        # 401
-        ttk.Label(  # 402
-            detect_box,  # 403
-            text="Peak threshold and search window",  # 404
-            font=("TkDefaultFont", 10, "bold")  # 405
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 406
-        self.spn_perc = self._spin_param(  # 407
-            detect_box, 1, "Detection percentile (%)", 99.0,  # 408
-            from_=80.0, to=100.0, increment=0.1, format_str="%.1f"  # 409
-        )  # 410
-        self.spn_merge_perc = self._spin_param(  # 411
-            detect_box, 2, "Intensity percentile for merging (%)", 95.0,  # 412
-            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 413
-        )  # 414
-        self.spn_merge_rad = self._spin_param(  # 415
-            detect_box, 3, "Peak merging radius (px)", 0,  # 416
-            from_=0, to=50, increment=1  # 417
-        )  # 418
-        self.spn_merge_tol = self._spin_param(  # 419
-            detect_box, 4, "Intensity similarity tolerance (%)", 10.0,  # 420
-            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 421
-        )  # 422
-        # --- MODIFIED: Replaced min_sep with min_area and max_area ---
-        self.spn_min_area = self._spin_param(  # 423
-            detect_box, 5, "Min. peak area (px)", 3,  # 424
-            from_=1, to=500, increment=1  # 425
-        )  # 426
-        self.spn_max_area = self._spin_param(  # 427
-            detect_box, 6, "Max. peak area (px)", 500,  # 428
-            from_=10, to=10000, increment=10  # 429
-        )  # 430
-        self.spn_maxpts = self._spin_param(  # 431
-            detect_box, 7, "Maximum detected points", 6000,  # 432
-            from_=100, to=20000, increment=100  # 433
-        )  # 434
-        # 435
-        ttk.Separator(detect_box).grid(row=8, column=0, columnspan=2, sticky="ew", pady=(6, 8))  # 436
-        # 437
-        ttk.Label(  # 438
-            detect_box,  # 439
-            text="Center refinement",  # 440
-            font=("TkDefaultFont", 10, "bold")  # 441
-        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 442
-        self.spn_iters = self._spin_param(  # 443
-            detect_box, 10, "Center refinement iterations", 4,  # 444
-            from_=0, to=10, increment=1  # 445
-        )  # 446
-        self.spn_tolang = self._spin_param(  # 447
-            detect_box, 11, "Antipode tolerance (°)", 8.0,  # 448
-            from_=1.0, to=30.0, increment=0.5, format_str="%.1f"  # 449
-        )  # 450
-        self.spn_tolr = self._spin_param(  # 451
-            detect_box, 12, "Radius tolerance (relative)", 0.06,  # 452
-            from_=0.01, to=0.5, increment=0.01, format_str="%.2f"  # 453
-        )  # 454
-        # 455
-        ttk.Separator(detect_box).grid(row=13, column=0, columnspan=2, sticky="ew", pady=(6, 8))  # 456
-        # 457
-        ttk.Label(  # 458
-            detect_box,  # 459
-            text="Geometric filters",  # 460
-            font=("TkDefaultFont", 10, "bold")  # 461
-        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 462
-        self.spn_dead = self._spin_param(  # 463
-            detect_box, 15, "Dead zone (px)", 0,  # 464
-            from_=0, to=500, increment=1  # 465
-        )  # 466
-        self.spn_search = self._spin_param(  # 467
-            detect_box, 16, "Search radius (px, 0 = unlimited)", 0,  # 468
-            from_=0, to=10000, increment=25  # 469
-        )  # 470
-        # 471
-        ttk.Label(  # 472
-            detect_box,  # 473
-            text="Use Min/Max area to filter noise and the central beam. Dead zone filters by radius *after* center refinement.",
-            # 474
-            wraplength=520,  # 475
-            foreground="#555555"  # 476
-        ).grid(row=17, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))  # 477
-        # 478
-        action_box = ttk.Frame(scrollable, padding=(0, 12, 0, 0))  # 479
-        action_box.grid(row=1, column=0, sticky="nsew")  # 480
-        action_box.grid_columnconfigure(0, weight=1)  # 481
-        # 482
-        ttk.Label(  # 483
-            action_box,  # 484
+            # 363
+            wraplength=520,  # 364
+            foreground="#555555"  # 365
+        ).grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 0))  # 366
+        # 367
+        scroll_host = ttk.Frame(outer)  # 368
+        scroll_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)  # 369
+        # 370
+        canvas = tk.Canvas(scroll_host, borderwidth=0, highlightthickness=0)  # 371
+        vscroll = ttk.Scrollbar(scroll_host, orient=tk.VERTICAL, command=canvas.yview)  # 372
+        scrollable = ttk.Frame(canvas, padding=(16, 12, 16, 12))  # 373
+        scrollable.grid_columnconfigure(0, weight=1)  # 374
+        # 375
+        self._scroll_canvas = canvas  # 376
+        self._scroll_window_id = canvas.create_window((0, 0), window=scrollable, anchor="nw")  # 377
+        canvas.configure(yscrollcommand=vscroll.set)  # 378
+        # 379
+        scrollable.bind(  # 380
+            "<Configure>",  # 381
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))  # 382
+        )  # 383
+        canvas.bind(  # 384
+            "<Configure>",  # 385
+            lambda e: canvas.itemconfigure(self._scroll_window_id, width=e.width)  # 386
+        )  # 387
+        # 388
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)  # 389
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)  # 390
+        # 391
+        scrollable.bind("<Enter>", self._activate_scroll)  # 392
+        scrollable.bind("<Leave>", self._deactivate_scroll)  # 393
+        canvas.bind("<Enter>", self._activate_scroll)  # 394
+        canvas.bind("<Leave>", self._deactivate_scroll)  # 395
+        # 396
+        detect_box = ttk.LabelFrame(scrollable, text="Detector and refinement", padding=(12, 10, 12, 12))  # 397
+        detect_box.grid(row=0, column=0, sticky="nsew")  # 398
+        detect_box.grid_columnconfigure(1, weight=1)  # 399
+        # 400
+        ttk.Label(  # 401
+            detect_box,  # 402
+            text="Peak threshold and search window",  # 403
+            font=("TkDefaultFont", 10, "bold")  # 404
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 405
+        self.spn_perc = self._spin_param(  # 406
+            detect_box, 1, "Detection percentile (%)", 99.0,  # 407
+            from_=80.0, to=100.0, increment=0.1, format_str="%.1f"  # 408
+        )  # 409
+        self.spn_merge_perc = self._spin_param(  # 410
+            detect_box, 2, "Intensity percentile for merging (%)", 95.0,  # 411
+            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 412
+        )  # 413
+        self.spn_merge_rad = self._spin_param(  # 414
+            detect_box, 3, "Peak merging radius (px)", 0,  # 415
+            from_=0, to=50, increment=1  # 416
+        )  # 417
+        self.spn_merge_tol = self._spin_param(  # 418
+            detect_box, 4, "Intensity similarity tolerance (%)", 10.0,  # 419
+            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 420
+        )  # 421
+        # --- MODIFIED: Replaced min_sep/max_area with min_area ---
+        self.spn_min_area = self._spin_param(  # 422
+            detect_box, 5, "Min. peak area (px)", 3,  # 423
+            from_=1, to=500, increment=1  # 424
+        )  # 425
+        self.spn_maxpts = self._spin_param(  # 426
+            detect_box, 6, "Maximum detected points", 6000,  # 427
+            from_=100, to=20000, increment=100  # 428
+        )  # 429
+        # 430
+        ttk.Separator(detect_box).grid(row=8, column=0, columnspan=2, sticky="ew", pady=(6, 8))  # 431
+        # 432
+        ttk.Label(  # 433
+            detect_box,  # 434
+            text="Center refinement",  # 435
+            font=("TkDefaultFont", 10, "bold")  # 436
+        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 437
+        self.spn_iters = self._spin_param(  # 438
+            detect_box, 10, "Center refinement iterations", 4,  # 439
+            from_=0, to=10, increment=1  # 440
+        )  # 441
+        self.spn_tolang = self._spin_param(  # 442
+            detect_box, 11, "Antipode tolerance (°)", 8.0,  # 443
+            from_=1.0, to=30.0, increment=0.5, format_str="%.1f"  # 444
+        )  # 445
+        self.spn_tolr = self._spin_param(  # 446
+            detect_box, 12, "Radius tolerance (relative)", 0.06,  # 447
+            from_=0.01, to=0.5, increment=0.01, format_str="%.2f"  # 448
+        )  # 449
+        # 450
+        ttk.Separator(detect_box).grid(row=13, column=0, columnspan=2, sticky="ew", pady=(6, 8))  # 451
+        # 452
+        ttk.Label(  # 453
+            detect_box,  # 454
+            text="Geometric filters",  # 455
+            font=("TkDefaultFont", 10, "bold")  # 456
+        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 457
+        self.spn_dead = self._spin_param(  # 458
+            detect_box, 15, "Dead zone (px)", 0,  # 459
+            from_=0, to=500, increment=1  # 460
+        )  # 461
+        self.spn_search = self._spin_param(  # 462
+            detect_box, 16, "Search radius (px, 0 = unlimited)", 0,  # 463
+            from_=0, to=10000, increment=25  # 464
+        )  # 465
+        # 466
+        ttk.Label(  # 467
+            detect_box,  # 468
+            text="Use 'Min. peak area' to filter noise. Use 'Dead zone' to filter the central beam by its position.",
+            # 469
+            wraplength=520,  # 470
+            foreground="#555555"  # 471
+        ).grid(row=17, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))  # 472
+        # 473
+        action_box = ttk.Frame(scrollable, padding=(0, 12, 0, 0))  # 474
+        action_box.grid(row=1, column=0, sticky="nsew")  # 475
+        action_box.grid_columnconfigure(0, weight=1)  # 476
+        # 477
+        ttk.Label(  # 478
+            action_box,  # 479
             text="Review the parameters and press the button below to switch to interactive editing of detected points.",
-            # 485
-            wraplength=540,  # 486
-            justify="left"  # 487
-        ).grid(row=0, column=0, sticky="we", padx=4, pady=(0, 8))  # 488
-        # 489
-        ttk.Button(action_box, text="Open point editor", command=self._go_editor).grid(  # 490
-            row=1, column=0, sticky="ew", padx=4, pady=(0, 12)  # 491
-        )  # 492
+            # 480
+            wraplength=540,  # 481
+            justify="left"  # 482
+        ).grid(row=0, column=0, sticky="we", padx=4, pady=(0, 8))  # 483
+        # 484
+        ttk.Button(action_box, text="Open point editor", command=self._go_editor).grid(  # 485
+            row=1, column=0, sticky="ew", padx=4, pady=(0, 12)  # 486
+        )  # 487
+        # 488
+        filler_bg = ttk.Style().lookup("TFrame", "background") or self.winfo_toplevel().cget("background")  # 489
+        bottom_filler = tk.Frame(scrollable, height=56, bg=filler_bg)  # 490
+        bottom_filler.grid(row=2, column=0, sticky="ew")  # 491
+        bottom_filler.grid_propagate(False)  # 492
         # 493
-        filler_bg = ttk.Style().lookup("TFrame", "background") or self.winfo_toplevel().cget("background")  # 494
-        bottom_filler = tk.Frame(scrollable, height=56, bg=filler_bg)  # 495
-        bottom_filler.grid(row=2, column=0, sticky="ew")  # 496
-        bottom_filler.grid_propagate(False)  # 497
-        # 498
-        self._on_preproc_change(None)  # 499
+        self._on_preproc_change(None)  # 494
 
-    # 500
-    def _activate_scroll(self, _event):  # 501
-        if self._scroll_canvas is None:  # 502
-            return  # 503
-        self._scroll_canvas.bind_all("<MouseWheel>", self._on_scroll_mousewheel)  # 504
-        self._scroll_canvas.bind_all("<Button-4>", self._on_scroll_mousewheel)  # 505
-        self._scroll_canvas.bind_all("<Button-5>", self._on_scroll_mousewheel)  # 506
+    # 495
+    def _activate_scroll(self, _event):  # 496
+        if self._scroll_canvas is None:  # 497
+            return  # 498
+        self._scroll_canvas.bind_all("<MouseWheel>", self._on_scroll_mousewheel)  # 499
+        self._scroll_canvas.bind_all("<Button-4>", self._on_scroll_mousewheel)  # 500
+        self._scroll_canvas.bind_all("<Button-5>", self._on_scroll_mousewheel)  # 501
 
-    # 507
-    def _deactivate_scroll(self, _event):  # 508
-        if self._scroll_canvas is None:  # 509
-            return  # 510
-        self._scroll_canvas.unbind_all("<MouseWheel>")  # 511
-        self._scroll_canvas.unbind_all("<Button-4>")  # 512
-        self._scroll_canvas.unbind_all("<Button-5>")  # 513
+    # 502
+    def _deactivate_scroll(self, _event):  # 503
+        if self._scroll_canvas is None:  # 504
+            return  # 505
+        self._scroll_canvas.unbind_all("<MouseWheel>")  # 506
+        self._scroll_canvas.unbind_all("<Button-4>")  # 507
+        self._scroll_canvas.unbind_all("<Button-5>")  # 508
 
-    # 514
-    def _on_scroll_mousewheel(self, event):  # 515
-        if self._scroll_canvas is None:  # 516
-            return  # 517
+    # 509
+    def _on_scroll_mousewheel(self, event):  # 510
+        if self._scroll_canvas is None:  # 511
+            return  # 512
         # Determine scroll direction and amount (platform-dependent)
         delta = 0
         if sys.platform == "win32":
@@ -606,29 +601,29 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
         if delta != 0:
             self._scroll_canvas.yview_scroll(delta, "units")
 
-    def _on_preproc_change(self, _evt):  # 528
-        mode = self.cmb_pre.get()  # 529
-        clahe_enabled = (mode == "CLAHE")  # 530
-        state = "normal" if clahe_enabled else "disabled"  # 531
-        self.spn_clip.configure(state=state)  # 532
-        self.spn_tile.configure(state=state)  # 533
+    def _on_preproc_change(self, _evt):  # 523
+        mode = self.cmb_pre.get()  # 524
+        clahe_enabled = (mode == "CLAHE")  # 525
+        state = "normal" if clahe_enabled else "disabled"  # 526
+        self.spn_clip.configure(state=state)  # 527
+        self.spn_tile.configure(state=state)  # 528
 
-    # 534
-    def _spin_param(self, parent, row, label, default, *, from_, to, increment, format_str=None):  # 535
-        ttk.Label(parent, text=f"{label}:").grid(row=row, column=0, sticky="w", padx=6, pady=4)  # 536
-        spin = ttk.Spinbox(parent, from_=from_, to=to, increment=increment, width=10, justify="right")  # 537
-        if format_str:  # 538
-            spin.configure(format=format_str)  # 539
-        self._set_spinbox_value(spin, default)  # 540
-        spin.grid(row=row, column=1, sticky="w", padx=6, pady=4)  # 541
-        return spin  # 542
+    # 529
+    def _spin_param(self, parent, row, label, default, *, from_, to, increment, format_str=None):  # 530
+        ttk.Label(parent, text=f"{label}:").grid(row=row, column=0, sticky="w", padx=6, pady=4)  # 531
+        spin = ttk.Spinbox(parent, from_=from_, to=to, increment=increment, width=10, justify="right")  # 532
+        if format_str:  # 533
+            spin.configure(format=format_str)  # 534
+        self._set_spinbox_value(spin, default)  # 535
+        spin.grid(row=row, column=1, sticky="w", padx=6, pady=4)  # 536
+        return spin  # 537
 
-    # 543
-    def _set_spinbox_value(self, spinbox: ttk.Spinbox, value):  # 544
-        try:  # 545
+    # 538
+    def _set_spinbox_value(self, spinbox: ttk.Spinbox, value):  # 539
+        try:  # 540
             # Try setting directly first, works for simple values
             spinbox.set(value)
-        except tk.TclError:  # 547
+        except tk.TclError:  # 542
             # Fallback: delete and insert if direct set fails (e.g., due to formatting)
             try:
                 current_value = spinbox.get()
@@ -640,19 +635,19 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
                 # Handle cases where get() might fail or value cannot be stringified easily
                 print(f"Warning: Could not set spinbox value to {value}")
 
-    # 550
-    def _browse_img(self):  # 551
+    # 545
+    def _browse_img(self):  # 546
         p = filedialog.askopenfilename(title="Select image",
                                        filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp"),
-                                                  ("All", "*.*")])  # 552
-        if p: self.ent_img.delete(0, tk.END); self.ent_img.insert(0, p)  # 553
+                                                  ("All", "*.*")])  # 547
+        if p: self.ent_img.delete(0, tk.END); self.ent_img.insert(0, p)  # 548
 
-    # 554
-    def _browse_out(self):  # 555
+    # 549
+    def _browse_out(self):  # 550
         p = filedialog.askdirectory(title="Select output folder", mustexist=False)  # Allow creating new folders
-        if p: self.ent_out.delete(0, tk.END); self.ent_out.insert(0, p)  # 557
+        if p: self.ent_out.delete(0, tk.END); self.ent_out.insert(0, p)  # 552
 
-    # 558
+    # 553
     # --- NEW: Load Session Method ---
     def _load_session(self):
         """Asks user for a session file and tells the controller to load it."""
@@ -687,7 +682,6 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
             "merge_radius": self.spn_merge_rad.get(),
             "merge_tol": self.spn_merge_tol.get(),
             "min_area": self.spn_min_area.get(),  # <-- MODIFIED
-            "max_area": self.spn_max_area.get(),  # <-- NEW
             "max_pts": self.spn_maxpts.get(),
             "refine_iters": self.spn_iters.get(),
             "tol_angle": self.spn_tolang.get(),
@@ -730,7 +724,6 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
         self._set_spinbox_value(self.spn_merge_rad, state.get("merge_radius", 0))
         self._set_spinbox_value(self.spn_merge_tol, state.get("merge_tol", 10.0))
         self._set_spinbox_value(self.spn_min_area, state.get("min_area", 3))  # <-- MODIFIED
-        self._set_spinbox_value(self.spn_max_area, state.get("max_area", 500))  # <-- NEW
         self._set_spinbox_value(self.spn_maxpts, state.get("max_pts", 6000))
         self._set_spinbox_value(self.spn_iters, state.get("refine_iters", 4))
         self._set_spinbox_value(self.spn_tolang, state.get("tol_angle", 8.0))
@@ -766,7 +759,6 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
             merge_tol = float(self.spn_merge_tol.get())
             # --- MODIFIED: Get new area parameters ---
             min_area = int(float(self.spn_min_area.get()))
-            max_area = int(float(self.spn_max_area.get()))
             max_pts = int(float(self.spn_maxpts.get()))
             iters = int(float(self.spn_iters.get()))
             tol_ang = float(self.spn_tolang.get())
@@ -813,7 +805,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
             # --- Peak detection and refinement ---
             # --- MODIFIED: Call new function ---
             pts = detect_spots_by_centroid(
-                arr, perc=perc, min_area=min_area, max_area=max_area, max_spots=max_pts
+                arr, perc=perc, min_area=min_area, max_spots=max_pts
             )
 
             if len(pts) == 0:
@@ -823,7 +815,7 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
                 print(f"Retrying spot detection with percentile {lower_perc:.1f}%...")
                 # --- MODIFIED: Call new function in fallback ---
                 pts = detect_spots_by_centroid(
-                    arr, perc=lower_perc, min_area=min_area, max_area=max_area, max_spots=max_pts
+                    arr, perc=lower_perc, min_area=min_area, max_spots=max_pts
                 )
                 if len(pts) == 0:
                     messagebox.showwarning("Detection Warning",
@@ -908,27 +900,27 @@ class SAEDLauncherFrame(ttk.Frame):  # 288
             messagebox.showerror("Processing Error", f"An unexpected error occurred during processing:\n{e}")
 
 
-class SAEDApp(tk.Tk):  # 772
-    # 773
-    (  # 774
-        "Backwards-compatible standalone application using the tab frame.\n"  # 775
-    )  # 776
+class SAEDApp(tk.Tk):  # 767
+    # 768
+    (  # 769
+        "Backwards-compatible standalone application using the tab frame.\n"  # 770
+    )  # 771
 
-    # 777
-    def __init__(self):  # 778
-        super().__init__()  # 779
-        # 780
-        self.title("SAED Symmetry – Launcher")  # 781
-        # 782
-        self.geometry("980x680")  # 783
-        # 784
-        self.resizable(True, False)  # 785
-        # 786
-        frame = SAEDLauncherFrame(self)  # 787
-        # 788
-        frame.pack(fill=tk.BOTH, expand=True)  # 789
+    # 772
+    def __init__(self):  # 773
+        super().__init__()  # 774
+        # 775
+        self.title("SAED Symmetry – Launcher")  # 776
+        # 777
+        self.geometry("980x680")  # 778
+        # 779
+        self.resizable(True, False)  # 780
+        # 781
+        frame = SAEDLauncherFrame(self)  # 782
+        # 783
+        frame.pack(fill=tk.BOTH, expand=True)  # 784
 
 
-# 790
-if __name__ == "__main__":  # 791
-    SAEDApp().mainloop()  # 792
+# 785
+if __name__ == "__main__":  # 786
+    SAEDApp().mainloop()  # 787

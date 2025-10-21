@@ -1,926 +1,867 @@
-#!/usr/bin/env python3  # 1
-# -*- coding: utf-8 -*-  # 2
-(  # 3
-    "SAED Symmetry – Launcher\n"  # 4
-    "========================\n"  # 5
-    "What's new:\n"  # 6
-    "  • Preprocessing switch:\n"  # 7
-    "      - 'Standard' (equalize + GaussianBlur)\n"  # 8
-    "      - 'No processing' (raw grayscale)\n"  # 9
-    "      - 'CLAHE' (local equalization) with configurable clipLimit and tile size.\n"  # 10
-    "  • All preprocessing happens ONLY here; the image editor is untouched.\n"  # 11
-    "The rest of the functionality is unchanged: manual/auto center, antipodal refinement, dead zone, search radius, launching the editor.\n"  # 12
-    "\n"  # 13
-    "Additionally:\n"  # 14
-    "  • Save points together with their intensity in a single saed_input.json file.\n"  # 15
-    "  • saed_editor launches with a single --input argument (path to saed_input.json).\n"  # 16
-)  # 17
-from __future__ import annotations  # 18
-import json, subprocess, sys, cv2  # 19
-from pathlib import Path  # 20
-from dataclasses import dataclass  # 21
-from typing import Tuple, Dict, Any  # 22
-# 23
-import numpy as np  # 24
-# 25
-from percentile_utils import compute_percentile_map  # 26
-from preproc import PreprocSettings, load_grayscale_with_preproc  # 27
-# 28
-import tkinter as tk  # 29
-from tkinter import ttk, filedialog, messagebox  # 30
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Unified window with launcher, editor, and analyzer tabs."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import hmac
+import importlib
+import importlib.util
+import json
+import secrets
+import sys
+import textwrap
+import webbrowser
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional, Tuple
+
+import tkinter as tk
+from tkinter import messagebox, ttk, filedialog
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+try:
+    from PIL import Image, ImageTk  # type: ignore[import-not-found]
+except ImportError:
+    Image = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
+
+MODULE_DIR = Path(__file__).resolve().parent
+
+_LSP1 = "Q2hhbmdlTWVUb0FQcml"
+_LSP2 = "2YXRlU2VjcmV0"
+LICENSE_SECRET = base64.b64decode(_LSP1 + _LSP2).decode("utf-8")
+
+TRIAL_DAYS = 3
 
 
-# 31
-# -------------------------- Algorithm --------------------------  # 32
-@dataclass  # 33
-class CenterResult:  # 34
-    cy: float  # 35
-    cx: float  # 36
-    method: str  # 37
+class MaskedEntry(ttk.Entry):
+    """An entry widget that enforces a mask for license key input."""
 
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.mask = "XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+        self.char_positions = [i for i, char in enumerate(self.mask) if char == 'X']
+        self.literal_positions = {i: char for i, char in enumerate(self.mask) if char != 'X'}
+        self.var = tk.StringVar()
+        self.configure(textvariable=self.var)
+        self._last_value = ''
+        self.var.trace_add("write", self._on_write)
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<<Paste>>", self._on_paste)
+        self._format_to_mask("")
 
-# 38
-def detect_spots_by_centroid(  # 39
-        arr: np.ndarray,  # 40
-        perc: float = 99.0,  # 41
-        min_area: int = 3,  # 42
-        max_spots: int = 6000,  # 43
-) -> np.ndarray:  # 44
-    """
-    Detects spots using centroiding of connected components (blobs).
-    This is more robust for flat or saturated peaks than local maxima search.
-    """
-    H, W = arr.shape  # 45
-    # 46
-    # 1. Use percentile map to get a robust threshold value
-    percent_map, _, _ = compute_percentile_map(arr)  # 47
-    try:  # 48
-        perc_val = float(np.clip(perc, 0.0, 100.0))  # 49
-        th_value = float(np.percentile(percent_map, perc_val))  # 50
-    except (ValueError, IndexError):  # 51
-        th_value = 99.0  # Fallback
-    # 52
-    # 2. Create binary mask based on threshold
-    # We use the percentile map as input as it's already contrast-enhanced
-    binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)  # 53
-    # 54
-    # 3. Find all connected components ("islands" or "blobs")
-    num_labels, labels_map, stats, centroids = cv2.connectedComponentsWithStats(  # 55
-        binary_mask,  # 56
-        connectivity=8  # Use 8-way connectivity
-    )  # 57
-    # 58
-    kept = []  # 59
-    # 60
-    # 4. Iterate over all found labels (label 0 is the background, skip it)
-    for i in range(1, num_labels):  # 61
-        area = stats[i, cv2.CC_STAT_AREA]  # 62
-        # 63
-        # 5. Filter blobs ONLY by MINIMUM area (to remove noise)
-        if area < min_area:  # 64
-            continue  # Skip blobs that are too small
-        # 65
-        # 6. Get the centroid (cx, cy)
-        cx, cy = centroids[i]  # 66
-        # 67
-        # 7. Get intensity at the centroid position for sorting
-        yi, xi = int(round(cy)), int(round(cx))  # 68
-        if 0 <= yi < H and 0 <= xi < W:  # 69
-            # Use intensity from percentile map
-            v = float(percent_map[yi, xi])  # 70
-            kept.append((float(cy), float(cx), float(v)))  # Store as (y, x, v)
-    # 71
-    # 8. Sort by brightness (highest first)
-    kept.sort(key=lambda t: -t[2])  # 72
-    # 73
-    # 9. Limit to max_spots
-    if len(kept) > max_spots:  # 74
-        kept = kept[:max_spots]  # 75
-    # 76
-    return np.array(kept, dtype=float) if kept else np.zeros((0, 3), dtype=float)  # 77
+    def _on_paste(self, _event=None):
+        try:
+            clipboard_content = self.clipboard_get()
+            self._format_to_mask(clipboard_content)
+        except tk.TclError:
+            pass
+        return "break"
 
+    def _on_focus_in(self, _event=None):
+        raw_content = self._get_raw_content()
+        pos = len(raw_content)
+        self._set_cursor_at_char_pos(pos)
 
-# 78
-# 79
-def merge_spots_by_intensity(  # 80
-        pts: np.ndarray,  # 81
-        radius: float,  # 82
-        tol_percent: float,  # 83
-        *,  # 84
-        min_intensity: float | None = None,  # 85
-        line_image: np.ndarray | None = None,  # 86
-        percentile_map: np.ndarray | None = None,  # 87
-) -> np.ndarray:  # 88
-    # ... (function code remains unchanged) ... # 106
-    if pts.size == 0:  # 107
-        return pts  # 108
-    radius = float(radius)  # 109
-    tol = max(0.0, float(tol_percent) / 100.0)  # 110
-    if radius <= 0.0:  # 111
-        return np.asarray(pts, dtype=float)  # 112
-    # 113
-    pts = np.asarray(pts, dtype=float)  # 114
-    if min_intensity is not None:  # 115
-        mask = pts[:, 2] >= float(min_intensity)  # 116
-    else:  # 117
-        mask = np.ones(len(pts), dtype=bool)  # 118
-    # 119
-    to_merge = pts[mask]  # 120
-    untouched = pts[~mask]  # 121
-    if to_merge.size == 0:  # 122
-        return pts  # 123
-    # 124
-    intensity_map: np.ndarray | None  # 125
-    if percentile_map is not None:  # 126
-        intensity_map = np.asarray(percentile_map, dtype=float)  # 127
-    elif line_image is not None:  # 128
-        percent, _, _ = compute_percentile_map(np.asarray(line_image, dtype=float))  # 129
-        intensity_map = percent  # 130
-    else:  # 131
-        intensity_map = None  # 132
-    # 133
-    rad2 = radius * radius  # 134
-    used = np.zeros(len(to_merge), dtype=bool)  # 135
-    order = np.argsort(-to_merge[:, 2])  # start from the brightest  # 136
-    merged: list[tuple[float, float, float]] = []  # 137
+    def _get_raw_content(self) -> str:
+        return "".join(char for i, char in enumerate(self.var.get())
+                       if i in self.char_positions and char != 'X')
 
-    # 138
-    def within_tol(a: float, b: float) -> bool:  # 139
-        hi = max(a, b)  # 140
-        if hi == 0.0:  # 141
-            return abs(a - b) == 0.0  # 142
-        return abs(a - b) <= tol * hi + 1e-12  # 143
+    def _format_to_mask(self, text: str):
+        sanitized = "".join(filter(lambda c: c in "0123456789ABCDEFabcdef", text.upper()))
+        sanitized = sanitized[:len(self.char_positions)]
+        new_value = list(self.mask)
+        for i, char_pos in enumerate(self.char_positions):
+            if i < len(sanitized):
+                new_value[char_pos] = sanitized[i]
+            else:
+                new_value[char_pos] = 'X'
+        self._last_value = "".join(new_value)
+        self.var.set(self._last_value)
+        self._set_cursor_at_char_pos(len(sanitized))
 
-    # 144
-    H = W = None  # 145
-    if intensity_map is not None and intensity_map.ndim == 2:  # 146
-        H, W = intensity_map.shape  # 147
-    else:  # 148
-        intensity_map = None  # 149
-
-    # 150
-    def clamp_round(val: float, hi: int) -> int:  # 151
-        return int(min(max(round(float(val)), 0), hi))  # 152
-
-    # 153
-    def bresenham_line(y0: int, x0: int, y1: int, x1: int) -> list[tuple[int, int]]:  # 154
-        points: list[tuple[int, int]] = []  # 155
-        dy = abs(y1 - y0)  # 156
-        dx = abs(x1 - x0)  # 157
-        sy = 1 if y0 < y1 else -1  # 158
-        sx = 1 if x0 < x1 else -1  # 159
-        err = dx - dy  # 160
-        while True:  # 161
-            points.append((y0, x0))  # 162
-            if y0 == y1 and x0 == x1:  # 163
-                break  # 164
-            e2 = err * 2  # 165
-            if e2 > -dy:  # 166
-                err -= dy  # 167
-                x0 += sx  # 168
-            if e2 < dx:  # 169
-                err += dx  # 170
-                y0 += sy  # 171
-        return points  # 172
-
-    # 173
-    def has_intensity_dip(idx_a: int, idx_b: int) -> bool:  # 174
-        if intensity_map is None or H is None or W is None:  # 175
-            return False  # 176
-        base_val = min(float(to_merge[idx_a, 2]), float(to_merge[idx_b, 2]))  # 177
-        if base_val <= 0.0:  # 178
-            return False  # 179
-        y0 = clamp_round(to_merge[idx_a, 0], H - 1)  # 180
-        x0 = clamp_round(to_merge[idx_a, 1], W - 1)  # 181
-        y1 = clamp_round(to_merge[idx_b, 0], H - 1)  # 182
-        x1 = clamp_round(to_merge[idx_b, 1], W - 1)  # 183
-        pixels = bresenham_line(y0, x0, y1, x1)  # 184
-        if len(pixels) <= 2:  # 185
-            return False  # 186
-        limit = base_val * (1.0 - tol)  # 187
-        for (yy, xx) in pixels[1:-1]:  # 188
-            if 0 <= yy < H and 0 <= xx < W:  # 189
-                if float(intensity_map[yy, xx]) + 1e-9 < limit:  # 190
-                    return True  # 191
-        return False  # 192
-
-    # 193
-    for idx in order:  # 194
-        if used[idx]:  # 195
-            continue  # 196
-        # 197
-        cluster = [idx]  # 198
-        sum_y = float(to_merge[idx, 0])  # 199
-        sum_x = float(to_merge[idx, 1])  # 200
-        intensities = [float(to_merge[idx, 2])]  # 201
-        sum_v = intensities[0]  # 202
-        # 203
-        neighbors = []  # 204
-        base_y, base_x = to_merge[idx, 0], to_merge[idx, 1]  # 205
-        for j in range(len(to_merge)):  # 206
-            if j == idx or used[j]:  # 207
-                continue  # 208
-            dy = to_merge[j, 0] - base_y  # 209
-            dx = to_merge[j, 1] - base_x  # 210
-            if dy * dy + dx * dx <= rad2:  # 211
-                neighbors.append(j)  # 212
-        # 213
-        neighbors.sort(key=lambda j: abs(to_merge[j, 2] - intensities[0]))  # 214
-        # 215
-        for j in neighbors:  # 216
-            if used[j]:  # 217
-                continue  # 218
-            if any(has_intensity_dip(existing, j) for existing in cluster):  # 219
-                continue  # 220
-            cand_v = float(to_merge[j, 2])  # 221
-            new_count = len(cluster) + 1  # 222
-            new_avg_v = (sum_v + cand_v) / new_count  # 223
-            if all(within_tol(new_avg_v, val) for val in (*intensities, cand_v)):  # 224
-                cluster.append(j)  # 225
-                intensities.append(cand_v)  # 226
-                sum_y += float(to_merge[j, 0])  # 227
-                sum_x += float(to_merge[j, 1])  # 228
-                sum_v += cand_v  # 229
-        # 230
-        if len(cluster) > 1:  # 231
-            new_count = len(cluster)  # 232
-            new_y = sum_y / new_count  # 233
-            new_x = sum_x / new_count  # 234
-            new_v = sum_v / new_count  # 235
-            if (min_intensity is None or new_v >= min_intensity) and all(  # 236
-                    within_tol(new_v, val) for val in intensities  # 237
-            ):  # 238
-                merged.append((new_y, new_x, new_v))  # 239
-                for j in cluster:  # 240
-                    used[j] = True  # 241
-                continue  # 242
-        # 243
-        # either a single-point cluster or the resulting intensity exceeded the tolerance  # 244
-        for j in cluster:  # 245
-            if not used[j]:  # 246
-                merged.append(tuple(to_merge[j]))  # 247
-                used[j] = True  # 248
-    # 249
-    merged = np.array(merged, dtype=float)  # 250
-    if untouched.size == 0:  # 251
-        return merged  # 252
-    if merged.size == 0:  # 253
-        return untouched  # 254
-    return np.vstack((merged, untouched))  # 255
-
-
-# 256
-# 257
-def geometric_midpoint(arr: np.ndarray) -> CenterResult:  # 258
-    H, W = arr.shape  # 259
-    return CenterResult(cy=(H - 1) / 2.0, cx=(W - 1) / 2.0, method="midpoint")  # 260
-
-
-def refine_center_antipodal(center: Tuple[float, float], pts: np.ndarray, tol_ang_deg: float = 8.0,
-                            tol_rel_r: float = 0.06, iters: int = 3) -> CenterResult:  # 261
-    cy, cx = float(center[0]), float(center[1])  # 262
-    if len(pts) < 4:  # 263
-        return CenterResult(cy=cy, cx=cx, method="midpoint (fallback)")  # 264
-    for _ in range(max(0, int(iters))):  # 265
-        dy = pts[:, 0] - cy;
-        dx = pts[:, 1] - cx  # 266
-        r = np.hypot(dx, dy)  # 267
-        # Avoid division by zero if a point is exactly at the center
-        r_safe = np.where(r > 1e-9, r, 1e-9)
-        u = np.column_stack((dx, dy)) / r_safe[:, None]  # 268
-        cos_thr = -np.cos(np.deg2rad(180.0 - float(tol_ang_deg)))  # 269
-        mids = []  # 270
-        for i in range(len(pts)):  # 271
-            if r[i] < 1e-6: continue  # Skip point if it's too close to center
-            dots = (u @ u[i])  # 272
-            # Avoid division by zero for radius tolerance
-            max_r_pair = np.maximum(r, r[i])
-            # Use np.divide with where clause to handle potential zero denominators
-            rel_diff = np.divide(np.abs(r - r[i]), max_r_pair, out=np.zeros_like(r), where=max_r_pair > 1e-9)
-            rad_ok = (rel_diff < float(tol_rel_r)) & (max_r_pair > 1e-9)  # Ensure we don't match zero-radius points
-
-            ang_ok = (dots < cos_thr)  # 274
-            # Exclude self-comparison and points too close to center
-            valid_match = rad_ok & ang_ok & (np.arange(len(pts)) != i) & (r > 1e-6)
-            idx = np.where(valid_match)[0]  # 275
-            if idx.size == 0: continue  # 276
-            # Find the best antipodal match among valid candidates
-            j = idx[np.argmin(np.abs(dots[idx] + 1.0))]  # 277
-            yi, xi = pts[i, 0], pts[i, 1]  # 278
-            yj, xj = pts[j, 0], pts[j, 1]  # 279
-            mids.append(((yi + yj) / 2.0, (xi + xj) / 2.0))  # 280
-        if len(mids) < 4: break  # 281 Not enough pairs found
-        mids = np.array(mids, dtype=float)  # 282
-        # Use median to be robust against outliers
-        cy = float(np.median(mids[:, 0]));
-        cx = float(np.median(mids[:, 1]))  # 283
-    return CenterResult(cy=cy, cx=cx, method="antipodal-refined")  # 284
-
-
-# 285
-# -------------------------- GUI --------------------------  # 286
-class SAEDLauncherFrame(ttk.Frame):  # 287
-    (  # 288
-        "Launcher tab suitable for both the standalone application and notebooks.\n"  # 289
-    )  # 290
-
-    # 291
-    def __init__(self, master: tk.Misc, controller=None):  # 292
-        super().__init__(master)  # 293
-        self.controller = controller  # 294
-        self._scroll_canvas = None  # 295
-        self._scroll_window_id = None  # 296
-        self._build_ui()  # 297
-
-    # 298
-    def _get_default_output_path(self) -> str:
-        """Generates a default output path, avoiding existing directories."""
-        if getattr(sys, "frozen", False):
-            # For a compiled .exe, use the directory where it's located
-            base_dir = Path(sys.executable).parent
+    def _set_cursor_at_char_pos(self, char_index: int):
+        if 0 <= char_index < len(self.char_positions):
+            cursor_pos = self.char_positions[char_index]
         else:
-            # For development, use the current working directory or script dir
-            try:
-                base_dir = Path.cwd()
-            except OSError:
-                base_dir = Path(__file__).parent
+            cursor_pos = self.char_positions[-1] + 1
+        self.icursor(cursor_pos)
 
-        base_name = "saed_results"
-        output_path = base_dir / base_name
+    def _on_write(self, *_args):
+        current_value = self.var.get()
+        if current_value == self._last_value:
+            return
+        raw_content = self._get_raw_content()
+        self._format_to_mask(raw_content)
 
-        if not output_path.exists():
-            return str(output_path)
+    def get_key(self) -> str:
+        return self._get_raw_content()
 
-        # If the base path exists, find a new one by appending a number
-        counter = 1
-        while True:
-            new_name = f"{base_name}_{counter}"
-            new_path = base_dir / new_name
-            if not new_path.exists():
-                return str(new_path)
-            counter += 1
-            if counter > 999:  # Safety break
-                return str(base_dir / f"{base_name}_temp_{np.random.randint(1000)}")
 
-    def _build_ui(self):  # 299
-        outer = ttk.Frame(self)  # 300
-        outer.pack(fill=tk.BOTH, expand=True)  # 301
-        # 302
-        fixed = ttk.Frame(outer, padding=(16, 16, 16, 0))  # 303
-        fixed.pack(side=tk.TOP, fill=tk.X)  # 304
-        fixed.grid_columnconfigure(0, weight=1)  # 305
-        # 306
-        data_box = ttk.LabelFrame(fixed, text="Input data", padding=(12, 10, 12, 12))  # 307
-        data_box.grid(row=0, column=0, sticky="nsew")  # 308
-        # 309
-        data_box.grid_columnconfigure(1, weight=1)  # Make entry widgets resizable
-        # 312
-        ttk.Label(data_box, text="Image:").grid(row=0, column=0, sticky="w", padx=6, pady=4)  # 313
-        self.ent_img = ttk.Entry(data_box)  # 314
-        self.ent_img.grid(row=0, column=1, columnspan=2, sticky="we", padx=6, pady=4)  # 315
-        ttk.Button(data_box, text="Browse…", command=self._browse_img).grid(row=0, column=3, sticky="ew", padx=6,
-                                                                            pady=4)  # 316
-        # 317
-        ttk.Label(data_box, text="Output folder:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 318
-        self.ent_out = ttk.Entry(data_box)  # 319
-        self.ent_out.insert(0, self._get_default_output_path())  # 320
-        self.ent_out.grid(row=1, column=1, sticky="we", padx=6, pady=4)  # 321
-        # --- NEW: "Load Session" Button ---
-        ttk.Button(data_box, text="Load Session…", command=self._load_session).grid(row=1, column=2, sticky="ew",
-                                                                                    padx=6, pady=4)  # 322
-        ttk.Button(data_box, text="Choose…", command=self._browse_out).grid(row=1, column=3, sticky="ew", padx=6,
-                                                                            pady=4)  # 323
-        # 324
-        ttk.Label(data_box, text="Center X (optional):").grid(row=2, column=0, sticky="w", padx=6, pady=4)  # 325
-        self.ent_cx = ttk.Entry(data_box, width=12)  # 326
-        self.ent_cx.grid(row=2, column=1, sticky="w", padx=6, pady=4)  # 327
-        ttk.Label(data_box, text="Center Y:").grid(row=2, column=2, sticky="w", padx=6, pady=4)  # 328
-        self.ent_cy = ttk.Entry(data_box, width=12)  # 329
-        self.ent_cy.grid(row=2, column=3, sticky="w", padx=6, pady=4)  # 330
-        # 331
-        ttk.Label(  # 332
-            data_box,  # 333
-            text="Leave the coordinates empty to let the program find the center automatically. Use 'Load Session' to restore a previous state.",
-            # 334
-            wraplength=520,  # 335
-            foreground="#555555"  # 336
-        ).grid(row=3, column=0, columnspan=4, sticky="we", padx=6, pady=(0, 4))  # 337
-        # 338
-        pre_box = ttk.LabelFrame(fixed, text="Preprocessing", padding=(12, 10, 12, 12))  # 339
-        pre_box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))  # 340
-        pre_box.grid_columnconfigure(1, weight=1)  # 341
-        # 342
-        ttk.Label(pre_box, text="Mode:").grid(row=0, column=0, sticky="w", padx=6, pady=4)  # 343
-        self.cmb_pre = ttk.Combobox(  # 344
-            pre_box,  # 345
-            values=["No smoothing", "Standard", "CLAHE"],  # 346
-            state="readonly",  # 347
-        )  # 348
-        self.cmb_pre.current(0)  # 349
-        self.cmb_pre.grid(row=0, column=1, sticky="w", padx=6, pady=4)  # 350
-        self.cmb_pre.bind("<<ComboboxSelected>>", self._on_preproc_change)  # 351
-        # 352
-        ttk.Label(pre_box, text="CLAHE clipLimit / tile:").grid(row=1, column=0, sticky="w", padx=6, pady=4)  # 353
-        self.spn_clip = ttk.Spinbox(pre_box, from_=0.1, to=10.0, increment=0.1, width=8, justify="right")  # 354
-        self._set_spinbox_value(self.spn_clip, 1.5)  # 355
-        self.spn_clip.grid(row=1, column=1, sticky="w", padx=6, pady=4)  # 356
-        self.spn_tile = ttk.Spinbox(pre_box, from_=2, to=64, increment=1, width=8, justify="right")  # 357
-        self._set_spinbox_value(self.spn_tile, 8)  # 358
-        self.spn_tile.grid(row=1, column=2, sticky="w", padx=6, pady=4)  # 359
-        # 360
-        ttk.Label(  # 361
-            pre_box,  # 362
-            text="Select CLAHE for images with strong brightness variations. ClipLimit controls contrast, and tile size defines the local processing radius.",
-            # 363
-            wraplength=520,  # 364
-            foreground="#555555"  # 365
-        ).grid(row=2, column=0, columnspan=3, sticky="we", padx=6, pady=(2, 0))  # 366
-        # 367
-        scroll_host = ttk.Frame(outer)  # 368
-        scroll_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)  # 369
-        # 370
-        canvas = tk.Canvas(scroll_host, borderwidth=0, highlightthickness=0)  # 371
-        vscroll = ttk.Scrollbar(scroll_host, orient=tk.VERTICAL, command=canvas.yview)  # 372
-        scrollable = ttk.Frame(canvas, padding=(16, 12, 16, 12))  # 373
-        scrollable.grid_columnconfigure(0, weight=1)  # 374
-        # 375
-        self._scroll_canvas = canvas  # 376
-        self._scroll_window_id = canvas.create_window((0, 0), window=scrollable, anchor="nw")  # 377
-        canvas.configure(yscrollcommand=vscroll.set)  # 378
-        # 379
-        scrollable.bind(  # 380
-            "<Configure>",  # 381
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))  # 382
-        )  # 383
-        canvas.bind(  # 384
-            "<Configure>",  # 385
-            lambda e: canvas.itemconfigure(self._scroll_window_id, width=e.width)  # 386
-        )  # 387
-        # 388
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)  # 389
-        vscroll.pack(side=tk.RIGHT, fill=tk.Y)  # 390
-        # 391
-        scrollable.bind("<Enter>", self._activate_scroll)  # 392
-        scrollable.bind("<Leave>", self._deactivate_scroll)  # 393
-        canvas.bind("<Enter>", self._activate_scroll)  # 394
-        canvas.bind("<Leave>", self._deactivate_scroll)  # 395
-        # 396
-        detect_box = ttk.LabelFrame(scrollable, text="Detector and refinement", padding=(12, 10, 12, 12))  # 397
-        detect_box.grid(row=0, column=0, sticky="nsew")  # 398
-        detect_box.grid_columnconfigure(1, weight=1)  # 399
-        # 400
-        ttk.Label(  # 401
-            detect_box,  # 402
-            text="Peak threshold and search window",  # 403
-            font=("TkDefaultFont", 10, "bold")  # 404
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 405
-        self.spn_perc = self._spin_param(  # 406
-            detect_box, 1, "Detection percentile (%)", 99.0,  # 407
-            from_=80.0, to=100.0, increment=0.1, format_str="%.1f"  # 408
-        )  # 409
-        self.spn_merge_perc = self._spin_param(  # 410
-            detect_box, 2, "Intensity percentile for merging (%)", 95.0,  # 411
-            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 412
-        )  # 413
-        self.spn_merge_rad = self._spin_param(  # 414
-            detect_box, 3, "Peak merging radius (px)", 0,  # 415
-            from_=0, to=50, increment=1  # 416
-        )  # 417
-        self.spn_merge_tol = self._spin_param(  # 418
-            detect_box, 4, "Intensity similarity tolerance (%)", 10.0,  # 419
-            from_=0.0, to=100.0, increment=0.5, format_str="%.1f"  # 420
-        )  # 421
-        # --- MODIFIED: Replaced min_sep/max_area with min_area ---
-        self.spn_min_area = self._spin_param(  # 422
-            detect_box, 5, "Min. peak area (px)", 3,  # 423
-            from_=1, to=500, increment=1  # 424
-        )  # 425
-        self.spn_maxpts = self._spin_param(  # 426
-            detect_box, 6, "Maximum detected points", 6000,  # 427
-            from_=100, to=20000, increment=100  # 428
-        )  # 429
-        # 430
-        ttk.Separator(detect_box).grid(row=8, column=0, columnspan=2, sticky="ew", pady=(6, 8))  # 431
-        # 432
-        ttk.Label(  # 433
-            detect_box,  # 434
-            text="Center refinement",  # 435
-            font=("TkDefaultFont", 10, "bold")  # 436
-        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 437
-        self.spn_iters = self._spin_param(  # 438
-            detect_box, 10, "Center refinement iterations", 4,  # 439
-            from_=0, to=10, increment=1  # 440
-        )  # 441
-        self.spn_tolang = self._spin_param(  # 442
-            detect_box, 11, "Antipode tolerance (°)", 8.0,  # 443
-            from_=1.0, to=30.0, increment=0.5, format_str="%.1f"  # 444
-        )  # 445
-        self.spn_tolr = self._spin_param(  # 446
-            detect_box, 12, "Radius tolerance (relative)", 0.06,  # 447
-            from_=0.01, to=0.5, increment=0.01, format_str="%.2f"  # 448
-        )  # 449
-        # 450
-        ttk.Separator(detect_box).grid(row=13, column=0, columnspan=2, sticky="ew", pady=(6, 8))  # 451
-        # 452
-        ttk.Label(  # 453
-            detect_box,  # 454
-            text="Geometric filters",  # 455
-            font=("TkDefaultFont", 10, "bold")  # 456
-        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))  # 457
-        self.spn_dead = self._spin_param(  # 458
-            detect_box, 15, "Dead zone (px)", 0,  # 459
-            from_=0, to=500, increment=1  # 460
-        )  # 461
-        self.spn_search = self._spin_param(  # 462
-            detect_box, 16, "Search radius (px, 0 = unlimited)", 0,  # 463
-            from_=0, to=10000, increment=25  # 464
-        )  # 465
-        # 466
-        ttk.Label(  # 467
-            detect_box,  # 468
-            text="Use 'Min. peak area' to filter noise. Use 'Dead zone' to filter the central beam by its position.",
-            # 469
-            wraplength=520,  # 470
-            foreground="#555555"  # 471
-        ).grid(row=17, column=0, columnspan=2, sticky="we", padx=6, pady=(2, 0))  # 472
-        # 473
-        action_box = ttk.Frame(scrollable, padding=(0, 12, 0, 0))  # 474
-        action_box.grid(row=1, column=0, sticky="nsew")  # 475
-        action_box.grid_columnconfigure(0, weight=1)  # 476
-        # 477
-        ttk.Label(  # 478
-            action_box,  # 479
-            text="Review the parameters and press the button below to switch to interactive editing of detected points.",
-            # 480
-            wraplength=540,  # 481
-            justify="left"  # 482
-        ).grid(row=0, column=0, sticky="we", padx=4, pady=(0, 8))  # 483
-        # 484
-        ttk.Button(action_box, text="Open point editor", command=self._go_editor).grid(  # 485
-            row=1, column=0, sticky="ew", padx=4, pady=(0, 12)  # 486
-        )  # 487
-        # 488
-        filler_bg = ttk.Style().lookup("TFrame", "background") or self.winfo_toplevel().cget("background")  # 489
-        bottom_filler = tk.Frame(scrollable, height=56, bg=filler_bg)  # 490
-        bottom_filler.grid(row=2, column=0, sticky="ew")  # 491
-        bottom_filler.grid_propagate(False)  # 492
-        # 493
-        self._on_preproc_change(None)  # 494
+class LicenseDialog(tk.Toplevel):
+    """A custom dialog for entering and validating a license key."""
 
-    # 495
-    def _activate_scroll(self, _event):  # 496
-        if self._scroll_canvas is None:  # 497
-            return  # 498
-        self._scroll_canvas.bind_all("<MouseWheel>", self._on_scroll_mousewheel)  # 499
-        self._scroll_canvas.bind_all("<Button-4>", self._on_scroll_mousewheel)  # 500
-        self._scroll_canvas.bind_all("<Button-5>", self._on_scroll_mousewheel)  # 501
+    def __init__(self, parent, title, message):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title(title)
+        self.resizable(False, False)
+        self.configure(padx=24, pady=24)
+        self.result = None
+        ttk.Label(self, text=message, wraplength=360, justify="left").pack(anchor="w", pady=(0, 12))
+        self.entry = MaskedEntry(self, width=32, font=("Courier", 10))
+        self.entry.pack(fill=tk.X, pady=(4, 8))
+        self.entry.focus_set()
+        self.feedback_var = tk.StringVar(value="")
+        feedback_label = ttk.Label(self, textvariable=self.feedback_var, foreground="#aa0000", wraplength=360)
+        feedback_label.pack(anchor="w", pady=(0, 16))
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X)
+        ttk.Button(actions, text="Activate", command=self._on_activate, style="Accent.TButton").pack(side=tk.RIGHT)
+        ttk.Button(actions, text="Cancel", command=self._on_cancel).pack(side=tk.RIGHT, padx=(0, 8))
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.wait_window(self)
 
-    # 502
-    def _deactivate_scroll(self, _event):  # 503
-        if self._scroll_canvas is None:  # 504
-            return  # 505
-        self._scroll_canvas.unbind_all("<MouseWheel>")  # 506
-        self._scroll_canvas.unbind_all("<Button-4>")  # 507
-        self._scroll_canvas.unbind_all("<Button-5>")  # 508
+    def _on_activate(self):
+        key = self.entry.get_key()
+        if len(key) != 24:
+            self.feedback_var.set("Please fill in the entire license key.")
+            return
+        self.result = self.entry.var.get()
+        self.destroy()
 
-    # 509
-    def _on_scroll_mousewheel(self, event):  # 510
-        if self._scroll_canvas is None:  # 511
-            return  # 512
-        # Determine scroll direction and amount (platform-dependent)
-        delta = 0
-        if sys.platform == "win32":
-            delta = -int(event.delta / 120)
-        elif sys.platform == "darwin":  # macOS
-            delta = event.delta
-        elif event.num == 4:  # Linux scroll up
-            delta = -1
-        elif event.num == 5:  # Linux scroll down
-            delta = 1
+    def _on_cancel(self):
+        self.result = None
+        self.destroy()
 
-        if delta != 0:
-            self._scroll_canvas.yview_scroll(delta, "units")
 
-    def _on_preproc_change(self, _evt):  # 523
-        mode = self.cmb_pre.get()  # 524
-        clahe_enabled = (mode == "CLAHE")  # 525
-        state = "normal" if clahe_enabled else "disabled"  # 526
-        self.spn_clip.configure(state=state)  # 527
-        self.spn_tile.configure(state=state)  # 528
+def _resource_path(filename: str) -> Path:
+    """Return an absolute path to *filename* that works in frozen bundles."""
+    candidates: list[Path] = []
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir is not None:
+        candidates.append(Path(bundle_dir, filename))
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / filename)
+    candidates.append(MODULE_DIR / filename)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
 
-    # 529
-    def _spin_param(self, parent, row, label, default, *, from_, to, increment, format_str=None):  # 530
-        ttk.Label(parent, text=f"{label}:").grid(row=row, column=0, sticky="w", padx=6, pady=4)  # 531
-        spin = ttk.Spinbox(parent, from_=from_, to=to, increment=increment, width=10, justify="right")  # 532
-        if format_str:  # 533
-            spin.configure(format=format_str)  # 534
-        self._set_spinbox_value(spin, default)  # 535
-        spin.grid(row=row, column=1, sticky="w", padx=6, pady=4)  # 536
-        return spin  # 537
 
-    # 538
-    def _set_spinbox_value(self, spinbox: ttk.Spinbox, value):  # 539
-        try:  # 540
-            # Try setting directly first, works for simple values
-            spinbox.set(value)
-        except tk.TclError:  # 542
-            # Fallback: delete and insert if direct set fails (e.g., due to formatting)
-            try:
-                current_value = spinbox.get()
-                # Only update if the value is actually different to avoid unnecessary actions
-                if str(current_value) != str(value):
-                    spinbox.delete(0, tk.END)
-                    spinbox.insert(0, str(value))
-            except (tk.TclError, ValueError):
-                # Handle cases where get() might fail or value cannot be stringified easily
-                print(f"Warning: Could not set spinbox value to {value}")
+def _import_module(name: str):
+    """Import helper that falls back to sibling files when bundlers miss them."""
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        base_candidates = []
+        frozen_base = getattr(sys, "_MEIPASS", None)
+        if frozen_base is not None:
+            base_candidates.append(Path(frozen_base))
+        base_candidates.append(Path(__file__).resolve().parent)
 
-    # 545
-    def _browse_img(self):  # 546
-        p = filedialog.askopenfilename(title="Select image",
-                                       filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp"),
-                                                  ("All", "*.*")])  # 547
-        if p: self.ent_img.delete(0, tk.END); self.ent_img.insert(0, p)  # 548
+        def _attempt_load(module_path: Path, *, package_dir: Path | None = None):
+            spec_kwargs = {}
+            if package_dir is not None:
+                spec_kwargs["submodule_search_locations"] = [str(package_dir)]
+            spec = importlib.util.spec_from_file_location(name, module_path, **spec_kwargs)
+            if spec is None or spec.loader is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
+            return module
 
-    # 549
-    def _browse_out(self):  # 550
-        p = filedialog.askdirectory(title="Select output folder", mustexist=False)  # Allow creating new folders
-        if p: self.ent_out.delete(0, tk.END); self.ent_out.insert(0, p)  # 552
+        for base in base_candidates:
+            for suffix in (".py", ".pyc"):
+                candidate = base / f"{name}{suffix}"
+                if candidate.exists():
+                    module = _attempt_load(candidate)
+                    if module is not None:
+                        return module
+            package_dir = base / name
+            if package_dir.is_dir():
+                for suffix in (".py", ".pyc"):
+                    init_file = package_dir / f"__init__{suffix}"
+                    if init_file.exists():
+                        module = _attempt_load(init_file, package_dir=package_dir)
+                        if module is not None:
+                            return module
+        raise exc
 
-    # 553
-    # --- NEW: Load Session Method ---
-    def _load_session(self):
-        """Asks user for a session file and tells the controller to load it."""
-        filepath = filedialog.askopenfilename(
-            title="Load SAED Session",
-            filetypes=[("SAED Session", "saed_session.json"), ("All files", "*.*")]
-        )
-        if not filepath or not self.controller:
+
+class LicenseManager:
+    """Handle trial and permanent license state."""
+    REG_PATH = r"Software\SAEDSuite"
+    REG_KEY_TRIAL_START = "TrialStartDate"
+    REG_KEY_LICENSE = "LicenseKey"
+
+    def __init__(self, *, trial_days: int = TRIAL_DAYS):
+        self.trial_days = trial_days
+        self._data = self._load()
+
+    def _default_data(self) -> dict[str, Optional[str]]:
+        return {"trial_start": self._now().isoformat(), "license_key": None}
+
+    def _load(self) -> dict[str, Optional[str]]:
+        if winreg is None:
+            return self._default_data()
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.REG_PATH, 0, winreg.KEY_READ)
+            trial_start_str, _ = winreg.QueryValueEx(key, self.REG_KEY_TRIAL_START)
+            license_key_str, _ = winreg.QueryValueEx(key, self.REG_KEY_LICENSE)
+            winreg.CloseKey(key)
+            return {"trial_start": trial_start_str, "license_key": license_key_str or None}
+        except FileNotFoundError:
+            data = self._default_data()
+            self._save(data)
+            return data
+        except Exception:
+            # Handle potential registry read errors gracefully
+            print("Warning: Could not read license data from registry. Using defaults.")
+            data = self._default_data()
+            # Attempt to save defaults back, might fail if permissions are wrong
+            self._save(data)
+            return data
+
+
+    def _save(self, data: dict[str, Optional[str]]) -> None:
+        if winreg is None:
             return
         try:
-            self.controller.load_session_from_file(filepath)
-            if self.controller:
-                self.controller.set_status(f"Session loaded from {Path(filepath).name}")
-        except FileNotFoundError:
-            messagebox.showerror("Load Error", "Session file not found.")
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.REG_PATH)
+            trial_start = data.get("trial_start") or self._now().isoformat()
+            winreg.SetValueEx(key, self.REG_KEY_TRIAL_START, 0, winreg.REG_SZ, trial_start)
+            license_key = data.get("license_key") or ""
+            winreg.SetValueEx(key, self.REG_KEY_LICENSE, 0, winreg.REG_SZ, license_key)
+            winreg.CloseKey(key)
         except Exception as e:
-            messagebox.showerror("Load Error", f"Failed to load session:\n{e}")
+            print(f"Warning: Could not save license data to registry: {e}")
 
-    # --- NEW: get_state and set_state Methods ---
-    def get_state(self) -> Dict[str, Any]:
-        """Returns a serializable dictionary of the launcher's settings."""
-        return {
-            "image_path": self.ent_img.get(),
-            "output_folder": self.ent_out.get(),
-            "center_x": self.ent_cx.get(),
-            "center_y": self.ent_cy.get(),
-            "preproc_mode": self.cmb_pre.get(),
-            "clahe_clip": self.spn_clip.get(),
-            "clahe_tiles": self.spn_tile.get(),
-            "detect_perc": self.spn_perc.get(),
-            "merge_perc": self.spn_merge_perc.get(),
-            "merge_radius": self.spn_merge_rad.get(),
-            "merge_tol": self.spn_merge_tol.get(),
-            "min_area": self.spn_min_area.get(),  # <-- MODIFIED
-            "max_pts": self.spn_maxpts.get(),
-            "refine_iters": self.spn_iters.get(),
-            "tol_angle": self.spn_tolang.get(),
-            "tol_radius": self.spn_tolr.get(),
-            "dead_zone": self.spn_dead.get(),
-            "search_radius": self.spn_search.get(),
-        }
+    def _now(self) -> datetime:
+        return datetime.utcnow()
 
-    def set_state(self, state: Dict[str, Any]):
-        """Restores the launcher's settings from a dictionary."""
-
-        def _set_entry(widget, value):
-            if value is not None and isinstance(widget, (ttk.Entry, tk.Entry)):
-                widget.delete(0, tk.END)
-                widget.insert(0, str(value))
-
-        _set_entry(self.ent_img, state.get("image_path"))
-        _set_entry(self.ent_out, state.get("output_folder"))
-        _set_entry(self.ent_cx, state.get("center_x"))
-        _set_entry(self.ent_cy, state.get("center_y"))
-
-        # Set Combobox value safely
-        preproc_mode = state.get("preproc_mode")
-        if preproc_mode and isinstance(self.cmb_pre, ttk.Combobox):
-            if preproc_mode in self.cmb_pre['values']:
-                self.cmb_pre.set(preproc_mode)
-            else:
-                print(f"Warning: Saved preproc_mode '{preproc_mode}' not found in options. Using default.")
-                self.cmb_pre.current(0)  # Fallback to first option
-        elif isinstance(self.cmb_pre, ttk.Combobox):
-            self.cmb_pre.current(0)  # Default if not in state
-
-        self._on_preproc_change(None)  # Update UI based on new mode
-
-        # Set Spinbox values safely, providing defaults
-        self._set_spinbox_value(self.spn_clip, state.get("clahe_clip", 1.5))
-        self._set_spinbox_value(self.spn_tile, state.get("clahe_tiles", 8))
-        self._set_spinbox_value(self.spn_perc, state.get("detect_perc", 99.0))
-        self._set_spinbox_value(self.spn_merge_perc, state.get("merge_perc", 95.0))
-        self._set_spinbox_value(self.spn_merge_rad, state.get("merge_radius", 0))
-        self._set_spinbox_value(self.spn_merge_tol, state.get("merge_tol", 10.0))
-        self._set_spinbox_value(self.spn_min_area, state.get("min_area", 3))  # <-- MODIFIED
-        self._set_spinbox_value(self.spn_maxpts, state.get("max_pts", 6000))
-        self._set_spinbox_value(self.spn_iters, state.get("refine_iters", 4))
-        self._set_spinbox_value(self.spn_tolang, state.get("tol_angle", 8.0))
-        self._set_spinbox_value(self.spn_tolr, state.get("tol_radius", 0.06))
-        self._set_spinbox_value(self.spn_dead, state.get("dead_zone", 0))
-        self._set_spinbox_value(self.spn_search, state.get("search_radius", 0))
-
-    def _go_editor(self):
+    def _parse_timestamp(self, value: Optional[str]) -> datetime:
+        if not value: return self._now()
         try:
-            # --- Ensure paths are absolute ---
-            image_path_str = self.ent_img.get()
-            output_dir_str = self.ent_out.get()
+            # Handle potential timezone info if present (though unlikely from registry)
+            if value.endswith('Z'):
+                 value = value[:-1] + '+00:00'
+            return datetime.fromisoformat(value)
+        except ValueError:
+             # Fallback if the format is somehow corrupted
+            print(f"Warning: Corrupted trial start date '{value}'. Resetting trial.")
+            return self._now()
 
-            if not image_path_str:
-                messagebox.showerror("Error", "Please select an image file.");
-                return
-            if not output_dir_str:
-                messagebox.showerror("Error", "Please specify an output folder.");
-                return
 
-            image_path = Path(image_path_str).expanduser().resolve()  # Get absolute path
-            outdir = Path(output_dir_str).expanduser().resolve();  # Get absolute path
-            outdir.mkdir(parents=True, exist_ok=True)
+    def _normalize_key(self, key: str) -> str:
+        cleaned = key.replace("-", "").replace(" ", "").upper()
+        if not cleaned:
+            raise ValueError("Empty license key")
+        # Ensure it fits the XXXX-... format even if input is slightly off
+        return "-".join(textwrap.wrap(cleaned.ljust(24, 'X')[:24], 4))
 
-            if not image_path.exists():
-                messagebox.showerror("Error", f"Image not found at: {image_path}");
-                return
 
-            # --- Get parameters (as before) ---
-            perc = float(self.spn_perc.get())
-            merge_apply_perc = float(self.spn_merge_perc.get())
-            merge_radius = float(self.spn_merge_rad.get())
-            merge_tol = float(self.spn_merge_tol.get())
-            # --- MODIFIED: Get new area parameters ---
-            min_area = int(float(self.spn_min_area.get()))
-            max_pts = int(float(self.spn_maxpts.get()))
-            iters = int(float(self.spn_iters.get()))
-            tol_ang = float(self.spn_tolang.get())
-            tol_relr = float(self.spn_tolr.get())
-            dead_r = float(self.spn_dead.get())
-            search_r = float(self.spn_search.get())
+    def _validate_license_key(self, key: str) -> bool:
+        cleaned = key.replace("-", "").upper()
+        if len(cleaned) != 24 or any(char not in "0123456789ABCDEF" for char in cleaned):
+            return False
+        random_part = cleaned[:16]
+        checksum = cleaned[16:]
+        expected = hmac.new(
+            LICENSE_SECRET.encode("utf-8"), random_part.encode("utf-8"), hashlib.sha256,
+        ).hexdigest()[:8].upper()
+        return secrets.compare_digest(checksum, expected)
 
-            # --- preprocessing ---
-            pre_mode = self.cmb_pre.get()
-            if pre_mode == "No smoothing":
-                settings = PreprocSettings(mode="raw")
-            elif pre_mode == "Standard":
-                settings = PreprocSettings(mode="standard")
-            else:  # CLAHE
-                clip = float(self.spn_clip.get())
-                tiles = int(float(self.spn_tile.get()))
-                settings = PreprocSettings(mode="clahe", clahe_clip=clip, clahe_tiles=tiles)
+    def has_valid_license(self) -> bool:
+        key = self._data.get("license_key")
+        if not key: return False
+        return self._validate_license_key(key)
 
-            # --- Load image ---
+    def register_license_key(self, key: str) -> None:
+        normalized = self._normalize_key(key)
+        if not self._validate_license_key(normalized):
+            raise ValueError("Invalid license key")
+        self._data["license_key"] = normalized
+        self._data["licensed_at"] = self._now().isoformat() # Optional: record activation time
+        self._save(self._data)
+
+    def clear_license(self) -> None:
+        # Reset trial start date as well when clearing license
+        self._data = self._default_data()
+        self._save(self._data)
+
+
+    def trial_start(self) -> datetime:
+        return self._parse_timestamp(self._data.get("trial_start"))
+
+    def trial_expiration(self) -> datetime:
+        return self.trial_start() + timedelta(days=self.trial_days)
+
+    def is_trial_expired(self) -> bool:
+        if self.has_valid_license(): return False
+        return self._now() >= self.trial_expiration()
+
+    def trial_days_remaining(self) -> int:
+        if self.has_valid_license(): return 0 # No trial days remaining if licensed
+        expiration = self.trial_expiration()
+        now = self._now()
+        if now >= expiration: return 0
+        remaining = expiration - now
+        # Calculate remaining days, rounding up
+        return remaining.days + (1 if remaining.seconds > 0 or remaining.microseconds > 0 else 0)
+
+
+    def status_message(self) -> str:
+        if self.has_valid_license():
+            return "Permanent license activated. Thank you for supporting the project!"
+        expiration = self.trial_expiration()
+        remaining = self.trial_days_remaining()
+        if remaining <= 0:
+            return "Trial expired. Please enter a license key to continue using the application."
+        plural = "day" if remaining == 1 else "days"
+        # Show expiration date for clarity
+        return (
+            f"Trial mode: {remaining} {plural} remaining (expires on {expiration.date():%Y-%m-%d}). "
+            "Enter a license key to unlock the full version permanently."
+        )
+
+
+
+if TYPE_CHECKING:
+    from temn import SAEDLauncherFrame
+    from saed_editor import PointEditor
+    from fibonachi_analysis import FibonacciAnalysisFrame
+else:
+    try:
+        from temn import SAEDLauncherFrame
+        from saed_editor import PointEditor
+        from fibonachi_analysis import FibonacciAnalysisFrame
+    except ModuleNotFoundError:
+        SAEDLauncherFrame = _import_module("temn").SAEDLauncherFrame
+        PointEditor = _import_module("saed_editor").PointEditor
+        FibonacciAnalysisFrame = _import_module("fibonachi_analysis").FibonacciAnalysisFrame
+
+
+class PipelineController:
+    """Connect the tabs and handle stage switching."""
+
+    def __init__(self, parent: tk.Misc, *, status_callback=None, license_manager: LicenseManager):
+        self.parent = parent
+        self._status_callback = status_callback or (lambda _msg: None)
+        self.license_manager = license_manager
+        self.notebook = ttk.Notebook(parent)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        self.launcher = SAEDLauncherFrame(self.notebook, controller=self)
+        self.editor = PointEditor(self.notebook, controller=self)
+        self.analysis = FibonacciAnalysisFrame(
+            self.notebook, controller=self, auto_load=False, license_manager=self.license_manager
+        )
+
+        self.notebook.add(self.launcher, text="Launcher")
+        self.notebook.add(self.editor, text="Editor")
+        self.notebook.add(self.analysis, text="Analysis")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    def set_status(self, message: str) -> None:
+        self._status_callback(message)
+
+    def _on_tab_changed(self, _event) -> None:
+        current = self.notebook.select()
+        if current:
             try:
-                arr = load_grayscale_with_preproc(image_path, settings)
-            except RuntimeError as cv_err:  # Catch OpenCV missing specifically
-                messagebox.showerror("Dependency Error", str(cv_err))
-                return  # Stop processing if required dependency is missing
-            except Exception as img_load_err:
-                messagebox.showerror("Image Error", f"Failed to load or process image:\n{img_load_err}")
-                return  # Stop processing
-
-            mode = settings.mode
-            preproc_payload = settings.to_json()
-
-            # --- Center calculation ---
-            cx_txt = self.ent_cx.get().strip();
-            cy_txt = self.ent_cy.get().strip()
-            if cx_txt and cy_txt:
-                try:
-                    center0 = CenterResult(cy=float(cy_txt), cx=float(cx_txt), method="user")
-                except ValueError:
-                    messagebox.showwarning("Input Warning", "Invalid center coordinates. Using automatic center.")
-                    center0 = geometric_midpoint(arr)
-            else:
-                center0 = geometric_midpoint(arr)
-
-            # --- Peak detection and refinement ---
-            # --- MODIFIED: Call new function ---
-            pts = detect_spots_by_centroid(
-                arr, perc=perc, min_area=min_area, max_spots=max_pts
-            )
-
-            if len(pts) == 0:
-                print("Warning: No spots detected initially.")  # Use print for non-critical warning
-                # Optionally try lower percentile if no spots found
-                lower_perc = max(85.0, perc - 5.0)  # Example fallback
-                print(f"Retrying spot detection with percentile {lower_perc:.1f}%...")
-                # --- MODIFIED: Call new function in fallback ---
-                pts = detect_spots_by_centroid(
-                    arr, perc=lower_perc, min_area=min_area, max_spots=max_pts
-                )
-                if len(pts) == 0:
-                    messagebox.showwarning("Detection Warning",
-                                           "No spots detected even with lower threshold. Proceeding without points.")
-
-            # Refine center even if few points, refine_center_antipodal handles low point counts
-            center = refine_center_antipodal((center0.cy, center0.cx), pts, tol_ang_deg=tol_ang, tol_rel_r=tol_relr,
-                                             iters=iters)
-
-            # --- Geometric filters ---
-            if (dead_r > 0 or search_r > 0) and len(pts) > 0:
-                dy = pts[:, 0] - center.cy;
-                dx = pts[:, 1] - center.cx;
-                r = np.hypot(dx, dy)
-                mask = np.ones(len(pts), dtype=bool)
-                if dead_r > 0:   mask &= (r >= dead_r)
-                if search_r > 0: mask &= (r <= search_r)
-                pts = pts[mask]
-
-            # --- Merging ---
-            if len(pts) > 0 and merge_radius > 0:
-                merge_threshold = None
-                if merge_apply_perc > 0.0:
-                    # Ensure percentile calculation doesn't fail if pts[:, 2] is constant or empty
-                    if len(np.unique(pts[:, 2])) > 1:
-                        try:
-                            merge_threshold = float(np.percentile(pts[:, 2], merge_apply_perc))
-                        except IndexError:  # Handle empty pts array after filtering
-                            pass
-                    elif len(pts) > 0:
-                        merge_threshold = float(pts[0, 2] * (merge_apply_perc / 100.0))  # Fallback if constant
-
-                pts = merge_spots_by_intensity(
-                    pts,
-                    radius=merge_radius,
-                    tol_percent=merge_tol,
-                    min_intensity=merge_threshold,
-                    line_image=arr,  # Pass original preprocessed image for line check
-                )
-
-            # --- Create saed_input.json in the output directory ---
-            points_list = [{"y": float(y), "x": float(x), "intensity": float(v)} for (y, x, v) in pts.tolist()]
-            saed_input_data = {
-                "image": str(image_path),  # Save absolute path
-                "preproc_mode": mode,
-                "preproc": preproc_payload,
-                "center": {"x": float(center.cx), "y": float(center.cy), "method": center.method},
-                "radii": {"dead": float(dead_r), "search": float(search_r)},
-                "points": points_list
-            }
-            saed_input_path = outdir / "saed_input.json"  # Define path in output dir
-            saed_input_path.write_text(json.dumps(saed_input_data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            # --- Launch the editor via controller ---
-            if self.controller is not None:
-                try:
-                    self.controller.open_editor(saed_input_path)  # Pass the correct path
-                except Exception as exc:
-                    messagebox.showerror("Error", f"Failed to open the editor tab:\n{exc}")
-            else:
-                # Fallback: Launch external editor (ensure path handling is correct here too if used)
-                # ... (external launch code - needs similar path care) ...
-                messagebox.showwarning("Standalone Mode",
-                                       "Running in standalone mode. Editor will open externally if available.")
-
-            # --- Save center log (optional service info) ---
-            try:
-                (outdir / "center_init.json").write_text(json.dumps({
-                    "initial": {"x": center0.cx, "y": center0.cy, "method": center0.method},
-                    "refined": {"x": center.cx, "y": center.cy, "method": center.method},  # Use refined method name
-                    "dead_zone_px": dead_r,
-                    "search_radius_px": search_r,
-                    "preproc_mode": mode,
-                    "preproc": preproc_payload,
-                    "image_size": {"H": int(arr.shape[0]), "W": int(arr.shape[1])}
-                }, indent=2), encoding="utf-8")
-            except Exception as log_err:
-                print(f"Warning: Could not save center_init.json - {log_err}")
+                tab_text = self.notebook.tab(current, "text")
+                self.set_status(f"Opened tab: {tab_text}")
+            except tk.TclError: # Handle case where tab might be briefly invalid during changes
+                self.set_status("Switching tabs...")
 
 
+    def open_editor(self, saed_json_path: Path | str) -> None:
+        path = Path(saed_json_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Editor input file not found: {path}")
+        try:
+            self.editor.load_input_json(path, push_undo=False)
+            self.notebook.select(self.editor) # Switch to editor tab
+            self.set_status(f"Editor: Loaded {path.name}")
+        except Exception as exc:
+            messagebox.showerror("Error", f"Failed to load data into the editor:\n{exc}")
+
+    def open_analysis(
+        self,
+        payload_path: Path | str,
+        image_path: Optional[Path | str], # These might be redundant if payload has all info
+        spots_json: Optional[Path | str], # These might be redundant if payload has all info
+    ) -> None:
+        path = Path(payload_path)
+        if not path.exists():
+             raise FileNotFoundError(f"Analysis input file not found: {path}")
+        try:
+            # Pass the main payload path to load_json
+            self.analysis.load_json(path)
+            self.notebook.select(self.analysis) # Switch to analysis tab
+            self.set_status(f"Analysis: Loaded {path.name}")
+        except Exception as exc:
+            messagebox.showerror("Error", f"Failed to load data into the analyzer:\n{exc}")
+
+
+    # --- Session Save/Load Methods ---
+
+    def save_session(self, filepath: Path | str) -> None:
+        """Collect state from all tabs and save to a JSON file."""
+        state = {
+            'launcher': self.launcher.get_state(),
+            'editor': self.editor.get_state(),
+            'analysis': self.analysis.get_state(),
+            'active_tab': self.notebook.index(self.notebook.select()) # Save current tab index
+        }
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+            self.set_status(f"Session saved to {Path(filepath).name}")
         except Exception as e:
-            messagebox.showerror("Processing Error", f"An unexpected error occurred during processing:\n{e}")
+            messagebox.showerror("Save Error", f"Could not write session file:\n{e}")
+            raise # Re-raise for the caller to know
 
 
-class SAEDApp(tk.Tk):  # 767
-    # 768
-    (  # 769
-        "Backwards-compatible standalone application using the tab frame.\n"  # 770
-    )  # 771
+    def load_session_from_file(self, filepath: Path | str) -> None:
+        """Load state from JSON and apply to all tabs."""
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"Session file not found: {path}")
 
-    # 772
-    def __init__(self):  # 773
-        super().__init__()  # 774
-        # 775
-        self.title("SAED Symmetry – Launcher")  # 776
-        # 777
-        self.geometry("980x680")  # 778
-        # 779
-        self.resizable(True, False)  # 780
-        # 781
-        frame = SAEDLauncherFrame(self)  # 782
-        # 783
-        frame.pack(fill=tk.BOTH, expand=True)  # 784
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+
+            # --- Critical Order: Set launcher state FIRST ---
+            # This ensures the output path is set before other modules might need it
+            if 'launcher' in state:
+                self.launcher.set_state(state['launcher'])
+            else:
+                 messagebox.showwarning("Load Warning", "Session file missing 'launcher' state. Some settings may be default.")
 
 
-# 785
-if __name__ == "__main__":  # 786
-    SAEDApp().mainloop()  # 787
+            # Now load editor and analysis state
+            if 'editor' in state:
+                self.editor.set_state(state['editor'])
+            else:
+                 messagebox.showwarning("Load Warning", "Session file missing 'editor' state. Editor may be empty.")
+                 self.editor.set_state({}) # Clear editor state if missing
+
+
+            if 'analysis' in state:
+                self.analysis.set_state(state['analysis'])
+            else:
+                 messagebox.showwarning("Load Warning", "Session file missing 'analysis' state. Analysis tab may be empty.")
+                 self.analysis.set_state({}) # Clear analysis state if missing
+
+
+            # Restore the active tab
+            active_tab_index = state.get('active_tab', 0)
+            try:
+                # Ensure the index is valid before selecting
+                if 0 <= active_tab_index < self.notebook.index('end'):
+                    self.notebook.select(active_tab_index)
+                else:
+                    self.notebook.select(0) # Fallback to first tab
+            except tk.TclError:
+                self.notebook.select(0) # Fallback on error
+
+            self.set_status(f"Session loaded from {path.name}")
+
+        except json.JSONDecodeError as e:
+            messagebox.showerror("Load Error", f"Session file is corrupted or invalid JSON:\n{e}")
+            raise
+        except Exception as e:
+            messagebox.showerror("Load Error", f"An unexpected error occurred while loading the session:\n{e}")
+            raise # Re-raise for debugging
+
+
+def _show_splash(
+    root: tk.Tk,
+    *,
+    logo_path: Path | str | None = None,
+    duration_ms: int = 3000,
+    background: str = "#59c6f1", # This is the argument with the default value
+) -> None:
+    if duration_ms <= 0:
+        root.deiconify()
+        return
+
+    splash = tk.Toplevel(root)
+    splash.overrideredirect(True)
+    # --- FIX: Use the 'background' argument directly ---
+    splash.configure(background=background)
+    frame = tk.Frame(splash, background=background) # Also use it here
+    # --- End FIX ---
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    logo_image = None
+    if logo_path is not None:
+        try:
+            logo_file = Path(logo_path)
+            if logo_file.exists():
+                if Image is not None and ImageTk is not None:
+                    with Image.open(logo_file) as pil_image:
+                        # Optional: Resize if needed, e.g., pil_image.thumbnail((width, height))
+                        logo_image = ImageTk.PhotoImage(pil_image)
+                else:
+                    # Fallback for systems without Pillow, might not handle all formats
+                    logo_image = tk.PhotoImage(file=str(logo_file))
+            else:
+                 print(f"Warning: Splash logo not found at {logo_file}")
+        except Exception as e: # Catch potential errors from Image.open or tk.PhotoImage
+            print(f"Warning: Could not load splash logo: {e}")
+            logo_image = None # Ensure it's None on failure
+
+
+    if logo_image is not None:
+        logo_label = tk.Label(frame, image=logo_image, background=background)
+        logo_label.image = logo_image # Keep a reference!
+        logo_label.pack(padx=32, pady=24)
+    else:
+        # Fallback text if logo fails or isn't provided
+        tk.Label(
+            frame, text="SAED Symmetry\nLaunching…", justify="center", background=background,
+            foreground="#ffffff", font=("TkDefaultFont", 18, "bold"), padx=36, pady=28,
+        ).pack()
+
+    splash.update_idletasks() # Ensure dimensions are calculated
+    width = splash.winfo_reqwidth()
+    height = splash.winfo_reqheight()
+    screen_width = splash.winfo_screenwidth()
+    screen_height = splash.winfo_screenheight()
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
+    splash.geometry(f"{width}x{height}+{x}+{y}") # Center the splash screen
+
+    def _close_splash() -> None:
+        try:
+            if splash.winfo_exists():
+                splash.destroy()
+            if root.winfo_exists(): # Check if main window still exists
+                root.deiconify() # Show main window
+        except tk.TclError:
+             pass # Ignore errors if widgets are already destroyed
+
+
+    # Ensure the close function runs even if the app closes early
+    splash.after(duration_ms, _close_splash)
+    root.protocol("WM_DELETE_WINDOW", lambda: (_close_splash(), root.destroy())) # Handle main window close during splash
+
+
+class TabbedPipelineApp(tk.Tk):
+    """Main window containing every stage of the workflow."""
+
+    def __init__(self, license_manager: LicenseManager, *, show_initially: bool = True):
+        super().__init__()
+        self.license_manager = license_manager
+        if not show_initially:
+            self.withdraw() # Hide main window initially
+        self.title("SAED Symmetry — Suite")
+        self.geometry("1520x980")
+        self.resizable(True, True)
+
+        # --- Style Configuration ---
+        style = ttk.Style(self)
+        available_themes = style.theme_names()
+        # Prefer 'clam', 'alt', 'default' in that order
+        preferred_themes = ['clam', 'alt', 'default']
+        for theme in preferred_themes:
+             if theme in available_themes:
+                  try:
+                       style.theme_use(theme)
+                       break
+                  except tk.TclError:
+                       continue
+        # Define custom styles
+        style.configure("Header.TLabel", font=("TkDefaultFont", 18, "bold"))
+        style.configure("Subheader.TLabel", font=("TkDefaultFont", 11))
+        style.configure("Byline.TLabel", font=("TkDefaultFont", 10, "italic"), foreground="#555555")
+        style.configure("Accent.TButton", font=("TkDefaultFont", 10, "bold"))
+        style.configure("TNotebook", padding=(12, 10))
+        style.configure("TNotebook.Tab", padding=(16, 8))
+        style.configure("License.TLabel", font=("TkDefaultFont", 10))
+
+
+        # --- Header ---
+        header = ttk.Frame(self, padding=(20, 18, 20, 12))
+        header.pack(side=tk.TOP, fill=tk.X)
+        header.grid_columnconfigure(0, weight=1) # Allow title label to expand
+        header.grid_columnconfigure(1, weight=0) # Column for byline
+        header.grid_columnconfigure(2, weight=0) # Column for test button
+        header.grid_columnconfigure(3, weight=0) # Column for help button
+
+        ttk.Label(header, text="SAED Symmetry — Suite", style="Header.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header, text="A single pipeline for electron diffraction processing from loading to analysis.",
+            style="Subheader.TLabel", wraplength=720, justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(header, text="by RL 9-11 2025 v2.61 ", style="Byline.TLabel").grid(
+            row=0, column=1, rowspan=2, sticky="ne", padx=(12, 0)
+        )
+
+        # --- Test Close Logic Button (moved here) ---
+        # test_close_button = ttk.Button(header, text="Test Close Logic", command=self._on_close_window) # УДАЛЕНО ДЛЯ ЧИСТОТЫ
+        # test_close_button.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(12, 0))                 # УДАЛЕНО ДЛЯ ЧИСТОТЫ
+        # --- End Move ---
+
+        ttk.Button(header, text="Help", command=self._show_help).grid(
+            row=0, column=3, rowspan=2, sticky="ne", padx=(12, 0) # Используем column=3
+        )
+
+        # --- License Info ---
+        self.license_label = ttk.Label(header, text="", style="License.TLabel", wraplength=720, justify="left")
+        self.license_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0)) # Spans first 2 columns
+        self.license_button = ttk.Button(
+            header, text="Enter License Key", command=self._prompt_for_license, style="Accent.TButton",
+        )
+        # Place license button in the last column, aligned right
+        self.license_button.grid(row=2, column=3, sticky="e", padx=(12, 0), pady=(12, 0)) # Используем column=3
+
+
+        # --- Main Content Area (Tabs) ---
+        content = ttk.Frame(self, padding=(20, 0, 20, 12))
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # --- Status Bar ---
+        self.status_var = tk.StringVar(value="Ready")
+        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(20, 8), relief=tk.SUNKEN)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # --- Initialize Controller (and its tabs) ---
+        self.controller = PipelineController(content, status_callback=self._update_status, license_manager=self.license_manager)
+        self.controller.set_status("Opened tab: Launcher") # Initial status
+
+        # Refresh license banner after controller is initialized
+        self._refresh_license_banner()
+
+        # --- Bind save/close events ---
+        self.bind_all("<Control-s>", self._on_save_shortcut)
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
+        # print("DEBUG: WM_DELETE_WINDOW protocol handler SET") # УДАЛЕНО ДЛЯ ЧИСТОТЫ
+
+
+    def _update_status(self, message: str) -> None:
+        self.status_var.set(message)
+
+    def _refresh_license_banner(self) -> None:
+        message = self.license_manager.status_message()
+        self.license_label.configure(text=message)
+        # Change button text based on license status
+        if self.license_manager.has_valid_license():
+            self.license_button.configure(text="Update License")
+        else:
+            self.license_button.configure(text="Enter License Key")
+
+
+    def _prompt_for_license(self) -> None:
+        prompt_message = "Enter the permanent license key provided by the publisher:"
+        dialog = LicenseDialog(self, "License Key", prompt_message)
+        key = dialog.result # This will be None if cancelled
+        if key is None:
+            self._update_status("License entry cancelled.")
+            return
+        try:
+            self.license_manager.register_license_key(key)
+            messagebox.showinfo("License Key", "License activated successfully. Enjoy the full version!")
+            self._update_status("License activated.")
+        except ValueError:
+            messagebox.showerror("License Key", "The provided license key is invalid. Please try again.")
+            self._update_status("Invalid license key entered.")
+
+        self._refresh_license_banner() # Update banner regardless of success
+
+
+    def _show_help(self) -> None:
+        help_window = tk.Toplevel(self)
+        help_window.title("About the application")
+        help_window.transient(self) # Make it behave like a dialog relative to the main window
+        help_window.grab_set() # Prevent interaction with main window while help is open
+        help_window.resizable(False, False)
+
+        frame = ttk.Frame(help_window, padding=(20, 16))
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        message = (
+            "This application provides a workflow for SAED pattern analysis:\n\n"
+            "1.  **Launcher:** Load an image, set preprocessing options, define center/radii (or use auto-detection), and generate initial points.\n"
+            "2.  **Editor:** Manually refine the detected points (add, delete, merge, measure distances) and adjust the center overlay.\n"
+            "3.  **Analysis:** Perform symmetry analysis based on the refined points, focusing on Fibonacci chains and polygon properties.\n\n"
+            "Use **Ctrl+S** to save the current state (settings, points, analyses) to a `saed_session.json` file in the output folder. Use **Load Session...** in the Launcher to restore a previous state."
+        )
+        ttk.Label(frame, text=message, justify="left", wraplength=480).pack(anchor="w")
+
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 8))
+
+        ttk.Label(frame, text="Support the project:").pack(anchor="w", pady=(0, 2))
+        donation_link = "https://donatello.to/Roynik"
+        link_label = tk.Label(
+            frame, text=donation_link, fg="#1a0dab", cursor="hand2",
+            font=("TkDefaultFont", 10, "underline"), justify="left",
+        )
+        link_label.pack(anchor="w")
+        link_label.bind("<Button-1>", lambda _event: webbrowser.open_new_tab(donation_link))
+
+        # Close button at the bottom right
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill=tk.X, pady=(20, 0))
+        ttk.Button(button_frame, text="Close", command=help_window.destroy).pack(side=tk.RIGHT)
+
+
+    # --- Session Save/Load Handlers ---
+
+    # <<< НАЧАЛО _on_save_shortcut БЕЗ ОТЛАДКИ >>>
+    def _on_save_shortcut(self, event=None) -> bool:
+        """Saves the current session state to saed_session.json in the output folder."""
+        # Check if controller and launcher exist
+        if not hasattr(self, 'controller') or not hasattr(self.controller, 'launcher'):
+            messagebox.showerror("Save Error", "Application components not fully initialized.", parent=self)
+            return False
+
+        output_dir_str = self.controller.launcher.ent_out.get()
+        if not output_dir_str:
+            messagebox.showerror("Save Error", "Please specify an 'Output folder' in the Launcher tab first.", parent=self)
+            return False
+
+        output_dir = Path(output_dir_str)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+            filepath = output_dir / "saed_session.json"
+            self.controller.save_session(filepath) # Delegate saving to controller
+            # Status update already done in controller.save_session
+            return True
+        except Exception as e:
+            # Show error relative to main window
+            messagebox.showerror("Save Error", f"Failed to save session:\n{e}", parent=self)
+            return False
+    # <<< КОНЕЦ _on_save_shortcut БЕЗ ОТЛАДКИ >>>
+
+    # <<< ИСПРАВЛЕННАЯ ФУНКЦИЯ _on_close_window БЕЗ ОТЛАДКИ >>>
+    def _on_close_window(self) -> None:
+        """Prompts to save on close, then destroys the window."""
+        result = messagebox.askyesnocancel(
+            "Confirm Exit",
+            "Save current session before closing?",
+            parent=self # Make dialog modal to this window
+        )
+
+        if result is True: # Yes
+            save_successful = self._on_save_shortcut() # Attempt save
+            if save_successful:
+                self.destroy() # Close if save worked
+            else:
+                # Inform the user that save failed and window stays open
+                messagebox.showwarning(
+                    "Save Failed",
+                    "Could not save the session. Please check the output folder and try again.\n\nThe application will remain open.",
+                    parent=self
+                )
+                # Keep the window open - do nothing more here
+        elif result is False: # No
+            self.destroy() # Close without saving
+        # else: Cancel (result is None), do nothing - window stays open
+    # <<< КОНЕЦ ИСПРАВЛЕНИЯ БЕЗ ОТЛАДКИ >>>
+
+
+def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
+    root = tk.Tk()
+    root.withdraw() # Keep root hidden
+    message = (
+        "The 3-day trial period has ended. "
+        "Please enter a valid license key to unlock the full version permanently."
+    )
+    # Ensure dialog is transient to the hidden root
+    dialog = LicenseDialog(root, "Trial Expired", message)
+    key = dialog.result # Blocks until dialog is closed
+    activated = False
+    if key:
+        try:
+            license_manager.register_license_key(key)
+            # Use root as parent for messagebox
+            messagebox.showinfo("License Key", "License activated successfully. Thank you!", parent=root)
+            activated = True
+        except ValueError:
+             # Use root as parent for messagebox
+            messagebox.showerror("License Key", "The provided license key is invalid. Check the code and try again.", parent=root)
+            activated = False # Explicitly set to False on error
+
+    root.destroy() # Clean up hidden root window
+    return activated
+
+
+def main(
+    *,
+    splash_logo: Path | str | None = None,
+    splash_duration_ms: int = 3000,
+) -> None:
+    license_manager = LicenseManager()
+
+    # Check license status BEFORE creating the main app window
+    if not license_manager.has_valid_license() and license_manager.is_trial_expired():
+        activated = _show_trial_expired_dialog(license_manager)
+        if not activated:
+            print("Trial expired and no valid license provided. Exiting.")
+            return # Exit if trial expired and activation failed/cancelled
+
+    # If license is okay (or trial active), proceed to create main app
+    app = TabbedPipelineApp(license_manager, show_initially=False) # Keep hidden for splash
+
+    # Show splash screen, which will deiconify the app window when done
+    _show_splash(app, logo_path=splash_logo, duration_ms=splash_duration_ms)
+
+    app.mainloop() # Start the Tkinter event loop
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="SAED Symmetry pipeline application")
+    parser.add_argument(
+        "--splash-logo", metavar="PATH", type=Path,
+        help="Custom splash logo to display when launching the application.",
+    )
+    parser.add_argument(
+        "--no-splash", action="store_true",
+        help="Skip the splash screen when launching the graphical interface.",
+    )
+    return parser
+
+
+if __name__ == "__main__":
+    parser = _build_cli_parser()
+    args = parser.parse_args()
+
+    splash_duration = 0
+    logo = None
+    if not args.no_splash:
+        # Determine logo path, checking if default exists
+        default_logo_path = _resource_path("logo.png")
+        if args.splash_logo:
+             logo_path_to_use = args.splash_logo
+        elif default_logo_path.exists():
+             logo_path_to_use = default_logo_path
+        else:
+             logo_path_to_use = None # No logo found or specified
+
+        if logo_path_to_use:
+            logo = logo_path_to_use
+            splash_duration = 3000 # Default duration if logo exists
+        else:
+             # If no logo, maybe a shorter splash or text-only splash?
+             # For now, keep duration but logo will be None
+             splash_duration = 2000 # Shorter splash if text only
+             print("Note: No splash logo found or specified.")
+
+
+    main(splash_logo=logo, splash_duration_ms=splash_duration)
