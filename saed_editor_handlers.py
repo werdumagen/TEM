@@ -8,9 +8,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math # Добавлен импорт
 import tkinter as tk # Добавлен импорт tk
-# --- НОВОЕ: Импорт специального индекса ---
+# Импорт специального индекса
 from saed_editor_state import CENTER_AS_POINT_IDX
-# --- КОНЕЦ НОВОГО ---
 
 
 class EditorEventHandlers:
@@ -18,7 +17,7 @@ class EditorEventHandlers:
     # ---------- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ОБРАБОТЧИКОВ ---
     def _cancel_all_interactions(self, *, keep_status: bool = False) -> bool:
         """Cancels any ongoing drag, selection, or preview."""
-        # --- ИЗМЕНЕНИЕ: Отменяем превью, а также сбрасываем старт замера ---
+        # Отменяем превью, а также сбрасываем старт замера
         cleared_measure = False
         if self._cancel_measurement_preview(): # Отменяет превью (пунктир)
             cleared_measure = True
@@ -26,7 +25,6 @@ class EditorEventHandlers:
              self._measure_start_idx = None
              self._measure_start_point = None
              cleared_measure = True
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         cleared_ring = self._cancel_ring_selection()
         cleared_drag = self.center_dragging
@@ -38,54 +36,43 @@ class EditorEventHandlers:
 
     # --- Методы для выбора кольцом (без изменений) ---
     def _start_ring_selection(self, pos_yx: tuple[float, float]) -> None:
-        """Начинает режим выбора кольцом."""
         if not self.overlay or not self.overlay.get("center"):
             self._set_status("Cannot start ring selection: Center is not defined.")
             return
-
-        # Отменяем другие активные режимы
-        if self._cancel_all_interactions(): self._redraw() # Перерисовываем, если что-то отменили
-
+        if self._cancel_all_interactions(): self._redraw()
         center_data = self.overlay["center"]
         center_y, center_x = float(center_data["y"]), float(center_data["x"])
         self._ring_select_center_yx = (center_y, center_x)
-
         cursor_y, cursor_x = pos_yx
         radius = math.hypot(cursor_x - center_x, cursor_y - center_y)
-
         self._ring_select_radius = max(1.0, radius)
         self._ring_select_active = True
         self._ring_select_indices.clear()
-
-        self._set_status("Ring selection active. Drag to set radius. Use +/- to change thickness. Enter to select points.")
+        self._set_status("Ring selection active. Drag to set radius. Use +/-. Enter to select.")
+        print("DEBUG: Started ring selection.") # DEBUG
         self._redraw()
 
     def _update_ring_preview(self, pos_yx: tuple[float, float] | None) -> None:
-        """Обновляет радиус кольца превью."""
-        if not self._ring_select_active or self._ring_select_center_yx is None or pos_yx is None:
-            return
-
+        if not self._ring_select_active or self._ring_select_center_yx is None or pos_yx is None: return
         center_y, center_x = self._ring_select_center_yx
         cursor_y, cursor_x = pos_yx
         radius = math.hypot(cursor_x - center_x, cursor_y - center_y)
-
         new_radius = max(1.0, radius)
         if abs(new_radius - self._ring_select_radius) > 0.1:
              self._ring_select_radius = new_radius
              self._redraw()
 
     def _adjust_ring_thickness(self, delta: float) -> None:
-        """Изменяет толщину кольца превью."""
         if not self._ring_select_active: return
-
         new_thickness = self._ring_select_thickness + delta
         self._ring_select_thickness = max(1.0, new_thickness)
         self._set_status(f"Ring thickness: {self._ring_select_thickness:.1f} px. Enter to select.")
         self._redraw()
 
     def _select_points_in_ring(self) -> None:
-        """Выделяет точки, попадающие в текущее кольцо превью."""
+        print("DEBUG: Inside _select_points_in_ring()") # DEBUG
         if not self._ring_select_active or self._ring_select_center_yx is None or self.points is None:
+            print(f"DEBUG: Condition failed: active={self._ring_select_active}, center={self._ring_select_center_yx}, points is None={self.points is None}") # DEBUG
             return
 
         center_y, center_x = self._ring_select_center_yx
@@ -97,14 +84,14 @@ class EditorEventHandlers:
         dy = self.points[:, 0] - center_y
         dx = self.points[:, 1] - center_x
         point_radii = np.hypot(dx, dy)
-
         indices_in_ring = np.where((point_radii >= r_min) & (point_radii <= r_max))[0]
 
         self._ring_select_indices = set(indices_in_ring.tolist())
-        self._ring_select_active = False
+        self._ring_select_active = False # Выходим из режима рисования
         self._remove_ring_preview_artist()
 
         count = len(self._ring_select_indices)
+        print(f"DEBUG: Selected {count} points.") # DEBUG
         if count > 0:
             self._set_status(f"Selected {count} points. Shift+Click to add/remove. Enter to average.")
         else:
@@ -112,24 +99,23 @@ class EditorEventHandlers:
         self._redraw()
 
     def _toggle_point_in_ring_selection(self, index: int, add: bool) -> None:
-        """Добавляет или удаляет точку из набора выделенных кольцом."""
         if add:
             self._ring_select_indices.add(index)
-            self._set_status(f"Added point {index} to selection ({len(self._ring_select_indices)} total). Enter to average.")
+            self._set_status(f"Added point {index} ({len(self._ring_select_indices)} total). Enter to average.")
         else:
             if index in self._ring_select_indices:
                 self._ring_select_indices.remove(index)
-                self._set_status(f"Removed point {index} from selection ({len(self._ring_select_indices)} total). Enter to average.")
+                self._set_status(f"Removed point {index} ({len(self._ring_select_indices)} total). Enter to average.")
             else:
                  self._set_status(f"Point {index} was not selected.")
         self._redraw()
 
     def _average_selected_points_to_ring(self) -> None:
-        """Усредняет радиусы выделенных точек и перемещает их."""
+        print("DEBUG: Inside _average_selected_points_to_ring()") # DEBUG
         if not self._ring_select_indices or self.points is None:
             self._set_status("No points selected for averaging.")
             return
-
+        # ... (остальная логика усреднения без изменений) ...
         if not self.overlay or not self.overlay.get("center"):
             self._set_status("Cannot average: Center is not defined.")
             return
@@ -149,7 +135,6 @@ class EditorEventHandlers:
         dy = selected_points[:, 0] - cy
         dx = selected_points[:, 1] - cx
         radii = np.hypot(dx, dy)
-
         zero_radius_mask = radii < 1e-9
         non_zero_radii = radii[~zero_radius_mask]
 
@@ -158,10 +143,8 @@ class EditorEventHandlers:
              return
 
         average_radius = np.mean(non_zero_radii)
-
         unit_dx = np.divide(dx, radii, out=np.zeros_like(dx), where=radii > 1e-9)
         unit_dy = np.divide(dy, radii, out=np.zeros_like(dy), where=radii > 1e-9)
-
         new_dx = unit_dx * average_radius
         new_dy = unit_dy * average_radius
 
@@ -182,67 +165,75 @@ class EditorEventHandlers:
 
     # ---------- Mouse / Keyboard events ----------
     def _on_key(self, e):
+        print(f"DEBUG: _on_key received key: '{e.key}'") # DEBUG
         # --- Обработка Escape ---
         if e.key == "escape":
             cleared_tooltip = self._tooltip is not None
             if self._tooltip: self._clear_tooltip()
-
-            # --- ИЗМЕНЕНИЕ: Используем _cancel_all_interactions ---
             cleared_interactions = self._cancel_all_interactions()
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
             if cleared_interactions:
-                # Статус уже сброшен в _cancel_all_interactions
+                self._set_status("Action cancelled.") # Статус устанавливается здесь
                 self._redraw()
             elif cleared_tooltip: pass
             else: self._set_status("Escape pressed, no action taken.")
+            print("DEBUG: Handled Escape") # DEBUG
             return
 
         # --- Обработка +/- ---
         elif self._ring_select_active:
             delta = 0.0
-            if e.key == '+' or e.key == 'KP_Add' or e.key == '=': delta = 1.0
-            elif e.key == '-' or e.key == 'KP_Subtract': delta = -1.0
+            # --- ИЗМЕНЕНИЕ: Проверяем e.key напрямую ---
+            if e.key in ('+', '=', 'KP_Add'): delta = 1.0
+            elif e.key in ('-', 'KP_Subtract'): delta = -1.0
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             if delta != 0.0:
+                print(f"DEBUG: Adjusting thickness by {delta}") # DEBUG
                 self._adjust_ring_thickness(delta)
                 return
 
         # --- Обработка Enter ---
-        elif e.key in {"enter", "return"}:
+        # --- ИЗМЕНЕНИЕ: Добавляем KP_Enter ---
+        elif e.key in {"enter", "return", "KP_Enter"}:
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            print(f"DEBUG: Enter key detected. _ring_select_active={self._ring_select_active}, len(_ring_select_indices)={len(self._ring_select_indices)}") # DEBUG
             if self._ring_select_active:
+                print("DEBUG: Calling _select_points_in_ring()") # DEBUG
                 self._select_points_in_ring()
             elif self._ring_select_indices:
+                print("DEBUG: Calling _average_selected_points_to_ring()") # DEBUG
                 self._average_selected_points_to_ring()
             else:
+                 print("DEBUG: Enter pressed, no action.") # DEBUG
                  self._set_status("Enter pressed, no action selected.")
             return
 
-        pass # Другие клавиши игнорируем
+        print(f"DEBUG: Key '{e.key}' not handled by specific logic.") # DEBUG
+        pass
 
     def _on_down(self, e):
+        # ... (остальной код _on_down без изменений, как в предыдущем ответе) ...
         pos_yx = self._img_xy(e)
         self._clear_tooltip()
 
-        # MMB - Показать инфо
-        if e.button == 2:
+        if e.button == 2: # MMB
             if pos_yx is None: return
             idx = self._near_idx(pos_yx[0], pos_yx[1], pix_tol=8)
             if idx is not None: self._show_tooltip_for_idx(idx)
             return
 
-        # LMB или RMB
-        if e.button == 1 or e.button == 3:
+        if e.button == 1 or e.button == 3: # LMB or RMB
             is_left_click = e.button == 1
             is_right_click = e.button == 3
-            is_shift_pressed = e.key and "shift" in e.key.lower()
-            is_ctrl_pressed = e.key and ("control" in e.key.lower() or "ctrl" in e.key.lower())
+            # --- ИЗМЕНЕНИЕ: Проверяем event.key напрямую ---
+            is_shift_pressed = hasattr(e, 'key') and e.key is not None and "shift" in e.key.lower()
+            is_ctrl_pressed = hasattr(e, 'key') and e.key is not None and ("control" in e.key.lower() or "ctrl" in e.key.lower())
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-            # --- Приоритет 1: Режим Выбора кольцом (Ctrl+Drag) ---
+
             if is_ctrl_pressed and is_left_click:
                  if pos_yx is not None: self._start_ring_selection(pos_yx)
                  return
 
-            # --- Приоритет 2: До/После-выделение (Shift+Click при активном _ring_select_indices) ---
             if is_shift_pressed and self._ring_select_indices:
                  if pos_yx is None: return
                  idx = self._near_idx(pos_yx[0], pos_yx[1])
@@ -252,7 +243,6 @@ class EditorEventHandlers:
                  else: self._set_status("Shift+Click only works on existing points.")
                  return
 
-            # --- Приоритет 3: Прямоугольное удаление (Shift+Drag, если НЕТ выбора кольцом) ---
             if is_shift_pressed and is_left_click and not self._ring_select_indices:
                 if pos_yx is not None:
                     if self._cancel_all_interactions(): self._redraw()
@@ -262,67 +252,50 @@ class EditorEventHandlers:
                     self._set_status("Drag to select points for deletion.")
                 return
 
-            # --- Обычные клики (без Shift, Ctrl) ---
             if pos_yx is None: return
 
             y, x = pos_yx
             hit_center = self._center_hit(y, x)
             hit_point_idx = self._near_idx(y, x)
 
-            # --- Логика для ЛКМ ---
             if is_left_click:
-                 # --- Клик на центр ---
                  if hit_center:
-                      # --- ИЗМЕНЕНИЕ: Проверяем, активен ли замер ---
                       if self._measure_start_idx is not None:
-                           # Завершаем замер до центра
                            if self._finalize_measurement_to_center():
                                 length = self._measurement.get("length", 0.0)
                                 self._set_status(f"Measured {length:.1f} px to center.")
                            else:
                                 self._set_status("Measurement failed or center undefined.")
                            self._redraw()
-                      # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                       else:
-                           # Начинаем ПЕРЕТАСКИВАНИЕ центра (если замер не активен)
                            if self._cancel_all_interactions(): self._redraw()
                            self._push_undo()
                            self.center_dragging = True
                            self._redo.clear()
                            self._set_status("Dragging center overlay. Release to finish.")
-                           # self._redraw() # Обновление в _on_move
-                 # --- Клик на точку ---
                  elif hit_point_idx is not None:
                       if self._measure_start_idx is None:
-                           # Начинаем замер от точки
                            if self._cancel_all_interactions(): self._redraw()
                            self._clear_measurement_result()
                            self._start_measurement(hit_point_idx)
                            self._set_status(f"Measurement started from point {hit_point_idx}. Click second point or center.")
                            self._redraw()
                       elif self._measure_start_idx != hit_point_idx:
-                           # Завершаем замер до точки
-                           # --- ИЗМЕНЕНИЕ: Используем координаты точки ---
                            pt_y, pt_x = self.points[hit_point_idx]
                            if self._finalize_measurement(end_yx=(float(pt_y), float(pt_x))):
-                           # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                                 length = self._measurement.get("length", 0.0)
                                 self._set_status(f"Measured {length:.1f} px between points.")
                            else:
                                 self._set_status("Measurement failed.")
                            self._redraw()
-                      else: # Клик на ту же точку
-                           # Отменяем замер
-                           self._cancel_all_interactions() # Отменит и превью, и старт
+                      else:
+                           self._cancel_all_interactions()
                            self._set_status(self._default_status)
                            self._redraw()
-                 # --- Клик на пустое место ---
                  else:
                       redraw_needed = self._cancel_all_interactions()
                       redraw_needed |= self._clear_measurement_result()
                       if redraw_needed: self._redraw()
-
-                      # Добавляем точку
                       self._push_undo()
                       self.points = np.vstack([self.points, [y, x]])
                       sampled_value = self._sample_intensities(np.array([[y, x]]))[0]
@@ -331,51 +304,40 @@ class EditorEventHandlers:
                       self._set_status(f"Added point at ({x:.1f}, {y:.1f}).")
                       self._redraw()
 
-            # --- Логика для ПКМ ---
             elif is_right_click:
-                 # --- Клик на точку (удаление) ---
                  if hit_point_idx is not None:
                       if self._cancel_all_interactions(): self._redraw()
                       self._push_undo()
-
                       was_selected = hit_point_idx in self._ring_select_indices
                       if was_selected: self._ring_select_indices.remove(hit_point_idx)
-
                       if hit_point_idx >= len(self.points):
                            self._set_status("Error: Point index out of bounds during deletion.")
                            return
-
                       self.points = np.delete(self.points, hit_point_idx, axis=0)
                       if self.values is not None and len(self.values) > hit_point_idx:
                            self.values = np.delete(self.values, hit_point_idx, axis=0)
                       else:
                            self.values = self._sample_intensities(self.points)
-
                       if self._ring_select_indices:
                            new_indices = set()
                            for idx in self._ring_select_indices:
                                 if idx > hit_point_idx: new_indices.add(idx - 1)
                                 elif idx < hit_point_idx: new_indices.add(idx)
                            self._ring_select_indices = new_indices
-
                       self._redo.clear()
                       self._set_status("Deleted point.")
                       self._redraw()
-                 # --- Клик на пустое место (отмена режимов) ---
                  else:
                       if self._cancel_all_interactions(): self._redraw()
                       if self._clear_measurement_result(): self._redraw()
-
-            return # Обработали клик
+            return
 
     def _on_move(self, e):
+        # ... (остальной код _on_move без изменений, как в предыдущем ответе) ...
         pos_yx = self._img_xy(e)
 
-        # Перетаскивание центра
         if self.center_dragging and pos_yx is not None:
-            # --- ИЗМЕНЕНИЕ: Нельзя перетаскивать, если активен замер ---
             if self._measure_start_idx is None:
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                 y, x = pos_yx
                 if self.overlay is None: self.overlay = {}
                 self.overlay["center"] = {"x": float(x), "y": float(y)}
@@ -383,17 +345,14 @@ class EditorEventHandlers:
                 self._set_status("Dragging center...")
             return
 
-        # Обновление превью кольца
         if self._ring_select_active:
              self._update_ring_preview(pos_yx)
              return
 
-        # Обновление превью замера
         if self._measure_start_idx is not None:
             self._update_measurement_preview(pos_yx)
             return
 
-        # Обновление прямоугольного выделения
         if self.rect_start and e.xdata is not None and e.ydata is not None:
             y0, x0 = self.rect_start
             y1, x1 = e.ydata, e.xdata
@@ -418,14 +377,13 @@ class EditorEventHandlers:
             self.canvas.draw_idle()
             return
 
+
     def _on_up(self, e):
-        # --- Отпускание после перетаскивания центра ---
+        # ... (остальной код _on_up без изменений, как в предыдущем ответе) ...
         if self.center_dragging:
             self.center_dragging = False
-            # --- ИЗМЕНЕНИЕ: Применяем фильтры только если замер НЕ активен ---
             if self._measure_start_idx is None:
                  self._apply_center_filters()
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             if self.overlay and isinstance(self.overlay.get("center"), dict):
                 self.view_cx = float(self.overlay["center"]["x"])
                 self.view_cy = float(self.overlay["center"]["y"])
@@ -433,14 +391,10 @@ class EditorEventHandlers:
             self._set_status("Center position updated.")
             return
 
-        # --- Отпускание в режиме рисования кольца ---
         if self._ring_select_active:
-             # Ничего не делаем, ждем Enter/Escape
              return
 
-        # --- Отпускание после прямоугольного выделения ---
         if self.rect_start:
-            # ... (код удаления точек без изменений) ...
             y0, x0 = self.rect_start;
             if e.ydata is not None and e.xdata is not None:
                 y1, x1 = e.ydata, e.xdata
@@ -454,11 +408,10 @@ class EditorEventHandlers:
                 num_to_delete = np.count_nonzero(mask_in_rect)
 
                 if num_to_delete > 0:
-                    self._push_undo() # Сохраняем перед удалением
+                    self._push_undo()
 
                     indices_to_delete = np.where(mask_in_rect)[0]
 
-                    # Обновляем выделение кольцом, если точки удаляются
                     deleted_selected_indices = self._ring_select_indices.intersection(indices_to_delete)
                     if deleted_selected_indices:
                          self._ring_select_indices.difference_update(deleted_selected_indices)
@@ -488,17 +441,21 @@ class EditorEventHandlers:
             self._redraw()
             return
 
+
     # --- Остальные методы (_img_xy, _near_idx, _center_hit, _apply_center_filters) без изменений ---
     def _img_xy(self, e):
+        # ... (код без изменений) ...
         return None if (e.xdata is None or e.ydata is None) else (e.ydata, e.xdata)
 
     def _near_idx(self, y, x, pix_tol=8):
+        # ... (код без изменений) ...
         if self.points is None or len(self.points) == 0: return None
         dist_sq = (self.points[:, 0] - y) ** 2 + (self.points[:, 1] - x) ** 2
         i = int(np.argmin(dist_sq))
         return i if dist_sq[i] <= pix_tol ** 2 else None
 
     def _center_hit(self, y, x):
+        # ... (код без изменений) ...
         if not (self.overlay and self.overlay.get("center")): return False
         center_data = self.overlay["center"]
         if not isinstance(center_data, dict): return False
@@ -536,14 +493,11 @@ class EditorEventHandlers:
 
         num_deleted = np.count_nonzero(~mask_keep)
         if num_deleted > 0:
-            # --- ИЗМЕНЕНИЕ: Добавляем push_undo перед фильтрацией ---
             self._push_undo()
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             self.points = self.points[mask_keep]
             if self.values is not None and len(self.values) == len(mask_keep) + num_deleted:
                 self.values = self.values[mask_keep]
             else:
                 self.values = self._sample_intensities(self.points)
             self._set_status(f"Applied center filters, removed {num_deleted} points.")
-            self._redo.clear() # Очищаем redo после фильтрации
-            # Перерисовка будет вызвана в _on_up после center_dragging
+            self._redo.clear()
