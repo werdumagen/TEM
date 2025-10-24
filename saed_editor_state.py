@@ -8,6 +8,11 @@ import numpy as np
 import math # Добавлен импорт math
 import tkinter as tk # Добавлен импорт tk
 
+# --- НОВОЕ: Специальный индекс для центра ---
+CENTER_AS_POINT_IDX = -1
+# --- КОНЕЦ НОВОГО ---
+
+
 class EditorState:
 
     # --- Инициализация состояния ---
@@ -16,8 +21,8 @@ class EditorState:
         self._tooltip = None
         self._tooltip_idx = None
         # Measurement
-        self._measure_start_idx: Optional[int] = None
-        self._measure_start_point: Optional[tuple[float, float]] = None
+        self._measure_start_idx: Optional[int] = None # Может быть CENTER_AS_POINT_IDX
+        self._measure_start_point: Optional[tuple[float, float]] = None # Координаты (y, x)
         self._measure_preview_end: Optional[tuple[float, float]] = None
         self._measure_preview_artist = None
         self._measure_line_artist = None
@@ -29,7 +34,6 @@ class EditorState:
         self._ring_select_radius: float = 10.0
         self._ring_select_thickness: float = 5.0
         self._ring_select_indices: set[int] = set()
-        # Ring preview artist (храним список патчей)
         self._ring_select_artist: Optional[list] = None
 
     # ---------- Tooltip и измерения ----------
@@ -54,7 +58,6 @@ class EditorState:
             self._measure_annotation = None
         return removed
 
-    # --- ИСПРАВЛЕНО: Убран сброс начала замера ---
     def _cancel_measurement_preview(self) -> bool:
         """Cancels an ongoing measurement preview (dashed line) *without* resetting start state."""
         removed_artist = self._remove_measure_preview_artist()
@@ -62,7 +65,6 @@ class EditorState:
         self._measure_preview_end = None
         # НЕ сбрасываем _measure_start_idx / _measure_start_point здесь
         return removed_artist or has_preview_state
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     def _clear_measurement_result(self) -> bool:
         removed_artists = self._remove_measurement_artists()
@@ -71,6 +73,7 @@ class EditorState:
         return removed_artists or had_measurement
 
     def _start_measurement(self, idx: int) -> None:
+        """Начинает замер от обычной точки."""
         if self.points is None or idx < 0 or idx >= len(self.points): return
         self._clear_measurement_result()
         self._measure_start_idx = idx
@@ -79,10 +82,25 @@ class EditorState:
         self._measure_preview_end = None
         self._remove_measure_preview_artist()
 
+    # --- НОВЫЙ МЕТОД: Начало замера от центра ---
+    def _start_measurement_from_center(self) -> bool:
+        """Начинает замер от центра."""
+        if not self.overlay or not self.overlay.get("center"):
+            return False # Центр не определен
+
+        self._clear_measurement_result()
+        center_data = self.overlay["center"]
+        cy, cx = float(center_data["y"]), float(center_data["x"])
+
+        self._measure_start_idx = CENTER_AS_POINT_IDX # Используем специальный индекс
+        self._measure_start_point = (cy, cx)
+        self._measure_preview_end = None
+        self._remove_measure_preview_artist()
+        return True
+    # --- КОНЕЦ НОВОГО МЕТОДА ---
+
     def _update_measurement_preview(self, pos: tuple[float, float] | None) -> None:
-        # --- ИЗМЕНЕНИЕ: Проверяем _measure_start_idx вместо _measure_active ---
         if self._measure_start_idx is None or self._measure_start_point is None: return
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         if pos is None:
             self._measure_preview_end = None
@@ -111,38 +129,47 @@ class EditorState:
 
         if hasattr(self, "canvas"): self.canvas.draw_idle()
 
-    # --- ИСПРАВЛЕНО: Добавлен сброс состояния в конце ---
-    def _finalize_measurement(self, end_idx: int) -> bool:
-        """Stores the final measurement data and resets measurement state."""
+    # --- ОБНОВЛЕНО: _finalize_measurement теперь принимает end_yx ---
+    def _finalize_measurement(self, end_yx: tuple[float, float]) -> bool:
+        """Stores the final measurement data using provided end coordinates."""
         if self._measure_start_point is None or self._measure_start_idx is None:
              return False # Замер не был начат
 
-        if self.points is None or end_idx < 0 or end_idx >= len(self.points):
-             # Если конечный индекс некорректен, отменяем превью и сбрасываем состояние
+        start_y, start_x = self._measure_start_point
+        end_y, end_x = end_yx # Используем переданные координаты
+        length = float(np.hypot(end_x - start_x, end_y - start_y))
+
+        self._measurement = {
+            "start_yx": (start_y, start_x),
+            "end_yx": (end_y, end_x), # Сохраняем конечные координаты
+            "length": length,
+        }
+
+        # Очищаем и сбрасываем состояние
+        self._remove_measurement_artists()
+        self._cancel_measurement_preview()
+        self._measure_start_idx = None
+        self._measure_start_point = None
+
+        return True
+    # --- КОНЕЦ ОБНОВЛЕНИЯ ---
+
+    # --- НОВЫЙ МЕТОД: Завершение замера до центра ---
+    def _finalize_measurement_to_center(self) -> bool:
+        """Завершает измерение до текущего положения центра."""
+        if not self.overlay or not self.overlay.get("center"):
+             # Центр не определен, отменяем
              self._cancel_measurement_preview()
              self._measure_start_idx = None
              self._measure_start_point = None
              return False
 
-        # --- Рассчитываем и сохраняем ---
-        start_y, start_x = self._measure_start_point
-        end_y, end_x = tuple(map(float, self.points[end_idx]))
-        length = float(np.hypot(end_x - start_x, end_y - start_y))
+        center_data = self.overlay["center"]
+        center_y, center_x = float(center_data["y"]), float(center_data["x"])
 
-        self._measurement = {
-            "start_yx": (start_y, start_x),
-            "end_yx": (end_y, end_x),
-            "length": length,
-        }
-
-        # --- Очищаем и сбрасываем состояние ---
-        self._remove_measurement_artists() # Очищаем старые линии результата (на всякий случай)
-        self._cancel_measurement_preview() # Убираем пунктирную линию
-        self._measure_start_idx = None     # Сбрасываем начало!
-        self._measure_start_point = None   # Сбрасываем начало!
-
-        return True
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        # Вызываем основной метод финализации с координатами центра
+        return self._finalize_measurement(end_yx=(center_y, center_x))
+    # --- КОНЕЦ НОВОГО МЕТОДА ---
 
     def _clear_tooltip(self, *, keep_measure: bool = False, keep_preview: bool = False):
         removed_tooltip = False
@@ -155,9 +182,8 @@ class EditorState:
 
         removed_preview = False
         if not keep_preview:
-            # --- ИЗМЕНЕНИЕ: Отменяем только превью, но не сбрасываем старт ---
+            # Отменяем только превью, но не сбрасываем старт
             removed_preview = self._cancel_measurement_preview()
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         removed_measure = False
         if not keep_measure:
@@ -238,9 +264,8 @@ class EditorState:
             except Exception: pass
             self.rect_artist = None
         self.rect_start = None
-        # --- ИЗМЕНЕНИЕ: Отменяем превью, но не сбрасываем старт ---
+        # Отменяем превью, но не сбрасываем старт
         self._cancel_measurement_preview()
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self._cancel_ring_selection()
 
         self.points = snap["points"].copy()
@@ -302,15 +327,11 @@ class EditorState:
     def _cancel_ring_selection(self) -> bool:
         """Сбрасывает состояние выбора кольцом."""
         cleared_artist = False
-        # --- ИЗМЕНЕНИЕ: Проверка наличия атрибута ---
         if hasattr(self, '_ring_select_artist') and self._ring_select_artist:
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             try:
-                # _ring_select_artist может быть None или списком
                 if isinstance(self._ring_select_artist, list):
-                    for patch in self._ring_select_artist:
-                        patch.remove()
-                elif self._ring_select_artist is not None: # Обработка случая одиночного артиста (хотя не должно быть)
+                    for patch in self._ring_select_artist: patch.remove()
+                elif self._ring_select_artist is not None:
                     self._ring_select_artist.remove()
                 cleared_artist = True
             except Exception: pass
