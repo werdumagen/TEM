@@ -17,6 +17,7 @@ class EditorEventHandlers:
     # ---------- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ОБРАБОТЧИКОВ ---
     def _cancel_all_interactions(self, *, keep_status: bool = False) -> bool:
         """Cancels any ongoing drag, selection, or preview."""
+        # Отменяем превью, а также сбрасываем старт замера
         cleared_measure = False
         if self._cancel_measurement_preview(): # Отменяет превью (пунктир)
             cleared_measure = True
@@ -29,6 +30,7 @@ class EditorEventHandlers:
         cleared_drag = self.center_dragging
         self.center_dragging = False
         if not keep_status and (cleared_measure or cleared_ring or cleared_drag):
+             # Сбрасываем статус только если что-то действительно отменили
              self._set_status(self._default_status)
 
         return (cleared_measure or cleared_ring or cleared_drag)
@@ -49,7 +51,6 @@ class EditorEventHandlers:
         self._ring_select_active = True # !!! Устанавливаем флаг !!!
         self._ring_select_indices.clear()
         self._set_status("Ring selection active. Drag to set radius. Use +/-. Enter to select.")
-        # print("DEBUG: Started ring selection.") # DEBUG
         self._redraw()
 
     def _update_ring_preview(self, pos_yx: tuple[float, float] | None) -> None:
@@ -73,9 +74,7 @@ class EditorEventHandlers:
 
     def _select_points_in_ring(self) -> None:
         """Выделяет точки, попадающие в текущее кольцо превью."""
-        # print("DEBUG: Inside _select_points_in_ring()") # DEBUG
         if not self._ring_select_active or self._ring_select_center_yx is None or self.points is None:
-            # print(f"DEBUG: Condition failed: active={self._ring_select_active}, center={self._ring_select_center_yx}, points is None={self.points is None}") # DEBUG
             return
 
         center_y, center_x = self._ring_select_center_yx
@@ -94,7 +93,6 @@ class EditorEventHandlers:
         self._remove_ring_preview_artist()
 
         count = len(self._ring_select_indices)
-        # print(f"DEBUG: Selected {count} points.") # DEBUG
         if count > 0:
             self._set_status(f"Selected {count} points. Shift+Click to add/remove. Enter to average.")
         else:
@@ -116,7 +114,6 @@ class EditorEventHandlers:
 
     def _average_selected_points_to_ring(self) -> None:
         """Усредняет радиусы выделенных точек и перемещает их."""
-        # print("DEBUG: Inside _average_selected_points_to_ring()") # DEBUG
         if not self._ring_select_indices or self.points is None:
             self._set_status("No points selected for averaging.")
             return
@@ -170,7 +167,7 @@ class EditorEventHandlers:
 
     # ---------- Mouse / Keyboard events ----------
     def _on_key(self, e):
-        # print(f"DEBUG: _on_key received key: '{e.key}'") # DEBUG
+        # --- Обработка Escape ---
         if e.key == "escape":
             cleared_tooltip = self._tooltip is not None
             if self._tooltip: self._clear_tooltip()
@@ -180,33 +177,34 @@ class EditorEventHandlers:
                 self._redraw()
             elif cleared_tooltip: pass
             else: self._set_status("Escape pressed, no action taken.")
-            # print("DEBUG: Handled Escape") # DEBUG
             return
 
+        # --- Обработка +/- ---
         elif self._ring_select_active:
             delta = 0.0
             if e.key in ('+', '=', 'KP_Add'): delta = 1.0
             elif e.key in ('-', 'KP_Subtract'): delta = -1.0
             if delta != 0.0:
-                # print(f"DEBUG: Adjusting thickness by {delta}") # DEBUG
                 self._adjust_ring_thickness(delta)
                 return
 
+        # --- Обработка Enter ---
+        # --- ВЕРНУЛИ ПРЕДЫДУЩУЮ ЛОГИКУ ---
         elif e.key in {"enter", "return", "KP_Enter"}:
-            # print(f"DEBUG: Enter key detected. _ring_select_active={self._ring_select_active}, len(_ring_select_indices)={len(self._ring_select_indices)}") # DEBUG
-            if self._ring_select_active:
-                # print("DEBUG: Calling _select_points_in_ring()") # DEBUG
-                self._select_points_in_ring()
-            elif self._ring_select_indices:
-                # print("DEBUG: Calling _average_selected_points_to_ring()") # DEBUG
-                self._average_selected_points_to_ring()
-            else:
-                 # print("DEBUG: Enter pressed, no action.") # DEBUG
-                 self._set_status("Enter pressed, no action selected.")
-            return
+             # ВАЖНО: Проверяем именно флаг _ring_select_active
+             if self._ring_select_active:
+                  # Если мы в режиме РИСОВАНИЯ кольца, то Enter ВЫБИРАЕТ точки
+                  self._select_points_in_ring()
+             elif self._ring_select_indices:
+                  # Если точки УЖЕ ВЫБРАНЫ (флаг active=False), то Enter УСРЕДНЯЕТ
+                  self._average_selected_points_to_ring()
+             else:
+                  # Если ни то, ни другое - ничего не делаем
+                  self._set_status("Enter pressed, no action selected.")
+             return
+        # --- КОНЕЦ ВОЗВРАЩЕНИЯ ЛОГИКИ ---
 
-        # print(f"DEBUG: Key '{e.key}' not handled by specific logic.") # DEBUG
-        pass
+        pass # Другие клавиши игнорируем
 
     def _on_down(self, e):
         # ... (остальной код _on_down без изменений, как в предыдущем ответе) ...
@@ -270,12 +268,14 @@ class EditorEventHandlers:
                            self._set_status("Dragging center overlay. Release to finish.")
                  elif hit_point_idx is not None:
                       if self._measure_start_idx is None:
+                           # 1. Первый клик: Начинаем замер
                            if self._cancel_all_interactions(): self._redraw()
                            self._clear_measurement_result()
                            self._start_measurement(hit_point_idx)
                            self._set_status(f"Measurement started from point {hit_point_idx}. Click second point or center.")
                            self._redraw()
                       elif self._measure_start_idx != hit_point_idx:
+                           # 2. Клик на ДРУГУЮ точку: Завершаем замер
                            pt_y, pt_x = self.points[hit_point_idx]
                            if self._finalize_measurement(end_yx=(float(pt_y), float(pt_x))):
                                 length = self._measurement.get("length", 0.0)
@@ -283,8 +283,9 @@ class EditorEventHandlers:
                            else:
                                 self._set_status("Measurement failed.")
                            self._redraw()
-                      else:
-                           self._cancel_all_interactions()
+                      else: # Клик на ту же самую точку
+                           # 3. Клик на ту же точку: Отмена
+                           self._cancel_all_interactions() # Отменит и превью, и старт
                            self._set_status(self._default_status)
                            self._redraw()
                  else: # Клик на пустое место
@@ -326,7 +327,6 @@ class EditorEventHandlers:
                       if self._cancel_all_interactions(): self._redraw()
                       if self._clear_measurement_result(): self._redraw()
             return
-
 
     def _on_move(self, e):
         # ... (остальной код _on_move без изменений, как в предыдущем ответе) ...
@@ -373,14 +373,8 @@ class EditorEventHandlers:
             self.canvas.draw_idle()
             return
 
-    def _on_up(self, e):
-        # --- ИСПРАВЛЕНИЕ: Добавляем проверку _ring_select_active ---
-        # Если мы отпускаем кнопку *после* рисования кольца, ничего не делаем
-        if self._ring_select_active:
-             # print("DEBUG: _on_up ignored because _ring_select_active is True") # DEBUG
-             return
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
+    def _on_up(self, e):
         # Отпускание после перетаскивания центра
         if self.center_dragging:
             self.center_dragging = False
@@ -391,6 +385,14 @@ class EditorEventHandlers:
             self._redraw()
             self._set_status("Center position updated.")
             return
+
+        # --- ИЗМЕНЕНИЕ: Проверяем _ring_select_active ---
+        # Если мы отпускаем кнопку *после* рисования кольца, НИЧЕГО НЕ ДЕЛАЕМ
+        # Ждем нажатия Enter для выбора точек
+        if self._ring_select_active:
+             # print("DEBUG: _on_up ignored because _ring_select_active is True") # DEBUG
+             return
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # Отпускание после прямоугольного выделения
         if self.rect_start:
@@ -444,18 +446,15 @@ class EditorEventHandlers:
 
     # --- Остальные методы (_img_xy, _near_idx, _center_hit, _apply_center_filters) без изменений ---
     def _img_xy(self, e):
-        # ... (код без изменений) ...
         return None if (e.xdata is None or e.ydata is None) else (e.ydata, e.xdata)
 
     def _near_idx(self, y, x, pix_tol=8):
-        # ... (код без изменений) ...
         if self.points is None or len(self.points) == 0: return None
         dist_sq = (self.points[:, 0] - y) ** 2 + (self.points[:, 1] - x) ** 2
         i = int(np.argmin(dist_sq))
         return i if dist_sq[i] <= pix_tol ** 2 else None
 
     def _center_hit(self, y, x):
-        # ... (код без изменений) ...
         if not (self.overlay and self.overlay.get("center")): return False
         center_data = self.overlay["center"]
         if not isinstance(center_data, dict): return False
