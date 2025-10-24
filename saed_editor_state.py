@@ -6,20 +6,31 @@ Mix-in класс для PointEditor:
 """
 import numpy as np
 import math # Добавлен импорт math
+import tkinter as tk # Добавлен импорт tk
 
 class EditorState:
 
     # --- Инициализация состояния ---
     def _initialize_state(self):
-        # ... (существующие переменные состояния: tooltip, measurement) ...
-
-        # --- НОВОЕ: Состояние выбора кольцом ---
-        self._ring_select_active: bool = False # Режим рисования кольца активен?
-        self._ring_select_center_yx: Optional[tuple[float, float]] = None # Центр кольца (y, x)
-        self._ring_select_radius: float = 10.0 # Текущий радиус превью
-        self._ring_select_thickness: float = 5.0 # Текущая толщина превью (в пикселях)
-        self._ring_select_indices: set[int] = set() # Индексы точек, выделенных кольцом или вручную
-        # --- КОНЕЦ НОВОГО ---
+        # Tooltip
+        self._tooltip = None
+        self._tooltip_idx = None
+        # Measurement
+        self._measure_start_idx: Optional[int] = None
+        self._measure_start_point: Optional[tuple[float, float]] = None
+        self._measure_preview_end: Optional[tuple[float, float]] = None
+        self._measure_preview_artist = None
+        self._measure_line_artist = None
+        self._measure_annotation = None
+        self._measurement: Optional[dict[str, object]] = None
+        # Ring Selection
+        self._ring_select_active: bool = False
+        self._ring_select_center_yx: Optional[tuple[float, float]] = None
+        self._ring_select_radius: float = 10.0
+        self._ring_select_thickness: float = 5.0
+        self._ring_select_indices: set[int] = set()
+        # Ring preview artist (храним список патчей)
+        self._ring_select_artist: Optional[list] = None
 
     # ---------- Tooltip и измерения ----------
     def _remove_measure_preview_artist(self) -> bool:
@@ -43,14 +54,15 @@ class EditorState:
             self._measure_annotation = None
         return removed
 
+    # --- ИСПРАВЛЕНО: Убран сброс начала замера ---
     def _cancel_measurement_preview(self) -> bool:
+        """Cancels an ongoing measurement preview (dashed line) *without* resetting start state."""
         removed_artist = self._remove_measure_preview_artist()
         has_preview_state = self._measure_preview_end is not None
         self._measure_preview_end = None
-        has_start_state = self._measure_start_idx is not None
-        self._measure_start_idx = None
-        self._measure_start_point = None
-        return removed_artist or has_preview_state or has_start_state
+        # НЕ сбрасываем _measure_start_idx / _measure_start_point здесь
+        return removed_artist or has_preview_state
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     def _clear_measurement_result(self) -> bool:
         removed_artists = self._remove_measurement_artists()
@@ -68,7 +80,9 @@ class EditorState:
         self._remove_measure_preview_artist()
 
     def _update_measurement_preview(self, pos: tuple[float, float] | None) -> None:
-        if self._measure_start_point is None: return
+        # --- ИЗМЕНЕНИЕ: Проверяем _measure_start_idx вместо _measure_active ---
+        if self._measure_start_idx is None or self._measure_start_point is None: return
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         if pos is None:
             self._measure_preview_end = None
@@ -97,10 +111,20 @@ class EditorState:
 
         if hasattr(self, "canvas"): self.canvas.draw_idle()
 
+    # --- ИСПРАВЛЕНО: Добавлен сброс состояния в конце ---
     def _finalize_measurement(self, end_idx: int) -> bool:
-        if self._measure_start_point is None: return False
-        if self.points is None or end_idx < 0 or end_idx >= len(self.points): return False
+        """Stores the final measurement data and resets measurement state."""
+        if self._measure_start_point is None or self._measure_start_idx is None:
+             return False # Замер не был начат
 
+        if self.points is None or end_idx < 0 or end_idx >= len(self.points):
+             # Если конечный индекс некорректен, отменяем превью и сбрасываем состояние
+             self._cancel_measurement_preview()
+             self._measure_start_idx = None
+             self._measure_start_point = None
+             return False
+
+        # --- Рассчитываем и сохраняем ---
         start_y, start_x = self._measure_start_point
         end_y, end_x = tuple(map(float, self.points[end_idx]))
         length = float(np.hypot(end_x - start_x, end_y - start_y))
@@ -111,9 +135,14 @@ class EditorState:
             "length": length,
         }
 
-        self._remove_measurement_artists()
-        self._cancel_measurement_preview()
+        # --- Очищаем и сбрасываем состояние ---
+        self._remove_measurement_artists() # Очищаем старые линии результата (на всякий случай)
+        self._cancel_measurement_preview() # Убираем пунктирную линию
+        self._measure_start_idx = None     # Сбрасываем начало!
+        self._measure_start_point = None   # Сбрасываем начало!
+
         return True
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     def _clear_tooltip(self, *, keep_measure: bool = False, keep_preview: bool = False):
         removed_tooltip = False
@@ -126,7 +155,9 @@ class EditorState:
 
         removed_preview = False
         if not keep_preview:
+            # --- ИЗМЕНЕНИЕ: Отменяем только превью, но не сбрасываем старт ---
             removed_preview = self._cancel_measurement_preview()
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         removed_measure = False
         if not keep_measure:
@@ -142,13 +173,13 @@ class EditorState:
         inten = None
         is_percentile_like = False
 
-        if self._percent_map is not None:
+        if hasattr(self, '_percent_map') and self._percent_map is not None:
             H, W = self._percent_map.shape[:2]
             yi = max(0, min(H - 1, int(round(y))))
             xi = max(0, min(W - 1, int(round(x))))
             inten = float(self._percent_map[yi, xi])
             is_percentile_like = True
-        elif self.values is not None and idx < len(self.values):
+        elif hasattr(self, 'values') and self.values is not None and idx < len(self.values):
             inten = float(self.values[idx])
             is_percentile_like = 0 <= inten <= 100
 
@@ -190,8 +221,7 @@ class EditorState:
             "measurement": self._measurement,
             "dead_radius": self.overlay.get("dead_radius", 0.0) if self.overlay else 0.0,
             "search_radius": self.overlay.get("search_radius", 0.0) if self.overlay else 0.0,
-            # --- НОВОЕ: Сохраняем выделенные точки ---
-            "ring_select_indices": list(self._ring_select_indices), # Преобразуем set в list
+            "ring_select_indices": list(self._ring_select_indices),
         }
 
     def _push_undo(self):
@@ -208,8 +238,9 @@ class EditorState:
             except Exception: pass
             self.rect_artist = None
         self.rect_start = None
+        # --- ИЗМЕНЕНИЕ: Отменяем превью, но не сбрасываем старт ---
         self._cancel_measurement_preview()
-        # --- НОВОЕ: Отмена выбора кольцом ---
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self._cancel_ring_selection()
 
         self.points = snap["points"].copy()
@@ -226,9 +257,12 @@ class EditorState:
         if hasattr(self, 'zoom_var'): self.zoom_var.set(self.zoom_val)
 
         self._measurement = snap.get("measurement")
-
-        # --- НОВОЕ: Восстанавливаем выделенные точки ---
         self._ring_select_indices = set(snap.get("ring_select_indices", []))
+
+        # --- ИЗМЕНЕНИЕ: НЕ сбрасываем состояние измерения при откате ---
+        # self._measure_start_idx = None # Убрано
+        # self._measure_start_point = None # Убрано
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         self._ensure_view_center()
         self._update_zoom_hint()
@@ -265,13 +299,19 @@ class EditorState:
         self._redraw()
         self._set_status("Redo successful.")
 
-    # --- НОВОЕ: Отмена выбора кольцом ---
     def _cancel_ring_selection(self) -> bool:
         """Сбрасывает состояние выбора кольцом."""
         cleared_artist = False
+        # --- ИЗМЕНЕНИЕ: Проверка наличия атрибута ---
         if hasattr(self, '_ring_select_artist') and self._ring_select_artist:
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             try:
-                for patch in self._ring_select_artist: patch.remove()
+                # _ring_select_artist может быть None или списком
+                if isinstance(self._ring_select_artist, list):
+                    for patch in self._ring_select_artist:
+                        patch.remove()
+                elif self._ring_select_artist is not None: # Обработка случая одиночного артиста (хотя не должно быть)
+                    self._ring_select_artist.remove()
                 cleared_artist = True
             except Exception: pass
             self._ring_select_artist = None
@@ -284,4 +324,3 @@ class EditorState:
         self._ring_select_indices.clear()
 
         return cleared_artist or was_active or had_indices
-    # --- КОНЕЦ НОВОГО ---
