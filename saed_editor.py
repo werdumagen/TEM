@@ -129,15 +129,16 @@ class PointEditor(tk.Frame):
         self._tooltip = None  # matplotlib.text.Annotation
         self._tooltip_idx = None
 
-        # Измерение расстояний между точками
-        self._measure_active = False
-        self._measure_start_idx: Optional[int] = None
-        self._measure_start_point: Optional[tuple[float, float]] = None
+        # --- ИЗМЕНЕНО: Упрощенное состояние измерения ---
+        self._measure_active = False  # True, когда мы активно тащим линию
+        self._measure_start_idx: Optional[int] = None  # Точка, с которой началось перетаскивание
+        self._measure_start_point: Optional[tuple[float, float]] = None  # (y, x) этой точки
         self._measure_preview_end: Optional[tuple[float, float]] = None
         self._measure_preview_artist = None
         self._measure_line_artist = None
         self._measure_annotation = None
         self._measurement: Optional[dict[str, object]] = None
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # Объединение точек по радиусу от выбранной
         self._merge_seed_idx: Optional[int] = None
@@ -211,8 +212,10 @@ class PointEditor(tk.Frame):
             "Left mouse button on the center — drag the center\n"
             "Right mouse button on a point — delete\n"
             "Middle mouse button on a point — show info\n"
-            "Left mouse button on a point — select; move and press Enter to merge\n"
-            "Hold left mouse button from point to point — measure distance\n"
+            # --- ИЗМЕНЕНЫ ПОДСКАЗКИ ---
+            "Left Click on a point — select for merge\n"
+            "Left Drag (point to point) — measure distance\n"
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             "Shift + drag — rectangular range deletion"
         )
         ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=280).pack(
@@ -876,15 +879,18 @@ class PointEditor(tk.Frame):
             removed = True
         return removed
 
+    # --- ИЗМЕНЕНО: Эта функция больше не сбрасывает _measure_active ---
     def _cancel_measurement_preview(self) -> bool:
-        # Cancels an ongoing measurement (before the second click)
+        # Cancels an ongoing measurement preview (dashed line)
         removed_artist = self._remove_measure_preview_artist()
-        has_state = (self._measure_active or self._measure_start_point is not None)
-        self._measure_active = False
-        self._measure_start_idx = None
-        self._measure_start_point = None
+        has_preview_state = self._measure_preview_end is not None
+        # self._measure_active = False # <-- УДАЛЕНО
+        # self._measure_start_idx = None # <-- УДАЛЕНО
+        # self._measure_start_point = None # <-- УДАЛЕНО
         self._measure_preview_end = None
-        return removed_artist or has_state  # Return True if state was cleared or artist removed
+        return removed_artist or has_preview_state  # Return True if state was cleared or artist removed
+
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     def _clear_measurement_result(self) -> bool:
         # Clears a completed measurement result
@@ -893,12 +899,15 @@ class PointEditor(tk.Frame):
         self._measurement = None
         return removed_artists or had_measurement
 
+    # --- ИЗМЕНЕНО: Эта функция только устанавливает начальное состояние ---
     def _start_measurement(self, idx: int) -> None:
-        # Initiates measurement mode when clicking on a point
+        """Initiates measurement drag mode when clicking on a point."""
         if self.points is None or idx < 0 or idx >= len(self.points): return
-        # Clear previous measurement results first
-        if self._clear_measurement_result():
-            self._redraw()  # Redraw if old measurement was cleared
+
+        # Очищаем *предыдущий* завершенный замер (сплошную линию)
+        # (Эта очистка теперь выполняется в _on_down)
+        # if self._clear_measurement_result():
+        #     self._redraw()  # Redraw if old measurement was cleared
 
         self._measure_active = True
         self._measure_start_idx = idx
@@ -906,6 +915,8 @@ class PointEditor(tk.Frame):
         self._measure_start_point = (float(y0), float(x0))
         self._measure_preview_end = None
         self._remove_measure_preview_artist()  # Ensure no old preview line exists
+
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     def _update_measurement_preview(self, pos: Optional[tuple[float, float]]) -> None:
         # Updates the dashed preview line as the mouse moves
@@ -943,38 +954,43 @@ class PointEditor(tk.Frame):
 
         if hasattr(self, "canvas"): self.canvas.draw_idle()
 
-    def _finalize_measurement(self, end_idx: Optional[int]) -> None:
-        # Completes the measurement on the second click (if on a point)
-        if not self._measure_active or self._measure_start_point is None:
-            self._cancel_measurement_preview();
-            return
+    # --- ИЗМЕНЕНО: Эта функция принимает end_idx ИЛИ end_yx ---
+    def _finalize_measurement(self, end_idx: Optional[int] = None,
+                              end_yx: Optional[tuple[float, float]] = None) -> bool:
+        """
+        Stores the final measurement data in self._measurement.
+        Returns True on success, False on failure.
+        """
+        if self._measure_start_point is None:
+            return False  # No start point
 
-        needs_redraw = False
-        if self.points is None or end_idx is None or end_idx == self._measure_start_idx or end_idx < 0 or end_idx >= len(
-                self.points):
-            # If second click is not on a valid *different* point, cancel measurement
-            if self._cancel_measurement_preview(): needs_redraw = True
-        else:
-            # Valid second point clicked
-            start_y, start_x = self._measure_start_point
-            end_y, end_x = map(float, self.points[end_idx])
-            length = float(np.hypot(end_x - start_x, end_y - start_y))
-            # Store measurement details
-            self._measurement = {
-                "start_yx": (start_y, start_x),
-                "end_yx": (end_y, end_x),
-                "length": length,
-            }
-            # Cancel the preview mode (removes dashed line)
-            self._cancel_measurement_preview()
-            needs_redraw = True  # Need to redraw to show final measurement line/text
+        start_y, start_x = self._measure_start_point
+        final_end_yx = None
 
-        # Deactivate measurement mode regardless
-        self._measure_active = False
-        self._measure_start_idx = None
-        self._measure_start_point = None
+        if end_idx is not None:
+            if self.points is not None and 0 <= end_idx < len(self.points):
+                final_end_yx = tuple(map(float, self.points[end_idx]))
+        elif end_yx is not None:
+            final_end_yx = end_yx
 
-        if needs_redraw: self._redraw()
+        if final_end_yx is None:
+            return False  # No valid end point
+
+        end_y, end_x = final_end_yx
+        length = float(np.hypot(end_x - start_x, end_y - start_y))
+
+        # Store measurement details
+        self._measurement = {
+            "start_yx": (start_y, start_x),
+            "end_yx": (end_y, end_x),
+            "length": length,
+        }
+
+        # Clear any old line/text (redundant, but safe)
+        self._remove_measurement_artists()
+        return True
+
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     def _draw_measurement_overlays(self) -> None:
         # Draws the solid line and text for a completed measurement
@@ -1320,18 +1336,47 @@ class PointEditor(tk.Frame):
         self._on_zoom_change(new_zoom_val)  # Use the common handler
 
     # ---------- Mouse / Keyboard events ----------
+    # --- НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД ---
+    def _cancel_all_interactions(self, *, keep_status: bool = False) -> bool:
+        """Cancels any ongoing drag, selection, or preview."""
+        cleared_preview = self._cancel_measurement_preview()  # Removes dashed line
+        cleared_merge = self._clear_merge_seed(keep_status=keep_status)
+        cleared_drag = self.center_dragging
+
+        cleared_measure_active = False
+        if self._measure_active:
+            self._measure_active = False
+            self._measure_start_idx = None
+            self._measure_start_point = None
+            cleared_measure_active = True
+
+        self.center_dragging = False
+
+        # Не очищаем rect_start, _on_up отвечает за это
+
+        return (cleared_preview or cleared_merge or cleared_drag or cleared_measure_active)
+
+    # --- КОНЕЦ НОВОГО МЕТОДА ---
+
     def _on_key(self, e):
         # Handles key presses on the canvas
         if e.key == "escape":
-            # Clear tooltip, cancel measurement preview, cancel merge selection
+            # --- ИЗМЕНЕНО: Используем _cancel_all_interactions ---
             cleared_tooltip = self._tooltip is not None
-            cleared_measure = self._cancel_measurement_preview()
-            cleared_merge = self._clear_merge_seed()
-            if cleared_tooltip or cleared_measure or cleared_merge:
-                self._redraw()  # Redraw if any state was cleared
-            if not (cleared_tooltip or cleared_measure or cleared_merge):
-                self._set_status("Escape pressed, no action taken.")
+            if self._tooltip:
+                self._clear_tooltip()  # _clear_tooltip сама вызывает draw_idle
 
+            cleared_interactions = self._cancel_all_interactions()
+
+            if cleared_interactions:
+                self._set_status("Action cancelled.")
+                self._redraw()
+            elif cleared_tooltip:
+                # _clear_tooltip уже вызвала redraw
+                pass
+            else:
+                self._set_status("Escape pressed, no action taken.")
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         elif e.key in {"enter", "return"}:
             # Finalize merge operation if a seed point is selected
@@ -1380,31 +1425,44 @@ class PointEditor(tk.Frame):
 
             # --- Click on Center? ---
             if self._center_hit(y, x):
-                self._clear_merge_seed()  # Cancel merge selection
-                self._cancel_measurement_preview()  # Cancel measurement
+                # --- ИЗМЕНЕНО: Отменяем все действия ---
+                self._cancel_all_interactions()
+                self._clear_measurement_result()  # Также очищаем сплошную линию
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                 self._push_undo()  # Save state before dragging center
                 self.center_dragging = True
                 self._redo.clear()
                 self._set_status("Dragging center overlay. Release to finish.")
-                self._redraw()  # Show visual feedback? (Optional)
+                self._redraw()
                 return
 
             # --- Click Near a Point? ---
             i = self._near_idx(y, x)
             if i is not None:
-                # If measurement is active, finalize it
-                if self._measure_active:
-                    self._finalize_measurement(i)
-                else:
-                    # If not measuring, select point for merge OR start measurement
-                    self._select_merge_seed(i)
-                    self._start_measurement(i)  # Start measurement mode simultaneously
-                    self._set_status("Point selected. Drag to measure distance or press Enter to merge.")
+                # --- ИЗМЕНЕНО: Логика замера/слияния ---
+                # Немедленно очищаем *завершенный* замер
+                self._clear_measurement_result()
+                # Немедленно очищаем *выбор* для слияния
+                self._clear_merge_seed()
+
+                # Начинаем замер. Мы не знаем, будет это клик или драг.
+                self._start_measurement(i)
+                # НЕ вызываем _select_merge_seed здесь.
+                # НЕ вызываем _push_undo здесь.
+                # НЕ вызываем _redraw здесь.
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                return  # --- ДОБАВЛЕНО: Завершаем обработку клика на точке ---
 
             # --- Click on Empty Area? ---
             else:
-                self._clear_merge_seed()  # Cancel merge selection
-                self._cancel_measurement_preview()  # Cancel measurement
+                # --- ИЗМЕНЕНО: Отменяем все действия ---
+                cleared_something = self._cancel_all_interactions()
+                # Очищаем также *завершенный* замер
+                cleared_measure_result = self._clear_measurement_result()
+                if cleared_something:
+                    self._set_status(self._default_status)
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
                 self._push_undo()  # Save state before adding point
                 # Add new point
                 self.points = np.vstack([self.points, [y, x]])
@@ -1413,10 +1471,20 @@ class PointEditor(tk.Frame):
                 self.values = np.append(self.values, sampled_value)
                 self._redo.clear()
                 self._set_status(f"Added point at ({x:.1f}, {y:.1f}).")
+                # --- ИЗМЕНЕНО: Добавляем redraw ---
+                self._redraw()
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                return  # --- ДОБАВЛЕНО: Завершаем обработку клика на пустом месте ---
 
         # --- Right Mouse Button (Button 3) ---
         elif e.button == 3:
             if pos_yx is None: return  # Click outside axes
+
+            # --- ИЗМЕНЕНО: Отменяем все действия перед удалением ---
+            self._cancel_all_interactions()
+            self._clear_measurement_result()
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
             y, x = pos_yx
             i = self._near_idx(y, x)  # Find point to delete
             if i is not None:
@@ -1451,8 +1519,13 @@ class PointEditor(tk.Frame):
                 self._redo.clear()
                 self._set_status("Deleted point.")
 
-        # Redraw after any action (add, delete, select)
-        self._redraw()
+            # Redraw after delete
+            self._redraw()
+            return  # --- ДОБАВЛЕНО: Завершаем обработку ---
+
+        # --- ИЗМЕНЕНО: Убираем redraw отсюда ---
+        # self._redraw()
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     def _on_move(self, e):
         # Handles mouse movement over the canvas
@@ -1469,18 +1542,16 @@ class PointEditor(tk.Frame):
             y, x = pos_yx
             if self.overlay is None: self.overlay = {}  # Ensure exists
             self.overlay["center"] = {"x": float(x), "y": float(y)}
-            # Update view center dynamically while dragging? Optional, can feel jerky.
-            # self.view_cx = float(x)
-            # self.view_cy = float(y)
             self._redraw()  # Redraw to show center moving
             self._set_status("Dragging center...")  # Update status
             return  # Don't do other move actions while dragging center
 
+        # --- ИЗМЕНЕНО: Обновление замера ---
         # --- Updating Measurement Preview ---
         if self._measure_active:
             self._update_measurement_preview(pos_yx)  # Update dashed line
-            # Don't return here, allow rect drag simultaneously if needed? No, measure takes priority.
-            return
+            return  # Важно: не проваливаемся в выделение прямоугольником
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # --- Updating Rectangular Selection ---
         if self.rect_start and e.xdata is not None and e.ydata is not None:
@@ -1532,23 +1603,52 @@ class PointEditor(tk.Frame):
             self._set_status("Center position updated.")
             return
 
-        # --- Releasing after Measurement Start (potential finalize) ---
+        # --- ИЗМЕНЕНО: Логика завершения замера / выбора ---
+        # --- Releasing after Measurement Start ---
         if self._measure_active:
-            # Measurement is finalized only by clicking a *second point* (handled in _on_down)
-            # Releasing button in empty space or on same point cancels preview
+            start_idx = self._measure_start_idx
+            self._remove_measure_preview_artist()  # Убираем пунктирную линию
+
             pos_yx = self._img_xy(e)
             end_idx = None
+            end_yx = None
             if pos_yx is not None:
-                end_idx = self._near_idx(pos_yx[0], pos_yx[1])
+                end_yx = (float(pos_yx[0]), float(pos_yx[1]))
+                end_idx = self._near_idx(end_yx[0], end_yx[1], pix_tol=8)
 
-            # If released on the start point or empty space, just cancel the preview drawing
-            if end_idx is None or end_idx == self._measure_start_idx:
-                if self._cancel_measurement_preview():
-                    self._redraw()  # Redraw if preview was cleared
-                    self._set_status("Measurement cancelled.")
-                # Important: Don't reset _measure_active here, it's reset in _finalize or _cancel
-            # If released on a *different* point, _finalize_measurement was already called in _on_down
+            # Case 1: Простой клик (отпустили на той же точке)
+            if end_idx == start_idx:
+                self._select_merge_seed(start_idx)
+                # Статус устанавливается внутри _select_merge_seed
+
+            # Case 2: Перетащили на другую точку
+            elif end_idx is not None and end_idx != start_idx:
+                self._clear_merge_seed()
+                if self._finalize_measurement(end_idx=end_idx, end_yx=None):
+                    length = self._measurement.get("length", 0.0)
+                    self._set_status(f"Measured {length:.1f} px between points.")
+
+            # Case 3: Перетащили в пустое место
+            elif end_yx is not None:
+                self._clear_merge_seed()
+                if self._finalize_measurement(end_idx=None, end_yx=end_yx):
+                    length = self._measurement.get("length", 0.0)
+                    self._set_status(f"Measured {length:.1f} px to cursor.")
+
+            # Case 4: Отпустили вне холста или другая отмена
+            else:
+                self._clear_merge_seed()
+                # self._cancel_measurement_preview() # Уже вызван (неявно)
+                self._set_status(self._default_status)
+
+            # Сбрасываем состояние замера
+            self._measure_active = False
+            self._measure_start_idx = None
+            self._measure_start_point = None
+
+            self._redraw()  # Перерисовываем, чтобы показать результат
             return
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # --- Releasing after Rectangular Selection ---
         if self.rect_start:
