@@ -138,20 +138,43 @@ class EditorDrawingView:
             edgecolors = "black"
             alpha = 0.9
 
-            # --- ИЗМЕНЕНИЕ: Определяем цвета по строковому типу ---
+            # --- ИЗМЕНЕНИЕ: Новая логика цветов (str типы + numeric ID) ---
             colors = []
+            numeric_group_ids = set()
+            max_numeric_id = -1
             if hasattr(self, 'point_types') and len(self.point_types) == len(points_to_draw):
-                type_color_map = {
+                # Сначала собираем все числовые ID
+                for pt_type in self.point_types:
+                    if isinstance(pt_type, int):
+                        numeric_group_ids.add(pt_type)
+                        if pt_type > max_numeric_id:
+                            max_numeric_id = pt_type
+
+                # Создаем карту цветов для числовых ID
+                num_numeric_groups = len(numeric_group_ids)
+                # Используем max_numeric_id + 1 для стабильности цветов
+                cmap_N = max(max_numeric_id + 1, 1)
+                colormap = plt.get_cmap('viridis', cmap_N)
+                numeric_color_map = {gid: colormap(gid / max(cmap_N - 1, 1)) for gid in numeric_group_ids}
+
+                # Карта для строковых типов
+                string_color_map = {
                     "unknown": "yellow",         # Желтый
                     "structural": "cyan",        # Голубой
-                    "superstructural": "magenta",# Фиолетовый
-                    "other": "purple",           # Пурпурный
+                    "superstructural": "magenta",# Фиолетовый (ярко-розовый)
+                    "other": "purple",           # Пурпурный (темно-фиолетовый)
                 }
+
+                # Назначаем цвета
                 for pt_type in self.point_types:
-                     # Используем get с серым цветом по умолчанию, если тип не найден
-                    colors.append(type_color_map.get(pt_type, "gray"))
+                    if isinstance(pt_type, str):
+                        colors.append(string_color_map.get(pt_type, "gray")) # Строковый тип
+                    elif isinstance(pt_type, int):
+                        colors.append(numeric_color_map.get(pt_type, "gray")) # Числовой ID
+                    else:
+                        colors.append("gray") # Неизвестный тип данных
             else:
-                # Фоллбэк, если типы не загружены или не совпадают
+                # Фоллбэк
                 colors = ['yellow'] * len(points_to_draw)
 
             self.ax.scatter(points_to_draw[:, 1], points_to_draw[:, 0],

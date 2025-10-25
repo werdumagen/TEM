@@ -16,9 +16,9 @@ from typing import Optional, Dict, Any, List, Tuple, Union # Добавлено 
 from collections import Counter # Для подсчета точек в группе
 # Импорт специального индекса
 from saed_editor_state import CENTER_AS_POINT_IDX
-# --- ИЗМЕНЕНИЕ: Импорт функций анализа ---
+# --- Импорт функций анализа ---
 from scipy.signal import find_peaks
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+# --- КОНЕЦ Импорта ---
 
 
 # --- Функции анализа (остаются здесь) ---
@@ -194,7 +194,6 @@ class EditorEventHandlers:
 
         if len(non_zero_radii) == 0:
              self._set_status("Cannot average: All selected points are at the center.")
-             # Восстанавливаем состояние до push_undo
              if self._undo: self._apply_snapshot(self._undo.pop())
              return
 
@@ -207,17 +206,10 @@ class EditorEventHandlers:
         self.points[valid_indices, 0] = cy + new_dy
         self.points[valid_indices, 1] = cx + new_dx
 
-        # Обновляем intensity И area после усреднения
         if self.values is not None and len(self.values) == len(self.points):
              self.values[valid_indices] = self._sample_intensities(self.points[valid_indices])
         if hasattr(self, 'areas') and self.areas is not None and len(self.areas) == len(self.points):
             pass
-
-        # --- ИЗМЕНЕНИЕ: НЕ МЕНЯЕМ ТИП при ручном усреднении ---
-        # Тип остается тот, который был до усреднения
-        # for idx in valid_indices:
-        #      self.point_types[idx] = "averaged" # Пример
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         count = len(valid_indices)
         self._set_status(f"Averaged {count} points to radius {average_radius:.2f} px.")
@@ -227,13 +219,12 @@ class EditorEventHandlers:
 
     # --- КОНЕЦ МЕТОДОВ ДЛЯ КОЛЬЦА ---
 
-    # --- ИЗМЕНЕНИЕ: Логика авто-группировки + классификации по симметрии ---
+    # --- ИЗМЕНЕНИЕ: Алгоритм авто-группировки (v5 - финальная) ---
     def _auto_group_rings_and_save(self):
         self._set_status("Starting auto-grouping...")
-        num_groups = 0 # Инициализируем
-        dominant_symmetry = 0 # Инициализируем
+        num_classified_groups = 0 # structural + superstructural
+        num_numeric_groups = 0    # Группы 2го этапа (только радиус)
 
-        # --- Шаг 1: Выполнить группировку по радиусу/площади ---
         if self.points is None or len(self.points) == 0:
             self._set_status("No points to group.")
             return
@@ -253,22 +244,42 @@ class EditorEventHandlers:
 
         center_data = self.overlay["center"]
         cy, cx = float(center_data["y"]), float(center_data["x"])
-        dead_radius = float(self.overlay.get("dead_radius", 0.0)) # Используем dead_radius
+        dead_radius = float(self.overlay.get("dead_radius", 0.0))
 
         all_radii = np.hypot(self.points[:, 1] - cx, self.points[:, 0] - cy)
+        all_angles = np.degrees(np.arctan2(self.points[:, 0] - cy, self.points[:, 1] - cx))
+        all_angles = (all_angles + 360) % 360
         sorted_indices = np.argsort(all_radii)
 
         # Сначала все "unknown"
         self.point_types = ["unknown"] * len(self.points)
         assigned_indices = set()
-        group_id_counter = 0
-        groups_data = {} # {group_id: [indices]}
+        numeric_group_id_counter = 0 # Счетчик для числовых ID на 2м этапе
 
+        # --- Шаг 1: Определить доминирующую симметрию ---
+        potential_ring_means, _, _ = cluster_rings(all_radii[all_radii > dead_radius])
+        sym_scores = symmetry_scores(all_angles, all_radii, potential_ring_means)
+        dominant_symmetry = 0
+        if sym_scores:
+            best_sym_str = max(sym_scores, key=sym_scores.get)
+            dominant_symmetry = int(best_sym_str.split('-')[0])
+            print(f"Dominant symmetry: {dominant_symmetry}-fold")
+            scores_str = "\n".join(f"{key}: {value:.4f}" for key, value in sym_scores.items())
+            ring_str = f"Ring means used for scores:\n{np.array2string(potential_ring_means, precision=2)}\n\n"
+            messagebox.showinfo("Symmetry Scores", f"{ring_str}Scores:\n{scores_str}")
+        else:
+            dominant_symmetry = 0
+            print("Could not determine dominant symmetry.")
+            messagebox.showwarning("Symmetry Warning", "Could not determine dominant symmetry. Symmetry classification skipped.")
+
+        # --- Этап 2: Группировка по Радиусу + Площади и Классификация по симметрии ---
+        print("Starting Pass 1 (Radius + Area + Symmetry)...")
         for i in range(len(sorted_indices)):
             current_idx = sorted_indices[i]
             if current_idx in assigned_indices: continue
             current_radius = all_radii[current_idx]
 
+            # 1. Кандидаты по радиусу
             potential_group_indices = []
             for j in range(i, len(sorted_indices)):
                 check_idx = sorted_indices[j]
@@ -278,9 +289,9 @@ class EditorEventHandlers:
                     potential_group_indices.append(check_idx)
                 else:
                     break
-
             if not potential_group_indices: continue
 
+            # 2. Фильтр по площади
             candidate_areas = self.areas[potential_group_indices]
             final_group_indices = []
             if len(candidate_areas) > 0 and np.any(candidate_areas > 0):
@@ -291,69 +302,91 @@ class EditorEventHandlers:
             else:
                 final_group_indices = potential_group_indices
 
+            # 3. Классификация по симметрии (если группа не пуста)
             if final_group_indices:
-                print(f"Found group {group_id_counter} at r~{current_radius:.1f}px: {len(final_group_indices)} points")
-                groups_data[group_id_counter] = final_group_indices # Сохраняем индексы группы
-                for idx in final_group_indices:
-                    # Пока не присваиваем тип, только ID
-                    self.point_types[idx] = group_id_counter
-                    assigned_indices.add(idx)
-                group_id_counter += 1
+                N = len(final_group_indices)
+                point_type = "other" # По умолчанию
+                is_classified_by_symmetry = False # Флаг
 
-        num_groups = group_id_counter # Сохраняем количество найденных групп
+                if dominant_symmetry > 0:
+                    if N == dominant_symmetry:
+                        point_type = "structural"
+                        is_classified_by_symmetry = True
+                    elif N > dominant_symmetry and N % dominant_symmetry == 0:
+                        point_type = "superstructural"
+                        is_classified_by_symmetry = True
 
-        # --- Шаг 2: Определить доминирующую симметрию ---
-        all_angles = np.degrees(np.arctan2(self.points[:, 0] - cy, self.points[:, 1] - cx))
-        all_angles = (all_angles + 360) % 360
-        # Используем cluster_rings для оценки радиусов колец (только для symmetry_scores)
-        potential_ring_means, _, _ = cluster_rings(all_radii[all_radii > dead_radius])
-        sym_scores = symmetry_scores(all_angles, all_radii, potential_ring_means)
+                # Присваиваем тип и помечаем ТОЛЬКО если классифицировано по симметрии
+                if is_classified_by_symmetry:
+                    print(f" Pass 1: Found group type '{point_type}' at r~{current_radius:.1f}px: {N} points")
+                    for idx in final_group_indices:
+                        self.point_types[idx] = point_type
+                        assigned_indices.add(idx)
+                    num_classified_groups += 1
+                # else: Оставляем "unknown", будет обработано на Этапе 3
 
-        if sym_scores:
-            best_sym_str = max(sym_scores, key=sym_scores.get)
-            dominant_symmetry = int(best_sym_str.split('-')[0])
-            print(f"Dominant symmetry: {dominant_symmetry}-fold")
-            # Показываем окно с sym_scores
-            scores_str = "\n".join(f"{key}: {value:.4f}" for key, value in sym_scores.items())
-            ring_str = f"Ring means used for scores:\n{np.array2string(potential_ring_means, precision=2)}\n\n"
-            messagebox.showinfo("Symmetry Scores", f"{ring_str}Scores:\n{scores_str}")
+        print(f"Pass 1 finished. Classified {num_classified_groups} groups by symmetry.")
+
+        # --- Этап 3: Группировка оставшихся ТОЛЬКО по Радиусу (включая одиночные) ---
+        print("Starting Pass 2 (Radius only for remaining points)...")
+        unknown_indices = [i for i, t in enumerate(self.point_types) if t == "unknown"]
+        if not unknown_indices:
+            print("No remaining points for Pass 2.")
         else:
-            dominant_symmetry = 0
-            print("Could not determine dominant symmetry.")
-            messagebox.showwarning("Symmetry Warning", "Could not determine dominant symmetry. Classification by symmetry is skipped.")
+            unknown_radii = all_radii[unknown_indices]
+            sorted_unknown_local_indices = np.argsort(unknown_radii)
 
-        # --- Шаг 3: Переклассифицировать группы на основе симметрии ---
-        final_type_counts = Counter()
-        if dominant_symmetry > 0:
-            for group_id, indices in groups_data.items():
-                N = len(indices)
-                final_type = "other" # По умолчанию
-                if N == dominant_symmetry:
-                    final_type = "structural"
-                elif N > dominant_symmetry and N % dominant_symmetry == 0:
-                     # Убрана погрешность +/- 1, теперь строго кратно
-                     final_type = "superstructural"
-                # Присваиваем окончательный строковый тип всем точкам группы
-                for idx in indices:
-                    self.point_types[idx] = final_type
-                final_type_counts[final_type] += 1
-        else:
-             # Если симметрия не найдена, все группы становятся "other"
-             for group_id, indices in groups_data.items():
-                  for idx in indices:
-                       self.point_types[idx] = "other"
-                  final_type_counts["other"] += 1
+            for i in range(len(sorted_unknown_local_indices)):
+                current_local_idx = sorted_unknown_local_indices[i]
+                current_original_idx = unknown_indices[current_local_idx]
 
-        # Точки, не попавшие ни в одну группу, остаются "unknown"
-        final_type_counts["unknown"] = len(self.points) - len(assigned_indices)
+                # Пропускаем, если точка уже получила ID во втором проходе
+                if self.point_types[current_original_idx] != "unknown":
+                     continue
 
-        self._redo.clear() # Очищаем redo после автоматического изменения
+                current_radius = unknown_radii[current_local_idx]
+
+                # Ищем соседей ТОЛЬКО по радиусу среди оставшихся unknown
+                potential_group_original_indices = []
+                for j in range(i, len(sorted_unknown_local_indices)): # Начиная с текущей
+                    check_local_idx = sorted_unknown_local_indices[j]
+                    check_original_idx = unknown_indices[check_local_idx]
+
+                    # Проверяем, не назначена ли уже эта точка
+                    if self.point_types[check_original_idx] != "unknown":
+                        continue
+
+                    radius_diff = abs(unknown_radii[check_local_idx] - current_radius)
+                    if radius_diff <= radius_tol_px:
+                        potential_group_original_indices.append(check_original_idx)
+                    else:
+                        break # Дальше радиусы будут только больше
+
+                # Назначаем новый числовой ID (даже для одиночных точек)
+                if potential_group_original_indices:
+                    print(f" Pass 2: Found group ID {numeric_group_id_counter} at r~{current_radius:.1f}px: {len(potential_group_original_indices)} points")
+                    for idx in potential_group_original_indices:
+                        self.point_types[idx] = numeric_group_id_counter
+                    numeric_group_id_counter += 1 # Увеличиваем счетчик
+
+            num_numeric_groups = numeric_group_id_counter
+            print(f"Pass 2 finished. Assigned {num_numeric_groups} numeric group IDs.")
+
+        # --- Шаг 4: Сохранение и обновление UI ---
+        self._redo.clear()
         self._redraw()
-        summary_msg = f"Grouping complete. Found {num_groups} groups. Types assigned: {dict(final_type_counts)}"
+        final_type_counts = Counter(self.point_types)
+        num_unknown = final_type_counts.get("unknown", 0)
+        num_structural = final_type_counts.get("structural", 0)
+        num_superstructural = final_type_counts.get("superstructural", 0)
+        num_other_str = final_type_counts.get("other", 0) # Should be 0 now
+        num_numeric_actual = len([t for t in self.point_types if isinstance(t, int)])
+
+        summary_msg = f"Grouping done. Structural: {num_structural}. Superstr: {num_superstructural}. Numeric IDs: {num_numeric_groups}. Unknown: {num_unknown}."
         print(summary_msg)
         self._set_status(summary_msg)
 
-        # --- Шаг 4: Сохранить отладочный файл ---
+        # Сохраняем отладочный файл
         output_dir = None
         if self.controller and hasattr(self.controller, 'launcher'):
              output_dir_str = self.controller.launcher.ent_out.get()
@@ -364,7 +397,7 @@ class EditorEventHandlers:
                   except Exception as e:
                        messagebox.showerror("Save Error", f"Invalid output directory '{output_dir_str}':\n{e}")
                        self._set_status("Grouping done, but failed to get output directory for debug file.")
-                       return # Выходим, если не можем получить папку
+                       return
              else:
                   messagebox.showerror("Save Error", "Output folder not specified in Launcher tab.")
                   self._set_status("Grouping done, but output folder not set for debug file.")
@@ -398,9 +431,8 @@ class EditorEventHandlers:
 
             intensity = float(self.values[i]) if i < len(self.values) else None
             area = float(self.areas[i]) if i < len(self.areas) else None
-            # --- ИЗМЕНЕНИЕ: Сохраняем строковый тип ---
+            # Сохраняем тип (может быть str или int)
             point_type = self.point_types[i] if i < len(self.point_types) else "error"
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             data_to_save.append({
                 "index": i,
@@ -409,14 +441,21 @@ class EditorEventHandlers:
                 "radius_px": radius,
                 "intensity_perc": intensity,
                 "area_px2": area,
-                # --- ИЗМЕНЕНИЕ: Ключ теперь 'type' ---
+                # Сохраняем как есть (str или int)
                 "type": point_type
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             })
 
         filepath = output_dir / filename
         try:
-            filepath.write_text(json.dumps(data_to_save, indent=2), encoding="utf-8")
+            # Используем lambda для сериализации NumPy int64, если вдруг попадется
+            def default_serializer(obj):
+                 if isinstance(obj, np.integer): return int(obj)
+                 # --- ИЗМЕНЕНИЕ: Добавим обработку float32 ---
+                 if isinstance(obj, np.floating): return float(obj)
+                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                 raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+            filepath.write_text(json.dumps(data_to_save, indent=2, default=default_serializer), encoding="utf-8")
             # Обновляем статус, добавляя к предыдущему сообщению
             current_status = self._status_message
             self._set_status(f"{current_status} Debug data saved to {filename}")
@@ -426,7 +465,7 @@ class EditorEventHandlers:
             self._set_status(f"Failed to save {filename}")
     # --- КОНЕЦ НОВОГО МЕТОДА ---
 
-    # --- ИЗМЕНЕНИЕ: Обертка теперь вызывает _auto_group_rings_and_save ---
+
     def _auto_group_and_save_wrapper(self):
         """ Обертка для кнопки Auto-Group & Save Debug """
         if self._auto_grouping_active:
@@ -445,7 +484,6 @@ class EditorEventHandlers:
              self._auto_grouping_active = False
              if hasattr(self, 'btn_auto_group') and self.btn_auto_group.winfo_exists():
                   self.btn_auto_group.config(state=tk.NORMAL) # Разблокируем кнопку
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
     # ---------- Mouse / Keyboard events ----------
@@ -456,7 +494,6 @@ class EditorEventHandlers:
             if self._tooltip: self._clear_tooltip()
             cleared_interactions = self._cancel_all_interactions()
             if cleared_interactions:
-                # Статус уже сброшен в _cancel_all_interactions
                 self._redraw()
             elif cleared_tooltip: pass
             else: self._set_status("Escape pressed, no action taken.")
@@ -502,11 +539,10 @@ class EditorEventHandlers:
             # --- Приоритет 1: Завершение рисования кольца (ЛКМ) ---
             if self._ring_select_active and is_left_click:
                  self._select_points_in_ring()
-                 return # Важно! Не проваливаемся в другую логику ЛКМ
+                 return
 
             # --- Приоритет 2: Режим Выбора кольцом (Ctrl+Drag) ---
             if is_ctrl_pressed and is_left_click:
-                 # Проверяем, что не активен другой режим (на всякий случай)
                  if self._measure_start_idx is None and not self.center_dragging and not self.rect_start:
                       if pos_yx is not None: self._start_ring_selection(pos_yx)
                  return
@@ -524,7 +560,7 @@ class EditorEventHandlers:
             # --- Приоритет 4: Прямоугольное удаление (Shift+Drag, если НЕТ выбора кольцом) ---
             if is_shift_pressed and is_left_click and not self._ring_select_indices:
                 if pos_yx is not None:
-                    if self._cancel_all_interactions(): self._redraw() # Отменяем всё перед началом выделения
+                    if self._cancel_all_interactions(): self._redraw()
                     self._push_undo()
                     self.rect_start = pos_yx
                     self._redo.clear()
@@ -532,7 +568,7 @@ class EditorEventHandlers:
                 return
 
             # --- Обычные клики (без Shift, Ctrl и НЕ в режиме рисования кольца) ---
-            if pos_yx is None: return # Клик вне холста
+            if pos_yx is None: return
 
             y, x = pos_yx
             hit_center = self._center_hit(y, x)
@@ -542,7 +578,6 @@ class EditorEventHandlers:
             if is_left_click:
                  if hit_center:
                       if self._measure_start_idx is not None:
-                           # Завершаем замер до центра
                            if self._finalize_measurement_to_center():
                                 length = self._measurement.get("length", 0.0)
                                 self._set_status(f"Measured {length:.1f} px to center.")
@@ -550,7 +585,6 @@ class EditorEventHandlers:
                                 self._set_status("Measurement failed or center undefined.")
                            self._redraw()
                       else:
-                           # Начинаем ПЕРЕТАСКИВАНИЕ центра (если замер не активен)
                            if self._cancel_all_interactions(): self._redraw()
                            self._push_undo()
                            self.center_dragging = True
@@ -558,14 +592,12 @@ class EditorEventHandlers:
                            self._set_status("Dragging center overlay. Release to finish.")
                  elif hit_point_idx is not None:
                       if self._measure_start_idx is None:
-                           # Начинаем замер от точки
                            if self._cancel_all_interactions(): self._redraw()
                            self._clear_measurement_result()
                            self._start_measurement(hit_point_idx)
                            self._set_status(f"Measurement started from point {hit_point_idx}. Click second point or center.")
                            self._redraw()
                       elif self._measure_start_idx != hit_point_idx:
-                           # Завершаем замер до точки
                            pt_y, pt_x = self.points[hit_point_idx]
                            if self._finalize_measurement(end_yx=(float(pt_y), float(pt_x))):
                                 length = self._measurement.get("length", 0.0)
@@ -574,8 +606,7 @@ class EditorEventHandlers:
                                 self._set_status("Measurement failed.")
                            self._redraw()
                       else: # Клик на ту же точку
-                           # Отменяем замер
-                           self._cancel_all_interactions() # Отменит и превью, и старт
+                           self._cancel_all_interactions()
                            self._set_status(self._default_status)
                            self._redraw()
                  else: # Клик на пустое место
@@ -588,12 +619,10 @@ class EditorEventHandlers:
                       self.points = np.vstack([self.points, [y, x]])
                       sampled_value = self._sample_intensities(np.array([[y, x]]))[0]
                       self.values = np.append(self.values, sampled_value)
-                      # Добавляем тип "unknown"
                       if hasattr(self, 'point_types'):
                           self.point_types.append("unknown")
                       else:
                           self.point_types = ["unknown"] * len(self.points)
-                      # Добавляем площадь 0.0
                       if hasattr(self, 'areas') and self.areas is not None:
                           self.areas = np.append(self.areas, 0.0)
                       else:
@@ -612,7 +641,6 @@ class EditorEventHandlers:
                       if was_selected: self._ring_select_indices.remove(hit_point_idx)
                       if hit_point_idx >= len(self.points):
                            self._set_status("Error: Point index out of bounds during deletion.")
-                           # Восстанавливаем состояние до push_undo
                            if self._undo: self._apply_snapshot(self._undo.pop())
                            return
 
@@ -751,7 +779,8 @@ class EditorEventHandlers:
 
                     # Удаляем типы точек и ПЛОЩАДИ
                     if hasattr(self, 'point_types') and len(self.point_types) == len(mask_to_keep) + num_to_delete:
-                        types_array = np.array(self.point_types)
+                        # Преобразуем в numpy array для индексации маской
+                        types_array = np.array(self.point_types, dtype=object) # Используем dtype=object для смешанных типов
                         self.point_types = types_array[mask_to_keep].tolist()
                     else:
                         print("Warning: point_types length mismatch during rect delete. Resetting types.")
@@ -838,7 +867,8 @@ class EditorEventHandlers:
 
             # Удаляем типы
             if hasattr(self, 'point_types') and len(self.point_types) == len(mask_keep) + num_deleted:
-                types_array = np.array(self.point_types)
+                # Используем numpy array для индексации маской
+                types_array = np.array(self.point_types, dtype=object) # dtype=object для смешанных типов
                 self.point_types = types_array[mask_keep].tolist()
             else:
                 print("Warning: point_types length mismatch during center filter. Resetting types.")

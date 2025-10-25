@@ -93,8 +93,14 @@ class EditorIO:
                 yy = [float(p.get("y", 0.0)) for p in pts_data]
                 xx = [float(p.get("x", 0.0)) for p in pts_data]
                 self.points = np.column_stack([yy, xx]).astype(float)
-                # --- ИЗМЕНЕНИЕ: Читаем типы (str) и ПЛОЩАДИ ---
-                self.point_types = [str(p.get("type", "unknown")) for p in pts_data] # Гарантируем строку
+                # --- ИЗМЕНЕНИЕ: Читаем типы (str/int) и ПЛОЩАДИ ---
+                raw_types = [p.get("type", "unknown") for p in pts_data]
+                # Преобразуем int ID обратно в int, остальное в str
+                self.point_types = []
+                for t in raw_types:
+                     try: self.point_types.append(int(t)) # Пробуем как int
+                     except (ValueError, TypeError): self.point_types.append(str(t)) # Если не int, то str
+
                 self.areas = np.array([float(p.get("area", 0.0)) for p in pts_data], dtype=float) # Читаем area
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -153,19 +159,19 @@ class EditorIO:
 
 
         pts_list = []
-        # --- ИЗМЕНЕНИЕ: Используем текущие values, areas, types ---
+        # --- ИЗМЕНЕНИЕ: Используем текущие values, areas, types (str/int) ---
         current_values = self.values if self.values is not None else np.zeros(len(self.points))
         current_areas = self.areas if hasattr(self, 'areas') and self.areas is not None else np.zeros(len(self.points))
 
         for i, (y, x) in enumerate(self.points):
             intensity = float(current_values[i]) if i < len(current_values) else 0.0
             area = int(current_areas[i]) if i < len(current_areas) else 0 # Сохраняем area как int
-            pt_type = str(self.point_types[i]) if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown" # Сохраняем строку
+            pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown" # Сохраняем как есть (str/int)
             pts_list.append({
                 "y": float(y), "x": float(x),
                 "intensity": intensity, # Это уже %
                 "area": area,           # Добавляем area
-                "type": pt_type         # Добавляем тип (str)
+                "type": pt_type         # Добавляем тип (str/int)
             })
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -202,8 +208,8 @@ class EditorIO:
         """Returns a serializable dictionary of the editor's state."""
         points_list = self.points.tolist() if self.points is not None else []
         values_list = self.values.tolist() if self.values is not None else []
-        # --- ИЗМЕНЕНО: Сохраняем типы (str) и ПЛОЩАДИ ---
-        types_list = [str(t) for t in self.point_types] if hasattr(self, 'point_types') else ["unknown"] * len(points_list)
+        # --- ИЗМЕНЕНО: Сохраняем типы (str/int) и ПЛОЩАДИ ---
+        types_list = list(self.point_types) if hasattr(self, 'point_types') else ["unknown"] * len(points_list) # Сохраняем как есть
         areas_list = self.areas.tolist() if hasattr(self, 'areas') and self.areas is not None else [0.0] * len(points_list)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -212,7 +218,7 @@ class EditorIO:
             "preproc_settings": self._preproc_settings.to_json() if self._preproc_settings else {"mode":"raw"},
             "points": points_list,
             "values": values_list,
-            "point_types": types_list, # Сохраняем типы (str)
+            "point_types": types_list, # Сохраняем типы (str/int)
             "areas": areas_list,       # Сохраняем площади
             "overlay": self.overlay,
             "zoom_val": self.zoom_val,
@@ -251,9 +257,9 @@ class EditorIO:
             if len(saved_values) == len(self.points): self.values = np.array(saved_values, dtype=float)
             else: self.values = self._sample_intensities(self.points) # Пересчитываем если не совпадает
 
-            # --- ИЗМЕНЕНО: Восстанавливаем типы (str) и ПЛОЩАДИ ---
+            # --- ИЗМЕНЕНО: Восстанавливаем типы (str/int) и ПЛОЩАДИ ---
             saved_types = state.get("point_types", [])
-            if len(saved_types) == len(self.points): self.point_types = [str(t) for t in saved_types] # Гарантируем строки
+            if len(saved_types) == len(self.points): self.point_types = list(saved_types) # Восстанавливаем как есть
             else: self.point_types = ["unknown"] * len(self.points)
 
             saved_areas = state.get("areas", [])
@@ -302,7 +308,7 @@ class EditorIO:
 
     # ---------- Анализ ----------
     def _start_analysis(self):
-        # --- ИЗМЕНЕНИЕ: Передаем area и type (str) в payload ---
+        # --- ИЗМЕНЕНИЕ: Передаем area и type (str/int) в payload ---
         try: saved_spots_path = self._save_points(); output_dir = saved_spots_path.parent; payload_path = output_dir / "fibo_input.json"
         except (ValueError, OSError, Exception) as e: messagebox.showerror("Save Error", f"Cannot proceed. Failed to save:\n{e}"); return
 
@@ -320,13 +326,13 @@ class EditorIO:
             for i, (y, x) in enumerate(self.points):
                 intensity = float(current_values[i]) if i < len(current_values) else 0.0
                 area = int(current_areas[i]) if i < len(current_areas) else 0
-                pt_type = str(self.point_types[i]) if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown"
+                pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown" # Может быть str или int
                 pts_list.append({"y": float(y), "x": float(x), "intensity": intensity, "area": area, "type": pt_type})
 
             payload = {"image": str(abs_image_path) if abs_image_path else None,
                        "preproc_mode": self._preproc_settings.mode if self._preproc_settings else "raw",
                        "preproc": self._preproc_settings.to_json() if self._preproc_settings else {"mode": "raw"},
-                       "points": pts_list, # Уже содержит area и type (str)
+                       "points": pts_list, # Уже содержит area и type (str/int)
                        "centers": {"geometric": geo_center_data, "overlay": overlay_center_data},
                        "radii": {"dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
                                  "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0},
