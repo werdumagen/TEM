@@ -7,6 +7,7 @@ Mix-in класс для PointEditor:
 import numpy as np
 import math
 import tkinter as tk
+from typing import Optional, Dict, Any, List, Tuple, Union # Добавлено Union
 
 CENTER_AS_POINT_IDX = -1
 
@@ -32,8 +33,8 @@ class EditorState:
         self._ring_select_thickness: float = 5.0
         self._ring_select_indices: set[int] = set()
         self._ring_select_artist: Optional[list] = None
-        # --- ИЗМЕНЕНИЕ: Типы точек и ПЛОЩАДИ ---
-        self.point_types: list[str] = []
+        # --- ИЗМЕНЕНИЕ: Типы точек (int ID или str "unknown") и ПЛОЩАДИ ---
+        self.point_types: list[Union[str, int]] = []
         self.areas: np.ndarray = np.zeros((0,), dtype=float) # Массив для площадей
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -105,7 +106,7 @@ class EditorState:
         center_data = self.overlay["center"]; center_y, center_x = float(center_data["y"]), float(center_data["x"])
         return self._finalize_measurement(end_yx=(center_y, center_x))
 
-    # --- ИЗМЕНЕНИЕ: Tooltip показывает Radius, Intensity(%), Area, Type ---
+    # --- ИЗМЕНЕНИЕ: Tooltip показывает Radius, Intensity(%), Area, Group ID / Type ---
     def _clear_tooltip(self, *, keep_measure: bool = False, keep_preview: bool = False):
         removed_tooltip = False
         if hasattr(self, '_tooltip') and self._tooltip is not None:
@@ -129,9 +130,16 @@ class EditorState:
         if hasattr(self, 'areas') and self.areas is not None and idx < len(self.areas):
             area = float(self.areas[idx])
 
-        point_type = "N/A"
+        point_type_or_id = "N/A"
+        type_label = "Type" # Метка для тултипа
         if hasattr(self, 'point_types') and idx < len(self.point_types):
-            point_type = self.point_types[idx]
+            type_val = self.point_types[idx]
+            if isinstance(type_val, int):
+                 point_type_or_id = str(type_val)
+                 type_label = "Group ID" # Меняем метку, если это ID
+            elif isinstance(type_val, str):
+                 point_type_or_id = type_val
+                 # type_label остается "Type"
 
         radius = None
         if self.overlay and self.overlay.get("center"):
@@ -153,7 +161,7 @@ class EditorState:
              txt_lines.append(f"Area: {area:.1f} px²")
         else:
              txt_lines.append("Area: N/A")
-        txt_lines.append(f"Type: {point_type}")
+        txt_lines.append(f"{type_label}: {point_type_or_id}") # Используем обновленную метку
 
         txt = "\n".join(txt_lines)
 
@@ -175,8 +183,8 @@ class EditorState:
         if "x" in c and "y" in c: center_data = {"x": float(c["x"]), "y": float(c["y"])}
         points_copy = self.points.copy() if self.points is not None else np.zeros((0, 2))
         values_copy = self.values.copy() if self.values is not None else np.zeros((0,))
-        # --- ИЗМЕНЕНО: Копируем типы и ПЛОЩАДИ ---
-        types_copy = list(self.point_types) if hasattr(self, 'point_types') else []
+        # --- ИЗМЕНЕНО: Копируем типы (int/str) и ПЛОЩАДИ ---
+        types_copy = list(self.point_types) if hasattr(self, 'point_types') else [] # Копируем как есть
         areas_copy = self.areas.copy() if hasattr(self, 'areas') and self.areas is not None else np.zeros((0,))
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -187,8 +195,8 @@ class EditorState:
             "dead_radius": self.overlay.get("dead_radius", 0.0) if self.overlay else 0.0,
             "search_radius": self.overlay.get("search_radius", 0.0) if self.overlay else 0.0,
             "ring_select_indices": list(self._ring_select_indices),
-            "point_types": types_copy, # Добавили типы
-            "areas": areas_copy,       # Добавили площади
+            "point_types": types_copy, # Сохраняем типы/ID
+            "areas": areas_copy,       # Сохраняем площади
         }
 
     def _push_undo(self):
@@ -214,8 +222,8 @@ class EditorState:
         # Восстанавливаем точки, значения, типы, ПЛОЩАДИ
         self.points = snap["points"].copy()
         self.values = snap["values"].copy()
-        # --- ИЗМЕНЕНО: Восстанавливаем типы и ПЛОЩАДИ ---
-        self.point_types = list(snap.get("point_types", []))
+        # --- ИЗМЕНЕНО: Восстанавливаем типы (int/str) и ПЛОЩАДИ ---
+        self.point_types = list(snap.get("point_types", [])) # Восстанавливаем как есть
         self.areas = snap.get("areas", np.zeros(len(self.points))).copy() # Восстанавливаем площади
 
         # Проверяем консистентность

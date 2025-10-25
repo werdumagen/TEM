@@ -8,6 +8,9 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
 from saed_editor_state import CENTER_AS_POINT_IDX
+# --- ИЗМЕНЕНИЕ: Импорт colormaps ---
+from matplotlib import colormaps
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
 class EditorDrawingView:
@@ -72,8 +75,6 @@ class EditorDrawingView:
             self._measure_line_artist = line
             mid_x = (start_x + end_x) / 2.0; mid_y = (start_y + end_y) / 2.0
             txt = f"L = {length:.1f} px"
-            # Проверка Llambda перенесена в основной файл, т.к. она там должна быть
-            # if hasattr(self, 'Llambda') and self.Llambda is not None and self.Llambda > 0 and length > 1e-6: d_spacing = self.Llambda / length; txt += f"\nd = {d_spacing:.3f} Å"
             self._measure_annotation = self.ax.annotate(txt, xy=(mid_x, mid_y), xytext=(0, -14), textcoords="offset points", ha="center", va="top", bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.9), fontsize=9, zorder=6)
         if (self._measure_start_point is not None and self._measure_preview_end is not None):
             y0, x0 = self._measure_start_point; y1, x1 = self._measure_preview_end
@@ -139,20 +140,30 @@ class EditorDrawingView:
             edgecolors = "black"
             alpha = 0.9
 
-            # --- ИЗМЕНЕНО: Определяем цвета по типам ---
+            # --- ИЗМЕНЕНИЕ: Определяем цвета по ID группы или "unknown" ---
             colors = []
+            group_ids = set()
             if hasattr(self, 'point_types') and len(self.point_types) == len(points_to_draw):
-                type_color_map = {
-                    "structural": "cyan",
-                    "superstructural": "magenta", # Фиолетовый
-                    "unknown": "yellow", # Желтый для неизвестных
-                }
                 for pt_type in self.point_types:
-                    colors.append(type_color_map.get(pt_type, "yellow")) # По умолчанию желтый
+                    if isinstance(pt_type, int):
+                        group_ids.add(pt_type)
+
+                # Создаем карту цветов для найденных ID групп
+                num_groups = len(group_ids)
+                colormap = colormaps.get_cmap('viridis', max(num_groups, 1)) # Используем viridis
+                group_color_map = {gid: colormap(i / max(num_groups - 1, 1)) for i, gid in enumerate(sorted(list(group_ids)))}
+
+                # Назначаем цвета точкам
+                for pt_type in self.point_types:
+                    if pt_type == "unknown":
+                        colors.append("yellow") # Желтый для неизвестных
+                    elif isinstance(pt_type, int):
+                        colors.append(group_color_map.get(pt_type, "gray")) # Цвет группы или серый по умолчанию
+                    else: # На всякий случай
+                        colors.append("gray")
             else:
-                # --- ИСПРАВЛЕНИЕ: Фоллбэк должен быть 'yellow' (unknown), а не 'cyan' ---
+                # Фоллбэк, если типы не загружены или не совпадают
                 colors = ['yellow'] * len(points_to_draw)
-                # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             self.ax.scatter(points_to_draw[:, 1], points_to_draw[:, 0],
                             s=sizes, c=colors, alpha=alpha, marker="o",

@@ -3,13 +3,64 @@
 """
 Mix-in класс для PointEditor:
 Обрабатывает события мыши (mouse) и клавиатуры (key)
+и новую функцию Auto-Group
 """
 import numpy as np
 import matplotlib.pyplot as plt
 import math # Добавлен импорт
 import tkinter as tk # Добавлен импорт tk
+from tkinter import messagebox # Для показа ошибок
 # Импорт специального индекса
 from saed_editor_state import CENTER_AS_POINT_IDX
+# --- ИЗМЕНЕНИЕ: Импорт функций анализа ---
+from scipy.signal import find_peaks
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+
+# --- Функции анализа (остаются здесь, но больше не используются для авто-классификации) ---
+def pol_from(center, pts):
+    cy, cx = center
+    dy, dx = pts[:, 0] - cy, pts[:, 1] - cx
+    r = np.hypot(dx, dy)
+    a = (np.degrees(np.arctan2(dy, dx)) + 360) % 360
+    return r, a
+
+def symmetry_scores(angles, radii, ring_means, top_rings=3):
+    out = {}
+    if ring_means.size == 0:
+        return out
+    effective_top_rings = min(top_rings, len(ring_means))
+    if effective_top_rings == 0: return out
+    idx = effective_top_rings - 1
+    maxR = ring_means[idx] * 1.15
+    mask = radii <= maxR
+    ang_sel = angles[mask]
+    if len(ang_sel) == 0: return out
+    for k in [4, 6, 8, 10, 12]:
+        period = 360.0 / k
+        phases_deg = (ang_sel % period) * k
+        phases_rad = np.deg2rad(phases_deg)
+        C = np.cos(phases_rad).mean();
+        S = np.sin(phases_rad).mean()
+        out[f"{k}-fold"] = float(np.hypot(C, S))
+    return out
+
+def cluster_rings(radii, bins=100, prominence_factor=0.03, min_prominence=2):
+    if len(radii) == 0:
+        return np.array([]), np.zeros(0, dtype=int), ([], [])
+    hist, edges = np.histogram(radii, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2
+    if hist.max() > 0:
+        prominence = max(min_prominence, hist.max() * prominence_factor)
+    else:
+        prominence = min_prominence
+    pk, _ = find_peaks(hist, prominence=prominence)
+    ring_centers = centers[pk]
+    if len(ring_centers) == 0:
+        return np.array([]), np.zeros_like(radii, dtype=int), (hist.tolist(), edges.tolist())
+    labels = np.argmin(np.abs(radii[:, None] - ring_centers[None, :]), axis=1)
+    return ring_centers, labels, (hist.tolist(), edges.tolist())
+# --- КОНЕЦ ПЕРЕНЕСЕННЫХ ФУНКЦИЙ ---
 
 
 class EditorEventHandlers:
@@ -48,9 +99,7 @@ class EditorEventHandlers:
         self._ring_select_radius = max(1.0, radius)
         self._ring_select_active = True
         self._ring_select_indices.clear()
-        # --- ИЗМЕНЕНИЕ: Обновлен статус ---
         self._set_status("Ring selection active. Drag radius. Use +/- for thickness. LMB click to select points.")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self._redraw()
 
     def _update_ring_preview(self, pos_yx: tuple[float, float] | None) -> None:
@@ -69,9 +118,7 @@ class EditorEventHandlers:
         if not self._ring_select_active: return
         new_thickness = self._ring_select_thickness + delta
         self._ring_select_thickness = max(1.0, new_thickness)
-        # --- ИЗМЕНЕНИЕ: Обновлен статус ---
         self._set_status(f"Ring thickness: {self._ring_select_thickness:.1f} px. LMB click to select.")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self._redraw()
 
     def _select_points_in_ring(self) -> None:
@@ -160,9 +207,7 @@ class EditorEventHandlers:
         if self.values is not None and len(self.values) == len(self.points):
              self.values[valid_indices] = self._sample_intensities(self.points[valid_indices])
         # Для area оставляем старые значения (усреднять их не имеет смысла)
-        # Если self.areas существует и имеет правильную длину
         if hasattr(self, 'areas') and self.areas is not None and len(self.areas) == len(self.points):
-            # Ничего не делаем с self.areas[valid_indices]
             pass
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -173,6 +218,102 @@ class EditorEventHandlers:
         self._redraw()
 
     # --- КОНЕЦ МЕТОДОВ ДЛЯ КОЛЬЦА ---
+
+    # --- НОВЫЙ МЕТОД: Автоматическая группировка колец (v2) ---
+    def _auto_group_rings(self):
+        self._set_status("Starting auto-grouping...")
+        if self.points is None or len(self.points) == 0:
+            self._set_status("No points to group.")
+            return
+        if not self.overlay or not self.overlay.get("center"):
+            self._set_status("Cannot group: Center is not defined.")
+            return
+
+        try:
+            # Получаем допуски из UI
+            radius_tol_px = float(self.spn_auto_radius_tol.get())
+            area_tol_perc = float(self.spn_auto_area_tol.get()) / 100.0 # Преобразуем в долю 0..1
+        except (ValueError, tk.TclError) as e:
+            messagebox.showerror("Input Error", f"Invalid tolerance value entered:\n{e}")
+            self._set_status("Auto-grouping cancelled due to invalid input.")
+            return
+
+        self._push_undo() # Сохраняем состояние перед началом
+
+        center_data = self.overlay["center"]
+        cy, cx = float(center_data["y"]), float(center_data["x"])
+
+        # Рассчитываем радиусы для всех точек
+        dy = self.points[:, 0] - cy
+        dx = self.points[:, 1] - cx
+        all_radii = np.hypot(dx, dy)
+
+        # Сортируем точки по радиусу (получаем отсортированные ИНДЕКСЫ)
+        sorted_indices = np.argsort(all_radii)
+
+        # Инициализируем типы как "unknown" для всех
+        self.point_types = ["unknown"] * len(self.points)
+        # Набор индексов точек, которые уже включены в какую-то группу
+        assigned_indices = set()
+        group_id_counter = 0
+
+        # Итерируем по отсортированным индексам
+        for i in range(len(sorted_indices)):
+            current_idx = sorted_indices[i]
+
+            # Пропускаем, если точка уже в группе
+            if current_idx in assigned_indices:
+                continue
+
+            current_radius = all_radii[current_idx]
+
+            # 1. Находим кандидатов по радиусу (среди еще не назначенных)
+            potential_group_indices = []
+            for j in range(i, len(sorted_indices)): # Начинаем с текущей точки
+                check_idx = sorted_indices[j]
+                if check_idx in assigned_indices:
+                    continue
+
+                radius_diff = abs(all_radii[check_idx] - current_radius)
+                if radius_diff <= radius_tol_px:
+                    potential_group_indices.append(check_idx)
+                else:
+                    # Так как точки отсортированы, дальше радиусы будут только больше
+                    break # Выходим из внутреннего цикла
+
+            if not potential_group_indices: # Не должно случиться, т.к. сама точка включается
+                 continue
+
+            # 2. Фильтруем по площади
+            candidate_areas = self.areas[potential_group_indices]
+            final_group_indices = []
+
+            if len(candidate_areas) > 0 and np.any(candidate_areas > 0): # Проверяем, есть ли ненулевые площади
+                max_area = np.max(candidate_areas)
+                min_allowed_area = max_area * (1.0 - area_tol_perc)
+                # Max allowed area не нужен по описанию, только нижний порог
+
+                area_mask = (candidate_areas >= min_allowed_area)
+                final_group_indices = np.array(potential_group_indices)[area_mask].tolist()
+            else: # Если площадей нет или все нулевые, берем всех кандидатов по радиусу
+                final_group_indices = potential_group_indices
+
+            # 3. Если группа не пуста, назначаем ID и помечаем как использованные
+            if final_group_indices:
+                print(f"Found group {group_id_counter} at r~{current_radius:.1f}px: {len(final_group_indices)} points")
+                for idx in final_group_indices:
+                    self.point_types[idx] = group_id_counter
+                    assigned_indices.add(idx)
+                group_id_counter += 1
+
+        # Точки, оставшиеся в assigned_indices=False, уже имеют тип "unknown"
+
+        self._redo.clear() # Очищаем redo после автоматического изменения
+        self._redraw()
+        summary_msg = f"Auto-grouping finished. Found {group_id_counter} groups."
+        print(summary_msg)
+        self._set_status(summary_msg)
+    # --- КОНЕЦ НОВОГО МЕТОДА ---
 
 
     # ---------- Mouse / Keyboard events ----------
@@ -200,14 +341,10 @@ class EditorEventHandlers:
 
         # --- Обработка Enter (Только для усреднения) ---
         elif e.key in {"enter", "return", "KP_Enter"}:
-             # --- ИЗМЕНЕНИЕ: Убрана ветка для _ring_select_active ---
-             # if self._ring_select_active:
-             #      self._select_points_in_ring() # Теперь это делает ЛКМ
-             if self._ring_select_indices: # Если точки УЖЕ ВЫБРАНЫ
+             if self._ring_select_indices: # Если точки ВЫБРАНЫ вручную
                   self._average_selected_points_to_ring() # Enter усредняет
              else:
                   self._set_status("Enter pressed, no action selected.")
-             # --- КОНЕЦ ИЗМЕНЕНИЯ ---
              return
 
         pass # Другие клавиши игнорируем
