@@ -51,9 +51,8 @@ def pol_from(center, pts):
 def symmetry_scores(angles, radii, ring_means, top_rings=3):
     out = {}
     # --- ИСПРАВЛЕНИЕ ОШИБКИ (ValueError: The truth value of an array...) ---
-    # БЫЛО: if not ring_means or len(ring_means) == 0:
     if ring_means.size == 0:
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         return out
 
     effective_top_rings = min(top_rings, len(ring_means))
@@ -568,7 +567,8 @@ class SAEDLauncherFrame(ttk.Frame):
             if preproc_mode in self.cmb_pre['values']:
                 self.cmb_pre.set(preproc_mode)
             else:
-                print(f"Warning: Saved preproc_mode '{preproc_mode}' not found. Using default."); self.cmb_pre.current(
+                print(f"Warning: Saved preproc_mode '{preproc_mode}' not found. Using default.");
+                self.cmb_pre.current(
                     0)
         elif isinstance(self.cmb_pre, ttk.Combobox):
             self.cmb_pre.current(0)
@@ -613,9 +613,11 @@ class SAEDLauncherFrame(ttk.Frame):
             try:
                 arr = load_grayscale_with_preproc(image_path, settings)
             except RuntimeError as cv_err:
-                messagebox.showerror("Dependency Error", str(cv_err)); return
+                messagebox.showerror("Dependency Error", str(cv_err));
+                return
             except Exception as img_load_err:
-                messagebox.showerror("Image Error", f"Failed to load/process image:\n{img_load_err}"); return
+                messagebox.showerror("Image Error", f"Failed to load/process image:\n{img_load_err}");
+                return
             preproc_payload = settings.to_json()
 
             cx_txt = self.ent_cx.get().strip();
@@ -625,7 +627,8 @@ class SAEDLauncherFrame(ttk.Frame):
                     center0 = CenterResult(cy=float(cy_txt), cx=float(cx_txt), method="user")
                 except ValueError:
                     messagebox.showwarning("Input Warning",
-                                           "Invalid center coords. Using auto."); center0 = geometric_midpoint(arr)
+                                           "Invalid center coords. Using auto.");
+                    center0 = geometric_midpoint(arr)
             else:
                 center0 = geometric_midpoint(arr)
 
@@ -637,7 +640,8 @@ class SAEDLauncherFrame(ttk.Frame):
                 )
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             except RuntimeError as e:
-                messagebox.showerror("Dependency Error", str(e)); return
+                messagebox.showerror("Dependency Error", str(e));
+                return
 
             if len(pts_raw) == 0:
                 messagebox.showwarning("Detection Warning",
@@ -758,17 +762,25 @@ class SAEDLauncherFrame(ttk.Frame):
                         filtered_point_types[index_map[old_idx]] = type_str
                 point_types = filtered_point_types  # Используем отфильтрованный словарь
                 # --- КОНЕЦ НОВОГО ---
+
+            # --- ИСПРАВЛЕНИЕ ОШИБКИ (УДАЛЕН БЛОК ELSE) ---
+            # Блок 'else' здесь некорректно переиндексировал 'point_types',
+            # что приводило к потере типов и желтым точкам.
+            # Если фильтрация не применялась, 'point_types'
+            # уже содержит правильные оригинальные индексы (0..N-1),
+            # которые будут использоваться в цикле 'enumerate' ниже.
             else:
-                # Если фильтры не применялись, нужно все равно
-                # переиндексировать point_types с 0 до N-1
-                original_indices = sorted(point_types.keys())
-                point_types = {new_idx: point_types[old_idx] for new_idx, old_idx in enumerate(original_indices)}
+                pass  # Ничего не делаем, 'point_types' уже в правильном формате
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             # --- Создаем saed_input.json ---
             points_list_for_json = []
             for i, (y, x, v, area) in enumerate(pts_processed):
                 # --- ИЗМЕНЕНО: Добавляем тип ---
-                pt_type = point_types.get(i, "unknown")  # Получаем тип по НОВОМУ индексу i
+                # 'i' здесь - это НОВЫЙ индекс (0..N-1) после фильтрации,
+                # ИЛИ ОРИГИНАЛЬНЫЙ индекс (0..N-1), если фильтрации не было.
+                # В обоих случаях 'point_types.get(i, ...)' теперь работает
+                pt_type = point_types.get(i, "unknown")
                 points_list_for_json.append({
                     "y": float(y), "x": float(x),
                     "intensity": float(v),  # Используем интенсивность v

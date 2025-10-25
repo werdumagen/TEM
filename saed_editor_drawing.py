@@ -150,8 +150,9 @@ class EditorDrawingView:
                 for pt_type in self.point_types:
                     colors.append(type_color_map.get(pt_type, "yellow")) # По умолчанию желтый
             else:
-                # Фоллбэк, если типы не загружены или не совпадают
-                colors = ['cyan'] * len(points_to_draw)
+                # --- ИСПРАВЛЕНИЕ: Фоллбэк должен быть 'yellow' (unknown), а не 'cyan' ---
+                colors = ['yellow'] * len(points_to_draw)
+                # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             self.ax.scatter(points_to_draw[:, 1], points_to_draw[:, 0],
                             s=sizes, c=colors, alpha=alpha, marker="o",
