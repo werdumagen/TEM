@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
 from saed_editor_state import CENTER_AS_POINT_IDX
-# --- ИЗМЕНЕНИЕ: Импорт colormaps ---
-from matplotlib import colormaps
+# --- ИЗМЕНЕНИЕ: Убран импорт colormaps ---
+# from matplotlib import colormaps
 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
@@ -143,15 +143,23 @@ class EditorDrawingView:
             # --- ИЗМЕНЕНИЕ: Определяем цвета по ID группы или "unknown" ---
             colors = []
             group_ids = set()
+            max_group_id = -1
             if hasattr(self, 'point_types') and len(self.point_types) == len(points_to_draw):
                 for pt_type in self.point_types:
                     if isinstance(pt_type, int):
                         group_ids.add(pt_type)
+                        if pt_type > max_group_id:
+                            max_group_id = pt_type
 
                 # Создаем карту цветов для найденных ID групп
-                num_groups = len(group_ids)
-                colormap = colormaps.get_cmap('viridis', max(num_groups, 1)) # Используем viridis
-                group_color_map = {gid: colormap(i / max(num_groups - 1, 1)) for i, gid in enumerate(sorted(list(group_ids)))}
+                num_unique_groups = len(group_ids)
+                # --- ИСПРАВЛЕНИЕ: Используем plt.get_cmap вместо colormaps ---
+                # Используем max_group_id + 1, чтобы цвета были стабильнее при добавлении/удалении групп
+                cmap_N = max(max_group_id + 1, 1)
+                colormap = plt.get_cmap('viridis', cmap_N)
+                # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+                group_color_map = {gid: colormap(gid / max(cmap_N - 1, 1)) for gid in group_ids}
+
 
                 # Назначаем цвета точкам
                 for pt_type in self.point_types:
