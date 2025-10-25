@@ -8,9 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
 from saed_editor_state import CENTER_AS_POINT_IDX
-# --- ИЗМЕНЕНИЕ: Убран импорт colormaps ---
-# from matplotlib import colormaps
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+# --- Убран импорт colormaps ---
 
 
 class EditorDrawingView:
@@ -140,35 +138,18 @@ class EditorDrawingView:
             edgecolors = "black"
             alpha = 0.9
 
-            # --- ИЗМЕНЕНИЕ: Определяем цвета по ID группы или "unknown" ---
+            # --- ИЗМЕНЕНИЕ: Определяем цвета по строковому типу ---
             colors = []
-            group_ids = set()
-            max_group_id = -1
             if hasattr(self, 'point_types') and len(self.point_types) == len(points_to_draw):
+                type_color_map = {
+                    "unknown": "yellow",         # Желтый
+                    "structural": "cyan",        # Голубой
+                    "superstructural": "magenta",# Фиолетовый
+                    "other": "purple",           # Пурпурный
+                }
                 for pt_type in self.point_types:
-                    if isinstance(pt_type, int):
-                        group_ids.add(pt_type)
-                        if pt_type > max_group_id:
-                            max_group_id = pt_type
-
-                # Создаем карту цветов для найденных ID групп
-                num_unique_groups = len(group_ids)
-                # --- ИСПРАВЛЕНИЕ: Используем plt.get_cmap вместо colormaps ---
-                # Используем max_group_id + 1, чтобы цвета были стабильнее при добавлении/удалении групп
-                cmap_N = max(max_group_id + 1, 1)
-                colormap = plt.get_cmap('viridis', cmap_N)
-                # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-                group_color_map = {gid: colormap(gid / max(cmap_N - 1, 1)) for gid in group_ids}
-
-
-                # Назначаем цвета точкам
-                for pt_type in self.point_types:
-                    if pt_type == "unknown":
-                        colors.append("yellow") # Желтый для неизвестных
-                    elif isinstance(pt_type, int):
-                        colors.append(group_color_map.get(pt_type, "gray")) # Цвет группы или серый по умолчанию
-                    else: # На всякий случай
-                        colors.append("gray")
+                     # Используем get с серым цветом по умолчанию, если тип не найден
+                    colors.append(type_color_map.get(pt_type, "gray"))
             else:
                 # Фоллбэк, если типы не загружены или не совпадают
                 colors = ['yellow'] * len(points_to_draw)
