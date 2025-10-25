@@ -251,12 +251,11 @@ def refine_center_antipodal(center: Tuple[float, float], pts: np.ndarray, tol_an
     return CenterResult(cy=cy, cx=cx, method="antipodal-refined")
 
 
-# --- ИСПРАВЛЕНИЕ: Убрана группировка по площади, только по радиусу ---
-def group_points_by_radius_area(
+# --- УДАЛЕНА ГРУППИРОВКА ПО ПЛОЩАДИ ---
+def group_points_by_radius(
         pts_data: np.ndarray,  # Массив Nx4 (y, x, v, area)
         center: Tuple[float, float],
         radius_tolerance: float = 0.05,  # 5%
-        # area_tolerance: float = 0.03  # Параметр больше не используется
 ) -> Dict[int, List[int]]:
     """Группирует точки ТОЛЬКО по радиусу."""
     if len(pts_data) == 0:
@@ -266,7 +265,6 @@ def group_points_by_radius_area(
     dy = pts_data[:, 0] - cy
     dx = pts_data[:, 1] - cx
     radii = np.hypot(dx, dy)
-    # areas = pts_data[:, 3] # Площадь больше не используется для группировки
 
     # Используем cluster_rings для группировки по радиусу
     ring_centers, ring_labels, _ = cluster_rings(radii)
@@ -291,7 +289,7 @@ def group_points_by_radius_area(
     return {k: v for k, v in final_groups.items() if v}
 
 
-# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
 # -------------------------- GUI --------------------------
@@ -611,121 +609,52 @@ class SAEDLauncherFrame(ttk.Frame):
                 messagebox.showerror("Dependency Error", str(e));
                 return
 
+            # --- ИЗМЕНЕНИЕ: Упрощенная логика - убрана классификация ---
             if len(pts_raw) == 0:
                 messagebox.showwarning("Detection Warning",
                                        f"No spots detected with percentile {perc:.1f}% and min area {min_area} px.")
-                # --- ИЗМЕНЕНИЕ: Создаем пустой pts_processed и пустой point_types ---
                 pts_processed = np.zeros((0, 4), dtype=float)
-                point_types = {}
-                center = center0  # Используем исходный центр, т.к. refine невозможен
-                dominant_symmetry = 0  # Нет симметрии
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                point_types = {}  # Пустой словарь типов
+                center = center0
+                dominant_symmetry = 0
             else:
-                # Уточняем центр по исходным точкам
+                # Уточняем центр
                 center = refine_center_antipodal((center0.cy, center0.cx), pts_raw, tol_ang_deg=tol_ang,
                                                  tol_rel_r=tol_relr, iters=iters)
 
-                # --- НОВАЯ ЛОГИКА: Анализ симметрии, группировка, усреднение ---
-                print("Starting symmetry analysis and grouping...")
+                # Анализируем симметрию (для лога), но НЕ КЛАССИФИЦИРУЕМ точки
                 cy, cx = center.cy, center.cx
-                pts_r, pts_a = pol_from((cy, cx), pts_raw[:, :2])  # Полярные координаты
-
-                # Анализ симметрии
-                ring_means, _, _ = cluster_rings(pts_r[pts_r > dead_r])  # Анализируем кольца вне мертвой зоны
+                pts_r, pts_a = pol_from((cy, cx), pts_raw[:, :2])
+                ring_means, _, _ = cluster_rings(pts_r[pts_r > dead_r])
                 sym_scores = symmetry_scores(pts_a, pts_r, ring_means)
 
-                # --- НОВЫЙ КОД (ЗАПРОС ПОЛЬЗОВАТЕЛЯ): Показываем окно с sym_scores ---
+                # Показываем окно с sym_scores
                 scores_str = "\n".join(f"{key}: {value:.4f}" for key, value in sym_scores.items())
                 if not scores_str:
                     scores_str = "Симметрия не найдена (sym_scores пустой)."
-
                 ring_str = f"Найденные кольца (ring_means):\n{np.array2string(ring_means, precision=2)}\n\n"
-
                 messagebox.showinfo(
                     "Symmetry Scores (Debug)",
                     f"{ring_str}Результаты (sym_scores):\n{scores_str}"
                 )
-                # --- КОНЕЦ НОВОГО КОДА ---
 
                 dominant_symmetry = 0
                 if sym_scores:
-                    # Ищем симметрию с наибольшим R-фактором (ближе к 1)
                     best_sym_str = max(sym_scores, key=sym_scores.get)
                     dominant_symmetry = int(best_sym_str.split('-')[0])
-                    print(
-                        f"Dominant symmetry detected: {dominant_symmetry}-fold (Score: {sym_scores[best_sym_str]:.3f})")
+                    print(f"Dominant symmetry (for log only): {dominant_symmetry}-fold")
                 else:
                     print("Could not determine dominant symmetry.")
 
-                # Группировка ТОЛЬКО ПО РАДИУСУ
-                groups = group_points_by_radius_area(pts_raw, (cy, cx), radius_tolerance=0.05)
-                print(f"Grouped points into {len(groups)} potential rings (by radius only).")
+                # НЕ усредняем радиусы, просто используем найденные точки
+                pts_processed = pts_raw.copy()
 
-                point_types: Dict[int, str] = {}  # {original_index: type}
-                pts_processed_list = pts_raw.copy().tolist()  # Копируем для изменений
-
-                group_stats = []
-
-                for group_id, original_indices in groups.items():
-                    # Фильтруем точки, уже получившие тип
-                    current_group_indices = [idx for idx in original_indices if idx not in point_types]
-                    if not current_group_indices: continue
-
-                    N = len(current_group_indices)
-                    group_type = "unknown"
-                    should_average = False
-
-                    if dominant_symmetry > 0:
-                        if N == dominant_symmetry:
-                            group_type = "structural"
-                            should_average = True
-                        elif N == 2 * dominant_symmetry:
-                            group_type = "superstructural"
-                            should_average = True
-
-                    # Присваиваем тип
-                    for idx in current_group_indices:
-                        point_types[idx] = group_type
-
-                    group_stats.append(
-                        f"  Group {group_id}: {N} pts -> {group_type}" + (" (averaged)" if should_average else ""))
-
-                    # Усреднение радиуса
-                    if should_average:
-                        group_points_data = pts_raw[current_group_indices]
-                        group_dy = group_points_data[:, 0] - cy
-                        group_dx = group_points_data[:, 1] - cx
-                        group_radii = np.hypot(group_dx, group_dy)
-
-                        non_zero_mask = group_radii > 1e-9
-                        if np.any(non_zero_mask):
-                            avg_radius = np.mean(group_radii[non_zero_mask])
-
-                            # Масштабируем до среднего радиуса
-                            unit_dx = np.divide(group_dx, group_radii, out=np.zeros_like(group_dx),
-                                                where=group_radii > 1e-9)
-                            unit_dy = np.divide(group_dy, group_radii, out=np.zeros_like(group_dy),
-                                                where=group_radii > 1e-9)
-                            new_dx = unit_dx * avg_radius
-                            new_dy = unit_dy * avg_radius
-
-                            # Обновляем координаты в pts_processed_list
-                            for i, original_idx in enumerate(current_group_indices):
-                                # Сохраняем v и area
-                                v = pts_processed_list[original_idx][2]
-                                area = pts_processed_list[original_idx][3]
-                                pts_processed_list[original_idx] = [cy + new_dy[i], cx + new_dx[i], v, area]
-
-                print("Grouping results:")
-                for stat in group_stats: print(stat)
-
-                pts_processed = np.array(pts_processed_list, dtype=float) if pts_processed_list else np.zeros((0, 4),
-                                                                                                              dtype=float)
-                # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+                # Создаем point_types, где все типы = "unknown"
+                point_types = {i: "unknown" for i in range(len(pts_processed))}
+                print("Point classification disabled. All points set to 'unknown'.")
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             # --- Применяем геометрические фильтры к pts_processed ---
-
-            # --- ИСПРАВЛЕНИЕ: Логика фильтрации и 'else' блок ---
             if (dead_r > 0 or search_r > 0) and len(pts_processed) > 0:
                 dy = pts_processed[:, 0] - center.cy;
                 dx = pts_processed[:, 1] - center.cx;
@@ -737,35 +666,24 @@ class SAEDLauncherFrame(ttk.Frame):
                 indices_to_keep = np.where(mask)[0]
                 pts_processed = pts_processed[indices_to_keep]
 
+                # Фильтруем типы (все равно все unknown, но нужно для консистентности)
                 filtered_point_types = {}
-                # index_map maps OLD index (0..N-1) to NEW index (0..M-1)
                 index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(indices_to_keep)}
-
-                # point_types is {original_index: type}
                 for old_idx, type_str in point_types.items():
                     if old_idx in index_map:
-                        # map to new_idx
                         filtered_point_types[index_map[old_idx]] = type_str
+                point_types = filtered_point_types
 
-                point_types = filtered_point_types  # point_types is now {new_idx: type}
-
+            # --- ИЗМЕНЕНИЕ: Блок else теперь просто создает 'unknown' для всех оставшихся ---
             else:
-                # --- БЛОК ИСПРАВЛЕН ---
-                # Если фильтр НЕ применялся, 'point_types' все еще {original_index: type}
-                # Нам нужно преобразовать его в {index: type} для цикла enumerate
-                n_points = len(pts_processed)
-                new_point_types = {}
-                for i in range(n_points):
-                    # original_index == i, так как фильтрации не было
-                    new_point_types[i] = point_types.get(i, "unknown")
-
-                point_types = new_point_types  # point_types теперь {index: type}
-            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+                # Если фильтр НЕ применялся, создаем 'unknown' для всех точек 0..N-1
+                point_types = {i: "unknown" for i in range(len(pts_processed))}
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             # --- Создаем saed_input.json ---
             points_list_for_json = []
-            # Этот цикл теперь работает в обоих случаях
             for i, (y, x, v, area) in enumerate(pts_processed):
+                # Тип всегда будет 'unknown' из point_types
                 pt_type = point_types.get(i, "unknown")
                 points_list_for_json.append({
                     "y": float(y), "x": float(x),

@@ -93,34 +93,40 @@ class EditorIO:
                 yy = [float(p.get("y", 0.0)) for p in pts_data]
                 xx = [float(p.get("x", 0.0)) for p in pts_data]
                 self.points = np.column_stack([yy, xx]).astype(float)
-                # --- ИЗМЕНЕНО: Читаем типы ---
+                # --- ИЗМЕНЕНИЕ: Читаем типы и ПЛОЩАДИ ---
                 self.point_types = [p.get("type", "unknown") for p in pts_data]
+                self.areas = np.array([float(p.get("area", 0.0)) for p in pts_data], dtype=float) # Читаем area
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
                 # Загружаем или сэмплируем интенсивности
                 if self._percent_map is not None:
                     self.values = self._sample_intensities(self.points)
                 elif any("intensity" in p for p in pts_data):
+                    # --- ИЗМЕНЕНИЕ: Загружаем intensity (это уже %?) ---
+                    # Если intensity уже в %, просто берем ее
                     vv_raw = np.array([float(p.get("intensity", 0.0)) for p in pts_data], dtype=float)
-                    if self._percent_lookup is not None: self.values = map_values_to_percent(vv_raw, *self._percent_lookup)
-                    else: self.values = vv_raw
-                else:
+                    self.values = vv_raw # Предполагаем, что это уже %
+                    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                else: # Если нет intensity, сэмплируем
                     if self.img_arr is not None: self.values = self._sample_intensities(self.points)
                     else: self.values = np.zeros(len(self.points), dtype=float)
 
-                # --- ИЗМЕНЕНИЕ: Проверяем длину point_types ---
+                # --- ИЗМЕНЕНИЕ: Проверяем длину types и areas ---
                 if len(self.point_types) != len(self.points):
                      print(f"Warning: Mismatch in point count ({len(self.points)}) and type count ({len(self.point_types)}). Resetting types.")
                      self.point_types = ["unknown"] * len(self.points)
+                if len(self.areas) != len(self.points):
+                     print(f"Warning: Mismatch in point count ({len(self.points)}) and area count ({len(self.areas)}). Resetting areas.")
+                     self.areas = np.zeros(len(self.points), dtype=float) # Заполняем нулями
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             except (ValueError, TypeError) as e:
                 messagebox.showerror("Data Error", f"Invalid point data: {e}")
                 self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
-                self.point_types = [] # Инициализируем пустым списком
+                self.point_types = []; self.areas = np.zeros((0,), float) # Инициализируем пустым списком/массивом
         else:
             self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
-            self.point_types = [] # Инициализируем пустым списком
+            self.point_types = []; self.areas = np.zeros((0,), float) # Инициализируем пустым списком/массивом
 
 
     def _save_points_wrapper(self):
@@ -149,15 +155,21 @@ class EditorIO:
 
 
         pts_list = []
-        current_values = self._sample_intensities(self.points)
-        # --- ИЗМЕНЕНИЕ: Добавляем тип при сохранении ---
+        # --- ИЗМЕНЕНИЕ: Используем текущие values и areas ---
+        # НЕ пересчитываем интенсивности, берем те, что есть в self.values
+        # current_values = self._sample_intensities(self.points)
+        current_values = self.values if self.values is not None else np.zeros(len(self.points))
+        current_areas = self.areas if hasattr(self, 'areas') and self.areas is not None else np.zeros(len(self.points))
+
         for i, (y, x) in enumerate(self.points):
             intensity = float(current_values[i]) if i < len(current_values) else 0.0
-            pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown" # Безопасное получение типа
+            area = int(current_areas[i]) if i < len(current_areas) else 0 # Сохраняем area как int
+            pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown"
             pts_list.append({
                 "y": float(y), "x": float(x),
-                "intensity": intensity,
-                "type": pt_type # Добавляем тип
+                "intensity": intensity, # Это уже %
+                "area": area,           # Добавляем area
+                "type": pt_type
             })
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -194,8 +206,9 @@ class EditorIO:
         """Returns a serializable dictionary of the editor's state."""
         points_list = self.points.tolist() if self.points is not None else []
         values_list = self.values.tolist() if self.values is not None else []
-        # --- ИЗМЕНЕНО: Сохраняем типы ---
+        # --- ИЗМЕНЕНО: Сохраняем типы и ПЛОЩАДИ ---
         types_list = self.point_types if hasattr(self, 'point_types') else ["unknown"] * len(points_list)
+        areas_list = self.areas.tolist() if hasattr(self, 'areas') and self.areas is not None else [0.0] * len(points_list)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         return {
@@ -204,6 +217,7 @@ class EditorIO:
             "points": points_list,
             "values": values_list,
             "point_types": types_list, # Добавили типы
+            "areas": areas_list,       # Добавили площади
             "overlay": self.overlay,
             "zoom_val": self.zoom_val,
             "view_cx": self.view_cx,
@@ -221,7 +235,7 @@ class EditorIO:
         if not image_path_str:
             self.image_path = None; self.img_arr = None; self._percent_map = None; self._percent_lookup = None
             self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
-            self.point_types = [] # Очищаем типы
+            self.point_types = []; self.areas = np.zeros((0,), float) # Очищаем типы и площади
             self.overlay = {}; self._preproc_settings = PreprocSettings()
             self.zoom_val = 0; self.view_cx = None; self.view_cy = None
             if hasattr(self, 'zoom_var'): self.zoom_var.set(0)
@@ -235,15 +249,20 @@ class EditorIO:
             self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
             self._percent_lookup = (uniq_vals, uniq_perc)
 
-            # Восстанавливаем точки, значения И ТИПЫ
+            # Восстанавливаем точки, значения, типы И ПЛОЩАДИ
             self.points = np.array(state.get("points", []), dtype=float)
             saved_values = state.get("values", [])
             if len(saved_values) == len(self.points): self.values = np.array(saved_values, dtype=float)
-            else: self.values = self._sample_intensities(self.points)
-            # --- ИЗМЕНЕНО: Восстанавливаем типы ---
+            else: self.values = self._sample_intensities(self.points) # Пересчитываем если не совпадает
+
+            # --- ИЗМЕНЕНО: Восстанавливаем типы и ПЛОЩАДИ ---
             saved_types = state.get("point_types", [])
             if len(saved_types) == len(self.points): self.point_types = saved_types
-            else: self.point_types = ["unknown"] * len(self.points) # Заполняем по умолчанию, если не совпадает
+            else: self.point_types = ["unknown"] * len(self.points)
+
+            saved_areas = state.get("areas", [])
+            if len(saved_areas) == len(self.points): self.areas = np.array(saved_areas, dtype=float)
+            else: self.areas = np.zeros(len(self.points), dtype=float) # Заполняем нулями если не совпадает
             # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             self.overlay = state.get("overlay", {})
@@ -265,28 +284,29 @@ class EditorIO:
 
     # ---------- Helpers ----------
     def _sample_intensities(self, pts_yx: np.ndarray) -> np.ndarray:
-        """Samples intensity values..."""
-        # ... (код без изменений) ...
-        from percentile_utils import map_values_to_percent
+        """Samples intensity values from the percentile map."""
+        # --- ИЗМЕНЕНИЕ: Всегда возвращаем процентили ---
         if pts_yx is None or len(pts_yx) == 0: return np.zeros((0,), float)
+        # Приоритет - карта процентилей
         if hasattr(self, '_percent_map') and self._percent_map is not None:
             src = self._percent_map; H, W = src.shape[:2]; out = []
             for y, x in pts_yx: yi = max(0, min(H - 1, int(round(y)))); xi = max(0, min(W - 1, int(round(x)))); out.append(float(src[yi, xi]))
             return np.array(out, dtype=float)
-        if hasattr(self, 'img_arr') and self.img_arr is not None and hasattr(self, '_percent_lookup') and self._percent_lookup is not None:
-            H, W = self.img_arr.shape[:2]; raw_values = []
-            for y, x in pts_yx: yi = max(0, min(H - 1, int(round(y)))); xi = max(0, min(W - 1, int(round(x)))); raw_values.append(float(self.img_arr[yi, xi]))
-            raw_values_np = np.array(raw_values, dtype=float); return map_values_to_percent(raw_values_np, *self._percent_lookup)
-        if hasattr(self, 'img_arr') and self.img_arr is not None:
-            H, W = self.img_arr.shape[:2]; raw_values = []
-            for y, x in pts_yx: yi = max(0, min(H - 1, int(round(y)))); xi = max(0, min(W - 1, int(round(x)))); raw_values.append(float(self.img_arr[yi, xi]))
-            return np.array(raw_values, dtype=float)
-        return np.zeros(len(pts_yx), dtype=float)
+        # Если карты нет, но есть img_arr и lookup -> считаем по ним
+        elif hasattr(self, 'img_arr') and self.img_arr is not None and hasattr(self, '_percent_lookup') and self._percent_lookup is not None:
+             from percentile_utils import map_values_to_percent
+             H, W = self.img_arr.shape[:2]; raw_values = []
+             for y, x in pts_yx: yi = max(0, min(H - 1, int(round(y)))); xi = max(0, min(W - 1, int(round(x)))); raw_values.append(float(self.img_arr[yi, xi]))
+             raw_values_np = np.array(raw_values, dtype=float); return map_values_to_percent(raw_values_np, *self._percent_lookup)
+        # В крайнем случае - нули
+        else:
+            return np.zeros(len(pts_yx), dtype=float)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
     # ---------- Анализ ----------
     def _start_analysis(self):
-        # ... (код без изменений) ...
+        # --- ИЗМЕНЕНИЕ: Передаем area в payload ---
         try: saved_spots_path = self._save_points(); output_dir = saved_spots_path.parent; payload_path = output_dir / "fibo_input.json"
         except (ValueError, OSError, Exception) as e: messagebox.showerror("Save Error", f"Cannot proceed. Failed to save:\n{e}"); return
 
@@ -296,19 +316,22 @@ class EditorIO:
             if self.overlay and isinstance(self.overlay.get("center"), dict): center_data = self.overlay["center"]; overlay_center_data = {"x": float(center_data["x"]), "y": float(center_data["y"])}
             geo_center_data = None
             if self.img_arr is not None: H, W = self.img_arr.shape[:2]; geo_center_data = {"x": (W - 1) / 2.0, "y": (H - 1) / 2.0}
+
+            # Используем данные, которые УЖЕ сохранены в _save_points
             pts_list = []
-            current_values = self._sample_intensities(self.points)
+            current_values = self.values if self.values is not None else np.zeros(len(self.points))
+            current_areas = self.areas if hasattr(self, 'areas') and self.areas is not None else np.zeros(len(self.points))
             for i, (y, x) in enumerate(self.points):
                 intensity = float(current_values[i]) if i < len(current_values) else 0.0
-                # --- ИЗМЕНЕНО: Добавляем тип при запуске анализа ---
+                area = int(current_areas[i]) if i < len(current_areas) else 0
                 pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown"
-                pts_list.append({"y": float(y), "x": float(x), "intensity": intensity, "type": pt_type})
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                pts_list.append({"y": float(y), "x": float(x), "intensity": intensity, "area": area, "type": pt_type})
 
             payload = {"image": str(abs_image_path) if abs_image_path else None,
                        "preproc_mode": self._preproc_settings.mode if self._preproc_settings else "raw",
                        "preproc": self._preproc_settings.to_json() if self._preproc_settings else {"mode": "raw"},
-                       "points": pts_list, "centers": {"geometric": geo_center_data, "overlay": overlay_center_data},
+                       "points": pts_list, # Уже содержит area и type
+                       "centers": {"geometric": geo_center_data, "overlay": overlay_center_data},
                        "radii": {"dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
                                  "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0},
                        "spots_json": str(saved_spots_path.resolve())}
@@ -320,3 +343,4 @@ class EditorIO:
             try: self.controller.open_analysis(payload_path.resolve(), abs_image_path, saved_spots_path.resolve())
             except Exception as e: print(f"Error calling controller.open_analysis: {e}"); messagebox.showerror("Launch Error", f"Failed to switch to analysis tab.\nDetails: {e}")
         else: messagebox.showwarning("Standalone Mode", "Cannot switch to analysis tab.")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---

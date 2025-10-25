@@ -155,8 +155,16 @@ class EditorEventHandlers:
         self.points[valid_indices, 0] = cy + new_dy
         self.points[valid_indices, 1] = cx + new_dx
 
+        # --- ИЗМЕНЕНИЕ: Обновляем intensity И area после усреднения ---
+        # Пересчитываем intensity (% map)
         if self.values is not None and len(self.values) == len(self.points):
              self.values[valid_indices] = self._sample_intensities(self.points[valid_indices])
+        # Для area оставляем старые значения (усреднять их не имеет смысла)
+        # Если self.areas существует и имеет правильную длину
+        if hasattr(self, 'areas') and self.areas is not None and len(self.areas) == len(self.points):
+            # Ничего не делаем с self.areas[valid_indices]
+            pass
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         count = len(valid_indices)
         self._set_status(f"Averaged {count} points to radius {average_radius:.2f} px.")
@@ -306,16 +314,21 @@ class EditorEventHandlers:
                       redraw_needed |= self._clear_measurement_result()
                       if redraw_needed: self._redraw()
 
-                      # --- ИСПРАВЛЕНИЕ: Добавляем тип при добавлении точки ---
+                      # --- ИСПРАВЛЕНИЕ: Добавляем тип и ПЛОЩАДЬ при добавлении точки ---
                       self._push_undo()
                       self.points = np.vstack([self.points, [y, x]])
                       sampled_value = self._sample_intensities(np.array([[y, x]]))[0]
                       self.values = np.append(self.values, sampled_value)
-                      # Добавляем тип "unknown" для новой точки
+                      # Добавляем тип "unknown"
                       if hasattr(self, 'point_types'):
                           self.point_types.append("unknown")
-                      else: # На всякий случай, если point_types не инициализирован
+                      else:
                           self.point_types = ["unknown"] * len(self.points)
+                      # Добавляем площадь 0.0
+                      if hasattr(self, 'areas') and self.areas is not None:
+                          self.areas = np.append(self.areas, 0.0)
+                      else:
+                          self.areas = np.zeros(len(self.points), dtype=float)
                       # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
                       self._redo.clear()
                       self._set_status(f"Added point at ({x:.1f}, {y:.1f}).")
@@ -332,31 +345,30 @@ class EditorEventHandlers:
                            self._set_status("Error: Point index out of bounds during deletion.")
                            return
 
-                      # --- ИСПРАВЛЕНИЕ: Удаляем тип точки ---
-                      # Удаляем точку, значение И ТИП
+                      # --- ИСПРАВЛЕНИЕ: Удаляем тип точки и ПЛОЩАДЬ ---
+                      # Удаляем точку, значение, ТИП и ПЛОЩАДЬ
                       self.points = np.delete(self.points, hit_point_idx, axis=0)
                       if self.values is not None and len(self.values) > hit_point_idx:
                            self.values = np.delete(self.values, hit_point_idx, axis=0)
-                      else: # Пересчитываем, если что-то пошло не так
+                      else:
                            self.values = self._sample_intensities(self.points)
-                      # Удаляем соответствующий тип
+                      # Удаляем тип
                       if hasattr(self, 'point_types') and len(self.point_types) > hit_point_idx:
                           del self.point_types[hit_point_idx]
+                      # Удаляем площадь
+                      if hasattr(self, 'areas') and self.areas is not None and len(self.areas) > hit_point_idx:
+                          self.areas = np.delete(self.areas, hit_point_idx, axis=0)
                       # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
-                      # --- ИСПРАВЛЕНИЕ: Обновляем индексы ВЫДЕЛЕННЫХ точек ---
-                      # Этот код должен быть после удаления точки из self.points
+                      # Обновляем индексы ВЫДЕЛЕННЫХ точек
                       if self._ring_select_indices:
-                           # Создаем новый сет индексов, сдвигая те, что были > удаленного
                            new_indices = set()
                            for idx in self._ring_select_indices:
                                 if idx > hit_point_idx:
                                     new_indices.add(idx - 1)
-                                elif idx < hit_point_idx: # Индексы < удаленного не меняются
+                                elif idx < hit_point_idx:
                                     new_indices.add(idx)
-                                # else: idx == hit_point_idx, он уже удален из self._ring_select_indices выше
                            self._ring_select_indices = new_indices
-                      # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
                       self._redo.clear()
                       self._set_status("Deleted point.")
@@ -368,7 +380,7 @@ class EditorEventHandlers:
 
 
     def _on_move(self, e):
-        # ... (остальной код _on_move без изменений, как в предыдущем ответе) ...
+        # ... (остальной код _on_move без изменений) ...
         pos_yx = self._img_xy(e)
 
         # Перетаскивание центра (только если не замеряем)
@@ -437,7 +449,7 @@ class EditorEventHandlers:
 
         # Отпускание после прямоугольного выделения
         if self.rect_start and e.button == 1: # Только для ЛКМ
-            # ... (код удаления точек без изменений) ...
+            # ... (код удаления точек) ...
             y0, x0 = self.rect_start;
             if e.ydata is not None and e.xdata is not None:
                 y1, x1 = e.ydata, e.xdata
@@ -455,40 +467,38 @@ class EditorEventHandlers:
 
                     indices_to_delete = np.where(mask_in_rect)[0]
 
-                    # --- ИСПРАВЛЕНИЕ: Обновляем selected ring indices ПЕРЕД удалением ---
-                    # Нужно обновить _ring_select_indices ДО того, как точки будут удалены,
-                    # чтобы правильно рассчитать новые индексы
+                    # Обновляем selected ring indices ПЕРЕД удалением
                     if self._ring_select_indices:
                         deleted_selected_indices = self._ring_select_indices.intersection(indices_to_delete)
                         if deleted_selected_indices:
-                             # Удаляем те, что попали в прямоугольник
                              self._ring_select_indices.difference_update(deleted_selected_indices)
-                             # Пересчитываем индексы оставшихся выделенных точек
                              new_ring_indices = set()
-                             # Считаем, сколько точек было удалено *перед* каждым оставшимся выделенным индексом
                              num_deleted_before = {i: np.count_nonzero(indices_to_delete < i) for i in self._ring_select_indices}
                              for old_idx in self._ring_select_indices:
-                                  # Сдвигаем индекс на количество удаленных перед ним
                                   new_ring_indices.add(old_idx - num_deleted_before[old_idx])
                              self._ring_select_indices = new_ring_indices
-                    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
-                    # Теперь удаляем точки, значения и ТИПЫ
+                    # Теперь удаляем точки, значения, типы и ПЛОЩАДИ
                     mask_to_keep = ~mask_in_rect
                     self.points = self.points[mask_to_keep]
                     if self.values is not None and len(self.values) == len(mask_to_keep) + num_to_delete:
                         self.values = self.values[mask_to_keep]
-                    else: # Пересчитываем, если что-то не так
+                    else:
                         self.values = self._sample_intensities(self.points)
 
-                    # --- ИСПРАВЛЕНИЕ: Удаляем типы точек ---
+                    # --- ИСПРАВЛЕНИЕ: Удаляем типы точек и ПЛОЩАДИ ---
                     if hasattr(self, 'point_types') and len(self.point_types) == len(mask_to_keep) + num_to_delete:
-                        # Используем numpy boolean array indexing для списка (преобразовав в array и обратно)
                         types_array = np.array(self.point_types)
                         self.point_types = types_array[mask_to_keep].tolist()
-                    else: # Если типы уже не совпадали, пересоздаем
+                    else:
                         print("Warning: point_types length mismatch during rect delete. Resetting types.")
                         self.point_types = ["unknown"] * len(self.points)
+
+                    if hasattr(self, 'areas') and self.areas is not None and len(self.areas) == len(mask_to_keep) + num_to_delete:
+                        self.areas = self.areas[mask_to_keep]
+                    else:
+                        print("Warning: areas length mismatch during rect delete. Resetting areas.")
+                        self.areas = np.zeros(len(self.points), dtype=float)
                     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
                     self._redo.clear()
@@ -505,7 +515,7 @@ class EditorEventHandlers:
             return
 
 
-    # --- Остальные методы (_img_xy, _near_idx, _center_hit, _apply_center_filters) без изменений ---
+    # --- Остальные методы (_img_xy, _near_idx, _center_hit, _apply_center_filters) ---
     def _img_xy(self, e):
         return None if (e.xdata is None or e.ydata is None) else (e.ydata, e.xdata)
 
@@ -525,7 +535,7 @@ class EditorEventHandlers:
         return dist_sq <= self._center_hit_radius ** 2
 
     def _apply_center_filters(self):
-        # --- ИСПРАВЛЕНИЕ: Удаляем/обновляем типы и здесь ---
+        # --- ИСПРАВЛЕНИЕ: Удаляем/обновляем типы и ПЛОЩАДИ и здесь ---
         if self.points is None or len(self.points) == 0: return
         if not (self.overlay and self.overlay.get("center")): return
 
@@ -557,7 +567,7 @@ class EditorEventHandlers:
                            new_ring_indices.add(old_idx - num_deleted_before[old_idx])
                       self._ring_select_indices = new_ring_indices
 
-            # Удаляем точки, значения и типы
+            # Удаляем точки, значения, типы и ПЛОЩАДИ
             self.points = self.points[mask_keep]
             if self.values is not None and len(self.values) == len(mask_keep) + num_deleted:
                 self.values = self.values[mask_keep]
@@ -571,6 +581,14 @@ class EditorEventHandlers:
             else:
                 print("Warning: point_types length mismatch during center filter. Resetting types.")
                 self.point_types = ["unknown"] * len(self.points)
+
+            # Удаляем площади
+            if hasattr(self, 'areas') and self.areas is not None and len(self.areas) == len(mask_keep) + num_deleted:
+                self.areas = self.areas[mask_keep]
+            else:
+                print("Warning: areas length mismatch during center filter. Resetting areas.")
+                self.areas = np.zeros(len(self.points), dtype=float)
+
 
             self._set_status(f"Applied center filters, removed {num_deleted} points.")
             self._redo.clear()
