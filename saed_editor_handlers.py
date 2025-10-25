@@ -306,11 +306,17 @@ class EditorEventHandlers:
                       redraw_needed |= self._clear_measurement_result()
                       if redraw_needed: self._redraw()
 
-                      # Добавляем точку
+                      # --- ИСПРАВЛЕНИЕ: Добавляем тип при добавлении точки ---
                       self._push_undo()
                       self.points = np.vstack([self.points, [y, x]])
                       sampled_value = self._sample_intensities(np.array([[y, x]]))[0]
                       self.values = np.append(self.values, sampled_value)
+                      # Добавляем тип "unknown" для новой точки
+                      if hasattr(self, 'point_types'):
+                          self.point_types.append("unknown")
+                      else: # На всякий случай, если point_types не инициализирован
+                          self.point_types = ["unknown"] * len(self.points)
+                      # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
                       self._redo.clear()
                       self._set_status(f"Added point at ({x:.1f}, {y:.1f}).")
                       self._redraw()
@@ -325,17 +331,33 @@ class EditorEventHandlers:
                       if hit_point_idx >= len(self.points):
                            self._set_status("Error: Point index out of bounds during deletion.")
                            return
+
+                      # --- ИСПРАВЛЕНИЕ: Удаляем тип точки ---
+                      # Удаляем точку, значение И ТИП
                       self.points = np.delete(self.points, hit_point_idx, axis=0)
                       if self.values is not None and len(self.values) > hit_point_idx:
                            self.values = np.delete(self.values, hit_point_idx, axis=0)
-                      else:
+                      else: # Пересчитываем, если что-то пошло не так
                            self.values = self._sample_intensities(self.points)
+                      # Удаляем соответствующий тип
+                      if hasattr(self, 'point_types') and len(self.point_types) > hit_point_idx:
+                          del self.point_types[hit_point_idx]
+                      # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
+                      # --- ИСПРАВЛЕНИЕ: Обновляем индексы ВЫДЕЛЕННЫХ точек ---
+                      # Этот код должен быть после удаления точки из self.points
                       if self._ring_select_indices:
+                           # Создаем новый сет индексов, сдвигая те, что были > удаленного
                            new_indices = set()
                            for idx in self._ring_select_indices:
-                                if idx > hit_point_idx: new_indices.add(idx - 1)
-                                elif idx < hit_point_idx: new_indices.add(idx)
+                                if idx > hit_point_idx:
+                                    new_indices.add(idx - 1)
+                                elif idx < hit_point_idx: # Индексы < удаленного не меняются
+                                    new_indices.add(idx)
+                                # else: idx == hit_point_idx, он уже удален из self._ring_select_indices выше
                            self._ring_select_indices = new_indices
+                      # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
                       self._redo.clear()
                       self._set_status("Deleted point.")
                       self._redraw()
@@ -429,25 +451,45 @@ class EditorEventHandlers:
                 num_to_delete = np.count_nonzero(mask_in_rect)
 
                 if num_to_delete > 0:
-                    self._push_undo()
+                    self._push_undo() # Сохраняем состояние ДО удаления
 
                     indices_to_delete = np.where(mask_in_rect)[0]
 
-                    deleted_selected_indices = self._ring_select_indices.intersection(indices_to_delete)
-                    if deleted_selected_indices:
-                         self._ring_select_indices.difference_update(deleted_selected_indices)
-                         new_ring_indices = set()
-                         num_deleted_before = {i: np.count_nonzero(indices_to_delete < i) for i in self._ring_select_indices}
-                         for old_idx in self._ring_select_indices:
-                              new_ring_indices.add(old_idx - num_deleted_before[old_idx])
-                         self._ring_select_indices = new_ring_indices
+                    # --- ИСПРАВЛЕНИЕ: Обновляем selected ring indices ПЕРЕД удалением ---
+                    # Нужно обновить _ring_select_indices ДО того, как точки будут удалены,
+                    # чтобы правильно рассчитать новые индексы
+                    if self._ring_select_indices:
+                        deleted_selected_indices = self._ring_select_indices.intersection(indices_to_delete)
+                        if deleted_selected_indices:
+                             # Удаляем те, что попали в прямоугольник
+                             self._ring_select_indices.difference_update(deleted_selected_indices)
+                             # Пересчитываем индексы оставшихся выделенных точек
+                             new_ring_indices = set()
+                             # Считаем, сколько точек было удалено *перед* каждым оставшимся выделенным индексом
+                             num_deleted_before = {i: np.count_nonzero(indices_to_delete < i) for i in self._ring_select_indices}
+                             for old_idx in self._ring_select_indices:
+                                  # Сдвигаем индекс на количество удаленных перед ним
+                                  new_ring_indices.add(old_idx - num_deleted_before[old_idx])
+                             self._ring_select_indices = new_ring_indices
+                    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
+                    # Теперь удаляем точки, значения и ТИПЫ
                     mask_to_keep = ~mask_in_rect
                     self.points = self.points[mask_to_keep]
                     if self.values is not None and len(self.values) == len(mask_to_keep) + num_to_delete:
                         self.values = self.values[mask_to_keep]
-                    else:
+                    else: # Пересчитываем, если что-то не так
                         self.values = self._sample_intensities(self.points)
+
+                    # --- ИСПРАВЛЕНИЕ: Удаляем типы точек ---
+                    if hasattr(self, 'point_types') and len(self.point_types) == len(mask_to_keep) + num_to_delete:
+                        # Используем numpy boolean array indexing для списка (преобразовав в array и обратно)
+                        types_array = np.array(self.point_types)
+                        self.point_types = types_array[mask_to_keep].tolist()
+                    else: # Если типы уже не совпадали, пересоздаем
+                        print("Warning: point_types length mismatch during rect delete. Resetting types.")
+                        self.point_types = ["unknown"] * len(self.points)
+                    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
                     self._redo.clear()
                     self._set_status(f"Deleted {num_to_delete} points in selection.")
@@ -483,7 +525,7 @@ class EditorEventHandlers:
         return dist_sq <= self._center_hit_radius ** 2
 
     def _apply_center_filters(self):
-        # ... (код без изменений) ...
+        # --- ИСПРАВЛЕНИЕ: Удаляем/обновляем типы и здесь ---
         if self.points is None or len(self.points) == 0: return
         if not (self.overlay and self.overlay.get("center")): return
 
@@ -498,24 +540,39 @@ class EditorEventHandlers:
         if dead > 0: mask_keep &= (r >= dead)
         if sr > 0: mask_keep &= (r <= sr)
 
-        if self._ring_select_indices:
-             indices_to_delete = np.where(~mask_keep)[0]
-             deleted_selected_indices = self._ring_select_indices.intersection(indices_to_delete)
-             if deleted_selected_indices:
-                  self._ring_select_indices.difference_update(deleted_selected_indices)
-                  new_ring_indices = set()
-                  num_deleted_before = {i: np.count_nonzero(indices_to_delete < i) for i in self._ring_select_indices}
-                  for old_idx in self._ring_select_indices:
-                       new_ring_indices.add(old_idx - num_deleted_before[old_idx])
-                  self._ring_select_indices = new_ring_indices
-
         num_deleted = np.count_nonzero(~mask_keep)
         if num_deleted > 0:
-            self._push_undo()
+            self._push_undo() # Сохраняем до удаления
+
+            indices_to_delete = np.where(~mask_keep)[0]
+
+            # Обновляем ring_select_indices ПЕРЕД удалением
+            if self._ring_select_indices:
+                 deleted_selected_indices = self._ring_select_indices.intersection(indices_to_delete)
+                 if deleted_selected_indices:
+                      self._ring_select_indices.difference_update(deleted_selected_indices)
+                      new_ring_indices = set()
+                      num_deleted_before = {i: np.count_nonzero(indices_to_delete < i) for i in self._ring_select_indices}
+                      for old_idx in self._ring_select_indices:
+                           new_ring_indices.add(old_idx - num_deleted_before[old_idx])
+                      self._ring_select_indices = new_ring_indices
+
+            # Удаляем точки, значения и типы
             self.points = self.points[mask_keep]
             if self.values is not None and len(self.values) == len(mask_keep) + num_deleted:
                 self.values = self.values[mask_keep]
             else:
-                self.values = self._sample_intensities(self.points)
+                self.values = self._sample_intensities(self.points) # Пересчитываем
+
+            # Удаляем типы
+            if hasattr(self, 'point_types') and len(self.point_types) == len(mask_keep) + num_deleted:
+                types_array = np.array(self.point_types)
+                self.point_types = types_array[mask_keep].tolist()
+            else:
+                print("Warning: point_types length mismatch during center filter. Resetting types.")
+                self.point_types = ["unknown"] * len(self.points)
+
             self._set_status(f"Applied center filters, removed {num_deleted} points.")
             self._redo.clear()
+            # self._redraw() # Не нужно здесь, т.к. redraw будет вызван после _on_up -> center_dragging=False
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
