@@ -742,6 +742,8 @@ class SAEDLauncherFrame(ttk.Frame):
                 # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 
             # --- Применяем геометрические фильтры к pts_processed ---
+
+            # --- ИСПРАВЛЕНИЕ: Логика фильтрации и 'else' блок ---
             if (dead_r > 0 or search_r > 0) and len(pts_processed) > 0:
                 dy = pts_processed[:, 0] - center.cy;
                 dx = pts_processed[:, 1] - center.cx;
@@ -750,44 +752,45 @@ class SAEDLauncherFrame(ttk.Frame):
                 if dead_r > 0:   mask &= (r >= dead_r)
                 if search_r > 0: mask &= (r <= search_r)
 
-                # --- НОВОЕ: Фильтруем также point_types ---
                 indices_to_keep = np.where(mask)[0]
                 pts_processed = pts_processed[indices_to_keep]
-                # Создаем новый словарь типов только для оставшихся точек
+
                 filtered_point_types = {}
-                # Сдвиг индексов: старый индекс -> новый индекс
+                # index_map maps OLD index (0..N-1) to NEW index (0..M-1)
                 index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(indices_to_keep)}
+
+                # point_types is {original_index: type}
                 for old_idx, type_str in point_types.items():
                     if old_idx in index_map:
+                        # map to new_idx
                         filtered_point_types[index_map[old_idx]] = type_str
-                point_types = filtered_point_types  # Используем отфильтрованный словарь
-                # --- КОНЕЦ НОВОГО ---
 
-            # --- ИСПРАВЛЕНИЕ ОШИБКИ (УДАЛЕН БЛОК ELSE) ---
-            # Блок 'else' здесь некорректно переиндексировал 'point_types',
-            # что приводило к потере типов и желтым точкам.
-            # Если фильтрация не применялась, 'point_types'
-            # уже содержит правильные оригинальные индексы (0..N-1),
-            # которые будут использоваться в цикле 'enumerate' ниже.
+                point_types = filtered_point_types  # point_types is now {new_idx: type}
+
             else:
-                pass  # Ничего не делаем, 'point_types' уже в правильном формате
+                # --- БЛОК ИСПРАВЛЕН ---
+                # Если фильтр НЕ применялся, 'point_types' все еще {original_index: type}
+                # Нам нужно преобразовать его в {index: type} для цикла enumerate
+                n_points = len(pts_processed)
+                new_point_types = {}
+                for i in range(n_points):
+                    # original_index == i, так как фильтрации не было
+                    new_point_types[i] = point_types.get(i, "unknown")
+
+                point_types = new_point_types  # point_types теперь {index: type}
             # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             # --- Создаем saed_input.json ---
             points_list_for_json = []
+            # Этот цикл теперь работает в обоих случаях
             for i, (y, x, v, area) in enumerate(pts_processed):
-                # --- ИЗМЕНЕНО: Добавляем тип ---
-                # 'i' здесь - это НОВЫЙ индекс (0..N-1) после фильтрации,
-                # ИЛИ ОРИГИНАЛЬНЫЙ индекс (0..N-1), если фильтрации не было.
-                # В обоих случаях 'point_types.get(i, ...)' теперь работает
                 pt_type = point_types.get(i, "unknown")
                 points_list_for_json.append({
                     "y": float(y), "x": float(x),
-                    "intensity": float(v),  # Используем интенсивность v
-                    "area": int(area),  # Добавляем площадь
-                    "type": pt_type  # Добавляем тип
+                    "intensity": float(v),
+                    "area": int(area),
+                    "type": pt_type
                 })
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             saed_input_data = {
                 "image": str(image_path),
@@ -795,7 +798,7 @@ class SAEDLauncherFrame(ttk.Frame):
                 "preproc": preproc_payload,
                 "center": {"x": float(center.cx), "y": float(center.cy), "method": center.method},
                 "radii": {"dead": float(dead_r), "search": float(search_r)},
-                "points": points_list_for_json  # Используем новый список
+                "points": points_list_for_json
             }
             saed_input_path = outdir / "saed_input.json"
             saed_input_path.write_text(json.dumps(saed_input_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -815,7 +818,7 @@ class SAEDLauncherFrame(ttk.Frame):
                 (outdir / "center_init.json").write_text(json.dumps({
                     "initial": {"x": center0.cx, "y": center0.cy, "method": center0.method},
                     "refined": {"x": center.cx, "y": center.cy, "method": center.method},
-                    "dominant_symmetry": dominant_symmetry,  # Добавляем симметрию в лог
+                    "dominant_symmetry": dominant_symmetry,
                     "dead_zone_px": dead_r, "search_radius_px": search_r,
                     "preproc_mode": settings.mode, "preproc": preproc_payload,
                     "image_size": {"H": int(arr.shape[0]), "W": int(arr.shape[1])}
@@ -835,7 +838,7 @@ class SAEDApp(tk.Tk):
         super().__init__()
         self.title("SAED Symmetry – Launcher")
         self.geometry("980x680")
-        self.resizable(True, False)  # Было True, False -> стало True, True? Или оставить? Оставим True, False.
+        self.resizable(True, False)
         frame = SAEDLauncherFrame(self)
         frame.pack(fill=tk.BOTH, expand=True)
 
