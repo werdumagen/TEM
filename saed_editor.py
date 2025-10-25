@@ -169,6 +169,7 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
         file_group.pack(fill=tk.X)
         ttk.Button(file_group, text="Open JSON…", command=self._open_json).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(file_group, text="Save", command=self._save_points_wrapper).pack(side=tk.LEFT, padx=(0, 6))
+        # --- УДАЛЕНА КНОПКА Save Debug Data ---
 
         # --- Analysis Launch ---
         analysis_group = ttk.Frame(controls)
@@ -191,13 +192,12 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
             return spin
 
         self.spn_auto_radius_tol = _spin_param(auto_group, 0, "Radius Tol (px)", 3.0, from_=0.1, to=50.0, increment=0.1, format="%.1f")
-        # --- ИЗМЕНЕНИЕ: Убран спинбокс интенсивности ---
-        # self.spn_auto_intensity_tol = _spin_param(auto_group, 1, "Min Intensity (%)", 80.0, from_=0.0, to=100.0, increment=1.0, format="%.1f")
         self.spn_auto_area_tol = _spin_param(auto_group, 1, "Area Tol (%)", 15.0, from_=0.0, to=100.0, increment=1.0, format="%.1f") # Теперь row=1
 
-        self.btn_auto_group = ttk.Button(auto_group, text="Auto-Group Rings by Radius/Area", command=self._auto_group_rings_wrapper)
-        self.btn_auto_group.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0)) # Теперь row=2
+        # --- ИЗМЕНЕНИЕ: Кнопка теперь вызывает _auto_group_and_save_wrapper ---
+        self.btn_auto_group = ttk.Button(auto_group, text="Auto-Group & Save Debug", command=self._auto_group_and_save_wrapper)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        self.btn_auto_group.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0)) # Теперь row=2
 
         # --- Help Panel ---
         self.help_panel = ttk.LabelFrame(scrollable_frame, text="Hints", padding=(16, 12, 16, 12))
@@ -208,22 +208,21 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
             "LMB on empty — add point\n"
             "LMB on center — drag center\n"
             "RMB on point — delete point\n"
-            "MMB on point — show info (Radius, Intensity, Area, Group ID)\n\n" # Изменено Type на Group ID
+            "MMB on point — show info (Radius, Intensity, Area, Group ID)\n\n"
             "LMB Click (Point A) -> LMB Click (Point B/Center) — measure distance\n\n"
             "Ctrl + LMB Drag — draw selection ring\n"
             "  (+/- keys change thickness)\n"
             "  (LMB Click finishes selection)\n"
             "Shift + LMB (on point) — add point to selection\n"
             "Shift + RMB (on selected point) — remove point from selection\n"
-            "Enter (with points selected) — average selected points (manual only)\n\n" # Добавлено (manual only)
+            "Enter (with points selected) — average selected points (manual only)\n\n"
             "Shift + LMB Drag (no points selected) — rectangular delete\n\n"
-            "Auto Ring Grouping:\n" # Изменено название
+            "Auto Ring Grouping:\n"
             " - Finds rings based on Radius Tolerance.\n"
-            # "- Filters points by Min Intensity.\n" # Убрано
             " - Filters points by Area Tolerance (% from max area in group).\n"
-            # "- Averages points if count matches symmetry (k or 2k).\n" # Убрано усреднение из описания этой функции
-            " - Assigns unique Group ID to each found ring.\n" # Изменено
-            " - Remaining points get 'unknown' type." # Добавлено
+            " - Assigns unique Group ID to each found ring.\n"
+            " - Remaining points get 'unknown' type.\n"
+            " - Saves results to 'auto_grouped_points_debug.json'." # Добавлено
         )
         ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=280).pack(fill=tk.X)
         self._help_visible = False
@@ -294,8 +293,8 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
                 pass
 
     # --- ИЗМЕНЕНИЕ: Обновлена обертка для новой функции ---
-    def _auto_group_rings_wrapper(self):
-        """ Обертка для кнопки Auto-Group """
+    def _auto_group_and_save_wrapper(self):
+        """ Обертка для кнопки Auto-Group & Save Debug """
         if self._auto_grouping_active:
              messagebox.showwarning("Busy", "Auto-grouping is already running.")
              return
@@ -303,7 +302,7 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
              self._auto_grouping_active = True
              self.btn_auto_group.config(state=tk.DISABLED) # Блокируем кнопку
              self.update_idletasks() # Обновляем UI
-             self._auto_group_rings() # Запускаем основную функцию
+             self._auto_group_rings_and_save() # Запускаем основную функцию
         except Exception as e:
              messagebox.showerror("Auto-Grouping Error", f"An error occurred:\n{e}")
              import traceback

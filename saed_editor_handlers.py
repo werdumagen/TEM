@@ -9,7 +9,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math # Добавлен импорт
 import tkinter as tk # Добавлен импорт tk
-from tkinter import messagebox # Для показа ошибок
+from tkinter import messagebox, filedialog # Для показа ошибок и диалога сохранения
+from pathlib import Path # Для работы с путями
+import json # Для сохранения JSON
+from typing import Optional, Dict, Any, List, Tuple, Union # Добавлено Union
 # Импорт специального индекса
 from saed_editor_state import CENTER_AS_POINT_IDX
 # --- ИЗМЕНЕНИЕ: Импорт функций анализа ---
@@ -202,14 +205,11 @@ class EditorEventHandlers:
         self.points[valid_indices, 0] = cy + new_dy
         self.points[valid_indices, 1] = cx + new_dx
 
-        # --- ИЗМЕНЕНИЕ: Обновляем intensity И area после усреднения ---
-        # Пересчитываем intensity (% map)
+        # Обновляем intensity И area после усреднения
         if self.values is not None and len(self.values) == len(self.points):
              self.values[valid_indices] = self._sample_intensities(self.points[valid_indices])
-        # Для area оставляем старые значения (усреднять их не имеет смысла)
         if hasattr(self, 'areas') and self.areas is not None and len(self.areas) == len(self.points):
             pass
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         count = len(valid_indices)
         self._set_status(f"Averaged {count} points to radius {average_radius:.2f} px.")
@@ -220,14 +220,14 @@ class EditorEventHandlers:
     # --- КОНЕЦ МЕТОДОВ ДЛЯ КОЛЬЦА ---
 
     # --- НОВЫЙ МЕТОД: Автоматическая группировка колец (v2) ---
-    def _auto_group_rings(self):
+    def _auto_group_rings(self) -> int: # Возвращает количество найденных групп
         self._set_status("Starting auto-grouping...")
         if self.points is None or len(self.points) == 0:
             self._set_status("No points to group.")
-            return
+            return 0
         if not self.overlay or not self.overlay.get("center"):
             self._set_status("Cannot group: Center is not defined.")
-            return
+            return 0
 
         try:
             # Получаем допуски из UI
@@ -236,7 +236,7 @@ class EditorEventHandlers:
         except (ValueError, tk.TclError) as e:
             messagebox.showerror("Input Error", f"Invalid tolerance value entered:\n{e}")
             self._set_status("Auto-grouping cancelled due to invalid input.")
-            return
+            return 0
 
         self._push_undo() # Сохраняем состояние перед началом
 
@@ -313,6 +313,83 @@ class EditorEventHandlers:
         summary_msg = f"Auto-grouping finished. Found {group_id_counter} groups."
         print(summary_msg)
         self._set_status(summary_msg)
+        return group_id_counter # Возвращаем количество найденных групп
+    # --- КОНЕЦ НОВОГО МЕТОДА ---
+
+    # --- НОВЫЙ МЕТОД: Сохранение отладочных данных ---
+    def _save_debug_data(self, output_dir: Path, filename: str = "auto_grouped_points_debug.json"):
+        if self.points is None or len(self.points) == 0:
+            messagebox.showwarning("Save Debug", "No points to save.")
+            return
+
+        data_to_save = []
+        center_yx = None
+        if self.overlay and isinstance(self.overlay.get("center"), dict):
+             c = self.overlay["center"]
+             if "x" in c and "y" in c:
+                 center_yx = (float(c["y"]), float(c["x"]))
+
+        for i in range(len(self.points)):
+            y, x = self.points[i]
+            radius = None
+            if center_yx:
+                 radius = float(math.hypot(x - center_yx[1], y - center_yx[0]))
+
+            intensity = float(self.values[i]) if i < len(self.values) else None
+            area = float(self.areas[i]) if i < len(self.areas) else None
+            point_type = self.point_types[i] if i < len(self.point_types) else "error"
+
+            data_to_save.append({
+                "index": i,
+                "y": y,
+                "x": x,
+                "radius_px": radius,
+                "intensity_perc": intensity,
+                "area_px2": area,
+                "group_id_or_type": point_type
+            })
+
+        filepath = output_dir / filename
+        try:
+            filepath.write_text(json.dumps(data_to_save, indent=2), encoding="utf-8")
+            self._set_status(f"Debug data saved to {filename}")
+            print(f"Debug data saved to {filepath}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save debug data:\n{e}")
+            self._set_status(f"Failed to save {filename}")
+    # --- КОНЕЦ НОВОГО МЕТОДА ---
+
+    # --- НОВЫЙ МЕТОД: Обертка для группировки и сохранения ---
+    def _auto_group_rings_and_save(self):
+        # 1. Выполняем группировку
+        num_groups = self._auto_group_rings() # Эта функция уже делает redraw и undo
+
+        # 2. Если группировка прошла успешно (нашлись группы или просто нет ошибок)
+        if num_groups is not None: # Функция вернет int >= 0 в случае успеха
+            # Получаем папку вывода из контроллера
+            output_dir = None
+            if self.controller and hasattr(self.controller, 'launcher'):
+                 output_dir_str = self.controller.launcher.ent_out.get()
+                 if output_dir_str:
+                      try:
+                           output_dir = Path(output_dir_str).expanduser().resolve()
+                           output_dir.mkdir(parents=True, exist_ok=True) # Убедимся, что папка есть
+                      except Exception as e:
+                           messagebox.showerror("Save Error", f"Invalid output directory '{output_dir_str}':\n{e}")
+                           self._set_status("Grouping done, but failed to get output directory.")
+                           return
+                 else:
+                      messagebox.showerror("Save Error", "Output folder not specified in Launcher tab.")
+                      self._set_status("Grouping done, but output folder not set.")
+                      return
+            else:
+                 # Если нет контроллера, используем текущую папку
+                 output_dir = Path.cwd()
+                 print("Warning: Controller/Launcher not found. Saving debug data to current directory.")
+
+            # Сохраняем отладочный файл
+            self._save_debug_data(output_dir)
+            # Статус обновляется внутри _save_debug_data
     # --- КОНЕЦ НОВОГО МЕТОДА ---
 
 
