@@ -251,14 +251,14 @@ def refine_center_antipodal(center: Tuple[float, float], pts: np.ndarray, tol_an
     return CenterResult(cy=cy, cx=cx, method="antipodal-refined")
 
 
-# --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ГРУППИРОВКИ ---
+# --- ИСПРАВЛЕНИЕ: Убрана группировка по площади, только по радиусу ---
 def group_points_by_radius_area(
         pts_data: np.ndarray,  # Массив Nx4 (y, x, v, area)
         center: Tuple[float, float],
         radius_tolerance: float = 0.05,  # 5%
-        area_tolerance: float = 0.03  # 3%
+        # area_tolerance: float = 0.03  # Параметр больше не используется
 ) -> Dict[int, List[int]]:
-    """Группирует точки по радиусу и площади."""
+    """Группирует точки ТОЛЬКО по радиусу."""
     if len(pts_data) == 0:
         return {}
 
@@ -266,9 +266,9 @@ def group_points_by_radius_area(
     dy = pts_data[:, 0] - cy
     dx = pts_data[:, 1] - cx
     radii = np.hypot(dx, dy)
-    areas = pts_data[:, 3]
+    # areas = pts_data[:, 3] # Площадь больше не используется для группировки
 
-    # Используем cluster_rings для первичной группировки по радиусу
+    # Используем cluster_rings для группировки по радиусу
     ring_centers, ring_labels, _ = cluster_rings(radii)
 
     # Словарь для хранения финальных групп {group_id: [point_index]}
@@ -276,56 +276,22 @@ def group_points_by_radius_area(
     group_counter = 0
 
     if len(ring_centers) > 0:
-        # Итерируем по кольцам, найденным cluster_rings
+        # Итерируем по кольцам (группам по радиусу), найденным cluster_rings
         for ring_idx in range(len(ring_centers)):
             points_in_ring_mask = (ring_labels == ring_idx)
             indices_in_ring = np.where(points_in_ring_mask)[0]
 
             if len(indices_in_ring) == 0: continue
 
-            # Теперь группируем точки внутри кольца по площади
-            areas_in_ring = areas[indices_in_ring]
-
-            # Простой метод кластеризации по площади: сортируем и ищем разрывы > area_tolerance
-            sorted_area_indices = np.argsort(areas_in_ring)
-            sorted_areas = areas_in_ring[sorted_area_indices]
-
-            if len(sorted_areas) == 0: continue
-
-            current_group_start_idx = 0
-            mean_area_of_current_group = sorted_areas[0]
-
-            for i in range(1, len(sorted_areas)):
-                relative_diff = abs(sorted_areas[i] - mean_area_of_current_group) / mean_area_of_current_group
-                # Если разница слишком велика, начинаем новую группу
-                if relative_diff > area_tolerance:
-                    # Сохраняем предыдущую группу
-                    original_indices_in_group = indices_in_ring[sorted_area_indices[current_group_start_idx:i]]
-                    final_groups[group_counter].extend(original_indices_in_group.tolist())
-                    group_counter += 1
-                    # Начинаем новую
-                    current_group_start_idx = i
-                    mean_area_of_current_group = sorted_areas[i]
-                else:
-                    # Обновляем среднюю площадь текущей группы (скользящее среднее)
-                    n = i - current_group_start_idx + 1
-                    mean_area_of_current_group = ((n - 1) * mean_area_of_current_group + sorted_areas[i]) / n
-
-            # Сохраняем последнюю группу
-            original_indices_in_group = indices_in_ring[sorted_area_indices[current_group_start_idx:]]
-            final_groups[group_counter].extend(original_indices_in_group.tolist())
+            # Просто добавляем все точки этого радиуса в одну группу
+            final_groups[group_counter].extend(indices_in_ring.tolist())
             group_counter += 1
-    else:
-        # Если cluster_rings не нашел колец, возможно, все точки близки?
-        # Можно попробовать сгруппировать все точки по площади как одну большую группу
-        # (Пропуск этого шага пока что)
-        pass
 
-    # Очищаем пустые группы, если такие образовались
+    # Очищаем пустые группы, если такие образовались (хотя не должны)
     return {k: v for k, v in final_groups.items() if v}
 
 
-# --- КОНЕЦ НОВОЙ ФУНКЦИИ ---
+# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
 
 # -------------------------- GUI --------------------------
@@ -691,9 +657,9 @@ class SAEDLauncherFrame(ttk.Frame):
                 else:
                     print("Could not determine dominant symmetry.")
 
-                # Группировка
-                groups = group_points_by_radius_area(pts_raw, (cy, cx), radius_tolerance=0.05, area_tolerance=0.03)
-                print(f"Grouped points into {len(groups)} potential rings.")
+                # Группировка ТОЛЬКО ПО РАДИУСУ
+                groups = group_points_by_radius_area(pts_raw, (cy, cx), radius_tolerance=0.05)
+                print(f"Grouped points into {len(groups)} potential rings (by radius only).")
 
                 point_types: Dict[int, str] = {}  # {original_index: type}
                 pts_processed_list = pts_raw.copy().tolist()  # Копируем для изменений
