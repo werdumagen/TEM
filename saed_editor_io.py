@@ -8,16 +8,13 @@ import json
 from pathlib import Path
 from tkinter import filedialog, messagebox
 import numpy as np
-
-
-# Зависимости, которые должны быть импортированы в основном файле
-# from percentile_utils import compute_percentile_map, map_values_to_percent
-# from preproc import PreprocSettings, load_grayscale_with_preproc
+# Зависимости импортируются динамически
 
 class EditorIO:
 
     # ---------- IO ----------
     def _open_json(self):
+        # ... (без изменений) ...
         p = filedialog.askopenfilename(
             title="Open SAED Input",
             filetypes=[("SAED Input JSON", "*saed_input.json;*.json"), ("All", "*.*")]
@@ -32,92 +29,63 @@ class EditorIO:
 
     def load_input_json(self, path: Path, *, push_undo: bool = False, reset_view: bool = True):
         """Public JSON loading method, also used by the tab controller."""
+        # ... (без изменений) ...
         if not path.exists():
             raise FileNotFoundError(f"Input JSON file not found: {path}")
 
         if push_undo:
-            self._push_undo()  # Save state *before* loading new data
+            self._push_undo()
 
-        self._load_input_json(path)  # Load the data
-        self._clear_tooltip()  # Clear any popup info
+        self._load_input_json(path)
+        self._clear_tooltip()
 
         if reset_view:
             self.view_cx = None
             self.view_cy = None
-        self._ensure_view_center()  # Set view center based on loaded data
+        self._ensure_view_center()
 
         self._undo.clear()
         self._redo.clear()
 
-        self._redraw()  # Redraw canvas
-        self._update_zoom_hint()  # Update zoom label
+        self._redraw()
+        self._update_zoom_hint()
         self._set_status(f"Loaded: {path.name}")
+
 
     def _load_input_json(self, path: Path):
         """Internal method to load data from the JSON file."""
-        # Динамический импорт для утилит
         from preproc import PreprocSettings, load_grayscale_with_preproc
         from percentile_utils import compute_percentile_map, map_values_to_percent
-
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON format in {path.name}: {e}") from e
-        except Exception as e:
-            raise IOError(f"Failed to read JSON file {path.name}: {e}") from e
+        except json.JSONDecodeError as e: raise ValueError(f"Invalid JSON format in {path.name}: {e}") from e
+        except Exception as e: raise IOError(f"Failed to read JSON file {path.name}: {e}") from e
 
-        self._percent_map = None
-        self._percent_lookup = None
-
+        self._percent_map = None; self._percent_lookup = None
         img_path_str = data.get("image")
-        if not img_path_str:
-            raise ValueError("The JSON is missing the required 'image' field.")
-
+        if not img_path_str: raise ValueError("JSON missing 'image' field.")
         img_p = Path(img_path_str)
-        if not img_p.is_absolute():
-            self.image_path = (path.parent / img_p).resolve()
-        else:
-            self.image_path = img_p.resolve()
+        self.image_path = (path.parent / img_p).resolve() if not img_p.is_absolute() else img_p.resolve()
+        if not self.image_path.exists(): raise FileNotFoundError(f"Image not found: {self.image_path}")
 
-        if not self.image_path.exists():
-            raise FileNotFoundError(f"Image file specified in JSON not found: {self.image_path}")
-
-        fallback_mode = data.get("preproc_mode")
+        fallback_mode = data.get("preproc_mode");
         if not isinstance(fallback_mode, str): fallback_mode = None
-        self._preproc_settings = PreprocSettings.from_json(
-            data.get("preproc"), fallback_mode=fallback_mode
-        )
+        self._preproc_settings = PreprocSettings.from_json(data.get("preproc"), fallback_mode=fallback_mode)
 
         try:
             self.img_arr = load_grayscale_with_preproc(self.image_path, self._preproc_settings)
             self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
             self._percent_lookup = (uniq_vals, uniq_perc)
-        except RuntimeError as cv_err:
-            messagebox.showerror("Dependency Error", str(cv_err))
-            self.img_arr = None
-            self._percent_map = None
-            self._percent_lookup = None
-        except Exception as e:
-            messagebox.showerror("Image Error", f"Failed to load or process the image:\n{e}")
-            self.img_arr = None
-            self._percent_map = None
-            self._percent_lookup = None
+        except RuntimeError as cv_err: messagebox.showerror("Dependency Error", str(cv_err)); self.img_arr = None; self._percent_map = None; self._percent_lookup = None
+        except Exception as e: messagebox.showerror("Image Error", f"Failed to load/process image:\n{e}"); self.img_arr = None; self._percent_map = None; self._percent_lookup = None
 
-        c = data.get("center") or {}
-        r = data.get("radii") or {}
+        c = data.get("center") or {}; r = data.get("radii") or {}
         img_w = self.img_arr.shape[1] if self.img_arr is not None else 0
         img_h = self.img_arr.shape[0] if self.img_arr is not None else 0
         default_cx = (img_w - 1) / 2.0 if img_w > 0 else 0.0
         default_cy = (img_h - 1) / 2.0 if img_h > 0 else 0.0
-
-        self.overlay = {
-            "center": {
-                "x": float(c.get("x", default_cx)),
-                "y": float(c.get("y", default_cy))
-            },
-            "dead_radius": float(r.get("dead", 0.0)),
-            "search_radius": float(r.get("search", 0.0)),
-        }
+        self.overlay = {"center": {"x": float(c.get("x", default_cx)), "y": float(c.get("y", default_cy))},
+                        "dead_radius": float(r.get("dead", 0.0)), "search_radius": float(r.get("search", 0.0))}
 
         pts_data = data.get("points", [])
         if pts_data:
@@ -125,31 +93,39 @@ class EditorIO:
                 yy = [float(p.get("y", 0.0)) for p in pts_data]
                 xx = [float(p.get("x", 0.0)) for p in pts_data]
                 self.points = np.column_stack([yy, xx]).astype(float)
+                # --- ИЗМЕНЕНО: Читаем типы ---
+                self.point_types = [p.get("type", "unknown") for p in pts_data]
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
+                # Загружаем или сэмплируем интенсивности
                 if self._percent_map is not None:
                     self.values = self._sample_intensities(self.points)
                 elif any("intensity" in p for p in pts_data):
                     vv_raw = np.array([float(p.get("intensity", 0.0)) for p in pts_data], dtype=float)
-                    if self._percent_lookup is not None:
-                        self.values = map_values_to_percent(vv_raw, *self._percent_lookup)
-                    else:
-                        self.values = vv_raw
+                    if self._percent_lookup is not None: self.values = map_values_to_percent(vv_raw, *self._percent_lookup)
+                    else: self.values = vv_raw
                 else:
-                    if self.img_arr is not None:
-                        self.values = self._sample_intensities(self.points)
-                    else:
-                        self.values = np.zeros(len(self.points), dtype=float)
+                    if self.img_arr is not None: self.values = self._sample_intensities(self.points)
+                    else: self.values = np.zeros(len(self.points), dtype=float)
+
+                # --- ИЗМЕНЕНИЕ: Проверяем длину point_types ---
+                if len(self.point_types) != len(self.points):
+                     print(f"Warning: Mismatch in point count ({len(self.points)}) and type count ({len(self.point_types)}). Resetting types.")
+                     self.point_types = ["unknown"] * len(self.points)
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             except (ValueError, TypeError) as e:
-                messagebox.showerror("Data Error", f"Invalid point data in JSON: {e}")
-                self.points = np.zeros((0, 2), float)
-                self.values = np.zeros((0,), float)
+                messagebox.showerror("Data Error", f"Invalid point data: {e}")
+                self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
+                self.point_types = [] # Инициализируем пустым списком
         else:
-            self.points = np.zeros((0, 2), float)
-            self.values = np.zeros((0,), float)
+            self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
+            self.point_types = [] # Инициализируем пустым списком
+
 
     def _save_points_wrapper(self):
         """Wrapper for the save button to handle potential errors."""
+        # ... (без изменений) ...
         try:
             self._save_points()
         except Exception as e:
@@ -157,6 +133,7 @@ class EditorIO:
 
     def _save_points(self) -> Path:
         """Saves points and updates 'saed_input.edited.json'."""
+        # ... (код определения output_dir без изменений) ...
         output_dir = Path("saed_results")
         if self.controller and hasattr(self.controller, 'launcher'):
             output_dir_str = self.controller.launcher.ent_out.get()
@@ -164,25 +141,30 @@ class EditorIO:
                 try:
                     output_dir = Path(output_dir_str).expanduser().resolve()
                     output_dir.mkdir(parents=True, exist_ok=True)
-                except Exception as e:
-                    raise OSError(f"Invalid or inaccessible output directory '{output_dir_str}': {e}") from e
-            else:
-                raise ValueError("Output folder is not specified in the Launcher tab.")
+                except Exception as e: raise OSError(f"Invalid output directory '{output_dir_str}': {e}") from e
+            else: raise ValueError("Output folder not specified.")
         else:
-            print("Warning: Controller or Launcher not found, using default output 'saed_results'.")
+            print("Warning: Controller/Launcher not found, using default output 'saed_results'.")
             output_dir.mkdir(parents=True, exist_ok=True)
+
 
         pts_list = []
         current_values = self._sample_intensities(self.points)
+        # --- ИЗМЕНЕНИЕ: Добавляем тип при сохранении ---
         for i, (y, x) in enumerate(self.points):
             intensity = float(current_values[i]) if i < len(current_values) else 0.0
-            pts_list.append({"y": float(y), "x": float(x), "intensity": intensity})
+            pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown" # Безопасное получение типа
+            pts_list.append({
+                "y": float(y), "x": float(x),
+                "intensity": intensity,
+                "type": pt_type # Добавляем тип
+            })
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         spots_path = output_dir / "spots.json"
         spots_path.write_text(json.dumps({"points": pts_list}, indent=2), encoding="utf-8")
 
         abs_image_path = self.image_path.resolve() if self.image_path else None
-
         overlay_center_data = None
         if self.overlay and self.overlay.get("center"):
             center_data = self.overlay["center"]
@@ -191,8 +173,8 @@ class EditorIO:
 
         saed_input_edited_data = {
             "image": str(abs_image_path) if abs_image_path else None,
-            "preproc_mode": self._preproc_settings.mode,
-            "preproc": self._preproc_settings.to_json(),
+            "preproc_mode": self._preproc_settings.mode if self._preproc_settings else "raw",
+            "preproc": self._preproc_settings.to_json() if self._preproc_settings else {"mode": "raw"},
             "center": overlay_center_data,
             "radii": {
                 "dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
@@ -206,18 +188,22 @@ class EditorIO:
         self._set_status(f"Points saved to {output_dir.name}")
         return spots_path
 
-    # --- NEW: Session Save/Load ---
 
+    # --- Session Save/Load ---
     def get_state(self) -> dict:
         """Returns a serializable dictionary of the editor's state."""
         points_list = self.points.tolist() if self.points is not None else []
         values_list = self.values.tolist() if self.values is not None else []
+        # --- ИЗМЕНЕНО: Сохраняем типы ---
+        types_list = self.point_types if hasattr(self, 'point_types') else ["unknown"] * len(points_list)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         return {
             "image_path": str(self.image_path.resolve()) if self.image_path else None,
-            "preproc_settings": self._preproc_settings.to_json(),
+            "preproc_settings": self._preproc_settings.to_json() if self._preproc_settings else {"mode":"raw"},
             "points": points_list,
             "values": values_list,
+            "point_types": types_list, # Добавили типы
             "overlay": self.overlay,
             "zoom_val": self.zoom_val,
             "view_cx": self.view_cx,
@@ -227,168 +213,110 @@ class EditorIO:
 
     def set_state(self, state: dict):
         """Restores the editor's state from a dictionary."""
-        # Динамический импорт
+        # ... (код загрузки image, preproc, img_arr, percent_map без изменений) ...
         from preproc import PreprocSettings, load_grayscale_with_preproc
         from percentile_utils import compute_percentile_map
 
         image_path_str = state.get("image_path")
         if not image_path_str:
-            self.image_path = None
-            self.img_arr = None
-            self._percent_map = None
-            self._percent_lookup = None
-            self.points = np.zeros((0, 2), float)
-            self.values = np.zeros((0,), float)
-            self.overlay = {}
-            self._preproc_settings = PreprocSettings()
-            self.zoom_val = 0
-            self.view_cx = None
-            self.view_cy = None
+            self.image_path = None; self.img_arr = None; self._percent_map = None; self._percent_lookup = None
+            self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
+            self.point_types = [] # Очищаем типы
+            self.overlay = {}; self._preproc_settings = PreprocSettings()
+            self.zoom_val = 0; self.view_cx = None; self.view_cy = None
             if hasattr(self, 'zoom_var'): self.zoom_var.set(0)
-            self._measurement = None
-            self._redraw()
-            self._set_status("Editor cleared (no image path in session).")
-            return
+            self._measurement = None; self._redraw(); self._set_status("Editor cleared."); return
 
         try:
             self.image_path = Path(image_path_str).resolve()
-            if not self.image_path.exists():
-                raise FileNotFoundError(f"Image from session not found: {self.image_path}")
-
+            if not self.image_path.exists(): raise FileNotFoundError(f"Image not found: {self.image_path}")
             self._preproc_settings = PreprocSettings.from_json(state.get("preproc_settings", {}))
-
             self.img_arr = load_grayscale_with_preproc(self.image_path, self._preproc_settings)
             self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
             self._percent_lookup = (uniq_vals, uniq_perc)
 
+            # Восстанавливаем точки, значения И ТИПЫ
             self.points = np.array(state.get("points", []), dtype=float)
             saved_values = state.get("values", [])
-            if len(saved_values) == len(self.points):
-                self.values = np.array(saved_values, dtype=float)
-            else:
-                self.values = self._sample_intensities(self.points)
+            if len(saved_values) == len(self.points): self.values = np.array(saved_values, dtype=float)
+            else: self.values = self._sample_intensities(self.points)
+            # --- ИЗМЕНЕНО: Восстанавливаем типы ---
+            saved_types = state.get("point_types", [])
+            if len(saved_types) == len(self.points): self.point_types = saved_types
+            else: self.point_types = ["unknown"] * len(self.points) # Заполняем по умолчанию, если не совпадает
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             self.overlay = state.get("overlay", {})
             self.zoom_val = state.get("zoom_val", 0)
-            self.view_cx = state.get("view_cx")
-            self.view_cy = state.get("view_cy")
+            self.view_cx = state.get("view_cx"); self.view_cy = state.get("view_cy")
             self._measurement = state.get("measurement")
-
             if hasattr(self, 'zoom_var'): self.zoom_var.set(self.zoom_val)
 
-            self._cancel_measurement_preview()
+            self._cancel_all_interactions() # Сбрасываем все активные режимы
             self.center_dragging = False
             self.rect_start = None
 
-            self._ensure_view_center()
-            self._redraw()
-            self._update_zoom_hint()
-            self._set_status(f"Restored editor state for {self.image_path.name}")
+            self._ensure_view_center(); self._redraw(); self._update_zoom_hint()
+            self._set_status(f"Restored state for {self.image_path.name}")
 
-        except FileNotFoundError as e:
-            messagebox.showerror("Editor Load Error", str(e))
-            self.set_state({})
-        except Exception as e:
-            messagebox.showerror("Editor Load Error", f"Failed to restore editor state:\n{e}")
-            self.set_state({})
+        except FileNotFoundError as e: messagebox.showerror("Load Error", str(e)); self.set_state({})
+        except Exception as e: messagebox.showerror("Load Error", f"Failed to restore state:\n{e}"); self.set_state({})
+
 
     # ---------- Helpers ----------
     def _sample_intensities(self, pts_yx: np.ndarray) -> np.ndarray:
         """Samples intensity values..."""
+        # ... (код без изменений) ...
         from percentile_utils import map_values_to_percent
-        if pts_yx is None or len(pts_yx) == 0:
-            return np.zeros((0,), float)
-
-        if self._percent_map is not None:
-            src = self._percent_map
-            H, W = src.shape[:2]
-            out = []
-            for y, x in pts_yx:
-                yi = max(0, min(H - 1, int(round(y))))
-                xi = max(0, min(W - 1, int(round(x))))
-                out.append(float(src[yi, xi]))
+        if pts_yx is None or len(pts_yx) == 0: return np.zeros((0,), float)
+        if hasattr(self, '_percent_map') and self._percent_map is not None:
+            src = self._percent_map; H, W = src.shape[:2]; out = []
+            for y, x in pts_yx: yi = max(0, min(H - 1, int(round(y)))); xi = max(0, min(W - 1, int(round(x)))); out.append(float(src[yi, xi]))
             return np.array(out, dtype=float)
-
-        if self.img_arr is not None and self._percent_lookup is not None:
-            H, W = self.img_arr.shape[:2]
-            raw_values = []
-            for y, x in pts_yx:
-                yi = max(0, min(H - 1, int(round(y))))
-                xi = max(0, min(W - 1, int(round(x))))
-                raw_values.append(float(self.img_arr[yi, xi]))
-            raw_values_np = np.array(raw_values, dtype=float)
-            return map_values_to_percent(raw_values_np, *self._percent_lookup)
-
-        if self.img_arr is not None:
-            H, W = self.img_arr.shape[:2]
-            raw_values = []
-            for y, x in pts_yx:
-                yi = max(0, min(H - 1, int(round(y))))
-                xi = max(0, min(W - 1, int(round(x))))
-                raw_values.append(float(self.img_arr[yi, xi]))
+        if hasattr(self, 'img_arr') and self.img_arr is not None and hasattr(self, '_percent_lookup') and self._percent_lookup is not None:
+            H, W = self.img_arr.shape[:2]; raw_values = []
+            for y, x in pts_yx: yi = max(0, min(H - 1, int(round(y)))); xi = max(0, min(W - 1, int(round(x)))); raw_values.append(float(self.img_arr[yi, xi]))
+            raw_values_np = np.array(raw_values, dtype=float); return map_values_to_percent(raw_values_np, *self._percent_lookup)
+        if hasattr(self, 'img_arr') and self.img_arr is not None:
+            H, W = self.img_arr.shape[:2]; raw_values = []
+            for y, x in pts_yx: yi = max(0, min(H - 1, int(round(y)))); xi = max(0, min(W - 1, int(round(x)))); raw_values.append(float(self.img_arr[yi, xi]))
             return np.array(raw_values, dtype=float)
-
         return np.zeros(len(pts_yx), dtype=float)
+
 
     # ---------- Анализ ----------
     def _start_analysis(self):
-        try:
-            saved_spots_path = self._save_points()
-            output_dir = saved_spots_path.parent
-            payload_path = output_dir / "fibo_input.json"
-        except (ValueError, OSError, Exception) as e:
-            messagebox.showerror("Save Error", f"Cannot proceed to analysis. Failed to save points/files:\n{e}")
-            return
+        # ... (код без изменений) ...
+        try: saved_spots_path = self._save_points(); output_dir = saved_spots_path.parent; payload_path = output_dir / "fibo_input.json"
+        except (ValueError, OSError, Exception) as e: messagebox.showerror("Save Error", f"Cannot proceed. Failed to save:\n{e}"); return
 
         try:
             abs_image_path = self.image_path.resolve() if self.image_path else None
-
             overlay_center_data = None
-            if self.overlay and isinstance(self.overlay.get("center"), dict):
-                center_data = self.overlay["center"]
-                overlay_center_data = {"x": float(center_data["x"]), "y": float(center_data["y"])}
-
+            if self.overlay and isinstance(self.overlay.get("center"), dict): center_data = self.overlay["center"]; overlay_center_data = {"x": float(center_data["x"]), "y": float(center_data["y"])}
             geo_center_data = None
-            if self.img_arr is not None:
-                H, W = self.img_arr.shape[:2]
-                geo_center_data = {"x": (W - 1) / 2.0, "y": (H - 1) / 2.0}
-
+            if self.img_arr is not None: H, W = self.img_arr.shape[:2]; geo_center_data = {"x": (W - 1) / 2.0, "y": (H - 1) / 2.0}
             pts_list = []
             current_values = self._sample_intensities(self.points)
             for i, (y, x) in enumerate(self.points):
                 intensity = float(current_values[i]) if i < len(current_values) else 0.0
-                pts_list.append({"y": float(y), "x": float(x), "intensity": intensity})
+                # --- ИЗМЕНЕНО: Добавляем тип при запуске анализа ---
+                pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown"
+                pts_list.append({"y": float(y), "x": float(x), "intensity": intensity, "type": pt_type})
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-            payload = {
-                "image": str(abs_image_path) if abs_image_path else None,
-                "preproc_mode": self._preproc_settings.mode,
-                "preproc": self._preproc_settings.to_json(),
-                "points": pts_list,
-                "centers": {
-                    "geometric": geo_center_data,
-                    "overlay": overlay_center_data
-                },
-                "radii": {
-                    "dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
-                    "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0
-                },
-                "spots_json": str(saved_spots_path.resolve())
-            }
-
+            payload = {"image": str(abs_image_path) if abs_image_path else None,
+                       "preproc_mode": self._preproc_settings.mode if self._preproc_settings else "raw",
+                       "preproc": self._preproc_settings.to_json() if self._preproc_settings else {"mode": "raw"},
+                       "points": pts_list, "centers": {"geometric": geo_center_data, "overlay": overlay_center_data},
+                       "radii": {"dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
+                                 "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0},
+                       "spots_json": str(saved_spots_path.resolve())}
             payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             self._set_status("Prepared data for analysis…")
-
-        except Exception as e:
-            messagebox.showerror("Data Preparation Error",
-                                 f"Failed to create analysis payload ({payload_path.name}):\n{e}")
-            return
+        except Exception as e: messagebox.showerror("Data Prep Error", f"Failed to create ({payload_path.name}):\n{e}"); return
 
         if self.controller is not None:
-            try:
-                self.controller.open_analysis(payload_path.resolve(), abs_image_path, saved_spots_path.resolve())
-            except Exception as e:
-                print(f"Error calling controller.open_analysis: {e}")
-                messagebox.showerror("Launch Error",
-                                     f"Failed to switch to the analysis tab. Please check the data and try again.\nDetails: {e}")
-        else:
-            messagebox.showwarning("Standalone Mode", "Cannot switch to analysis tab. Controller not available.")
+            try: self.controller.open_analysis(payload_path.resolve(), abs_image_path, saved_spots_path.resolve())
+            except Exception as e: print(f"Error calling controller.open_analysis: {e}"); messagebox.showerror("Launch Error", f"Failed to switch to analysis tab.\nDetails: {e}")
+        else: messagebox.showwarning("Standalone Mode", "Cannot switch to analysis tab.")
