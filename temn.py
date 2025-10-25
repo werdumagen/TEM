@@ -76,7 +76,9 @@ def symmetry_scores(angles, radii, ring_means, top_rings=3):
     return out
 
 
-def cluster_rings(radii, bins=60, prominence_factor=0.05, min_prominence=3):
+# --- ИСПРАВЛЕНИЕ: Повышаем чувствительность поиска колец ---
+def cluster_rings(radii, bins=100, prominence_factor=0.03, min_prominence=2):
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
     """Кластеризует радиусы, находя пики в гистограмме."""
     if len(radii) == 0:
         return np.array([]), np.zeros(0, dtype=int), ([], [])
@@ -665,6 +667,20 @@ class SAEDLauncherFrame(ttk.Frame):
                 # Анализ симметрии
                 ring_means, _, _ = cluster_rings(pts_r[pts_r > dead_r])  # Анализируем кольца вне мертвой зоны
                 sym_scores = symmetry_scores(pts_a, pts_r, ring_means)
+
+                # --- НОВЫЙ КОД (ЗАПРОС ПОЛЬЗОВАТЕЛЯ): Показываем окно с sym_scores ---
+                scores_str = "\n".join(f"{key}: {value:.4f}" for key, value in sym_scores.items())
+                if not scores_str:
+                    scores_str = "Симметрия не найдена (sym_scores пустой)."
+
+                ring_str = f"Найденные кольца (ring_means):\n{np.array2string(ring_means, precision=2)}\n\n"
+
+                messagebox.showinfo(
+                    "Symmetry Scores (Debug)",
+                    f"{ring_str}Результаты (sym_scores):\n{scores_str}"
+                )
+                # --- КОНЕЦ НОВОГО КОДА ---
+
                 dominant_symmetry = 0
                 if sym_scores:
                     # Ищем симметрию с наибольшим R-фактором (ближе к 1)
