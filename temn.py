@@ -50,7 +50,10 @@ def pol_from(center, pts):
 
 def symmetry_scores(angles, radii, ring_means, top_rings=3):
     out = {}
-    if not ring_means or len(ring_means) == 0:
+    # --- ИСПРАВЛЕНИЕ ОШИБКИ (ValueError: The truth value of an array...) ---
+    # БЫЛО: if not ring_means or len(ring_means) == 0:
+    if ring_means.size == 0:
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         return out
 
     effective_top_rings = min(top_rings, len(ring_means))
