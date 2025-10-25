@@ -47,6 +47,21 @@ class EditorIO:
         self._undo.clear()
         self._redo.clear()
 
+        # --- ИЗМЕНЕНИЕ: Пересчитываем углы после загрузки ---
+        if self.overlay and self.overlay.get("center"):
+             center_data = self.overlay["center"]
+             if isinstance(center_data, dict) and "x" in center_data and "y" in center_data:
+                 cy, cx = float(center_data["y"]), float(center_data["x"])
+                 if len(self.points) > 0:
+                     _, self.angles = self._calculate_angles((cy, cx), self.points)
+                 else:
+                     self.angles = np.zeros((0,), dtype=float)
+             else: # Если центра нет или он некорректный
+                  self.angles = np.full(len(self.points), np.nan)
+        else: # Если нет overlay
+             self.angles = np.full(len(self.points), np.nan)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
         self._redraw()
         self._update_zoom_hint()
         self._set_status(f"Loaded: {path.name}")
@@ -93,7 +108,7 @@ class EditorIO:
                 yy = [float(p.get("y", 0.0)) for p in pts_data]
                 xx = [float(p.get("x", 0.0)) for p in pts_data]
                 self.points = np.column_stack([yy, xx]).astype(float)
-                # --- ИЗМЕНЕНИЕ: Читаем типы (str/int) и ПЛОЩАДИ ---
+                # --- ИЗМЕНЕНИЕ: Читаем типы (str/int), ПЛОЩАДИ, УГЛЫ ---
                 raw_types = [p.get("type", "unknown") for p in pts_data]
                 # Преобразуем int ID обратно в int, остальное в str
                 self.point_types = []
@@ -102,40 +117,44 @@ class EditorIO:
                      except (ValueError, TypeError): self.point_types.append(str(t)) # Если не int, то str
 
                 self.areas = np.array([float(p.get("area", 0.0)) for p in pts_data], dtype=float) # Читаем area
+                # Углы пока не читаем из JSON, они будут пересчитаны
+                self.angles = np.full(len(self.points), np.nan)
+                # Инициализируем initial_group_ids (пока None)
+                self.initial_group_ids = {i: None for i in range(len(self.points))}
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
                 # Загружаем или сэмплируем интенсивности
                 if self._percent_map is not None:
                     self.values = self._sample_intensities(self.points)
                 elif any("intensity" in p for p in pts_data):
-                    # Если intensity уже в %, просто берем ее
                     vv_raw = np.array([float(p.get("intensity", 0.0)) for p in pts_data], dtype=float)
-                    self.values = vv_raw # Предполагаем, что это уже %
+                    self.values = vv_raw
                 else: # Если нет intensity, сэмплируем
                     if self.img_arr is not None: self.values = self._sample_intensities(self.points)
                     else: self.values = np.zeros(len(self.points), dtype=float)
 
-                # --- ИЗМЕНЕНИЕ: Проверяем длину types и areas ---
+                # --- Проверяем длину types и areas ---
                 if len(self.point_types) != len(self.points):
                      print(f"Warning: Mismatch in point count ({len(self.points)}) and type count ({len(self.point_types)}). Resetting types.")
                      self.point_types = ["unknown"] * len(self.points)
                 if len(self.areas) != len(self.points):
                      print(f"Warning: Mismatch in point count ({len(self.points)}) and area count ({len(self.areas)}). Resetting areas.")
-                     self.areas = np.zeros(len(self.points), dtype=float) # Заполняем нулями
-                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                     self.areas = np.zeros(len(self.points), dtype=float)
+                # --- КОНЕЦ Проверки ---
 
             except (ValueError, TypeError) as e:
                 messagebox.showerror("Data Error", f"Invalid point data: {e}")
                 self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
-                self.point_types = []; self.areas = np.zeros((0,), float) # Инициализируем пустым списком/массивом
+                self.point_types = []; self.areas = np.zeros((0,), float); self.angles = np.zeros((0,), float)
+                self.initial_group_ids = {}
         else:
             self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
-            self.point_types = []; self.areas = np.zeros((0,), float) # Инициализируем пустым списком/массивом
+            self.point_types = []; self.areas = np.zeros((0,), float); self.angles = np.zeros((0,), float)
+            self.initial_group_ids = {}
 
 
     def _save_points_wrapper(self):
         """Wrapper for the save button to handle potential errors."""
-        # ... (без изменений) ...
         try:
             self._save_points()
         except Exception as e:
@@ -159,24 +178,37 @@ class EditorIO:
 
 
         pts_list = []
-        # --- ИЗМЕНЕНИЕ: Используем текущие values, areas, types (str/int) ---
+        # --- ИЗМЕНЕНИЕ: Используем текущие values, areas, types (str/int), angles ---
         current_values = self.values if self.values is not None else np.zeros(len(self.points))
         current_areas = self.areas if hasattr(self, 'areas') and self.areas is not None else np.zeros(len(self.points))
+        current_angles = self.angles if hasattr(self, 'angles') and self.angles is not None else np.full(len(self.points), np.nan)
 
         for i, (y, x) in enumerate(self.points):
             intensity = float(current_values[i]) if i < len(current_values) else 0.0
             area = int(current_areas[i]) if i < len(current_areas) else 0 # Сохраняем area как int
             pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown" # Сохраняем как есть (str/int)
-            pts_list.append({
+            angle = float(current_angles[i]) if i < len(current_angles) and not np.isnan(current_angles[i]) else None # Сохраняем угол, если есть
+
+            point_data = {
                 "y": float(y), "x": float(x),
-                "intensity": intensity, # Это уже %
-                "area": area,           # Добавляем area
-                "type": pt_type         # Добавляем тип (str/int)
-            })
+                "intensity": intensity,
+                "area": area,
+                "type": pt_type
+            }
+            if angle is not None:
+                point_data["angle"] = angle # Добавляем угол, если он рассчитан
+
+            pts_list.append(point_data)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         spots_path = output_dir / "spots.json"
-        spots_path.write_text(json.dumps({"points": pts_list}, indent=2), encoding="utf-8")
+        # --- ИЗМЕНЕНИЕ: Сериализатор для NumPy типов ---
+        def default_serializer(obj):
+            if isinstance(obj, np.integer): return int(obj)
+            if isinstance(obj, np.floating): return float(obj)
+            raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+        spots_path.write_text(json.dumps({"points": pts_list}, indent=2, default=default_serializer), encoding="utf-8")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         abs_image_path = self.image_path.resolve() if self.image_path else None
         overlay_center_data = None
@@ -197,7 +229,7 @@ class EditorIO:
             "points": pts_list
         }
         edited_path = output_dir / "saed_input.edited.json"
-        edited_path.write_text(json.dumps(saed_input_edited_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        edited_path.write_text(json.dumps(saed_input_edited_data, ensure_ascii=False, indent=2, default=default_serializer), encoding="utf-8")
 
         self._set_status(f"Points saved to {output_dir.name}")
         return spots_path
@@ -208,9 +240,11 @@ class EditorIO:
         """Returns a serializable dictionary of the editor's state."""
         points_list = self.points.tolist() if self.points is not None else []
         values_list = self.values.tolist() if self.values is not None else []
-        # --- ИЗМЕНЕНО: Сохраняем типы (str/int) и ПЛОЩАДИ ---
+        # --- ИЗМЕНЕНО: Сохраняем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
         types_list = list(self.point_types) if hasattr(self, 'point_types') else ["unknown"] * len(points_list) # Сохраняем как есть
         areas_list = self.areas.tolist() if hasattr(self, 'areas') and self.areas is not None else [0.0] * len(points_list)
+        angles_list = self.angles.tolist() if hasattr(self, 'angles') and self.angles is not None else [None] * len(points_list) # None для NaN
+        initial_ids_dict = dict(self.initial_group_ids) if hasattr(self, 'initial_group_ids') else {}
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         return {
@@ -220,6 +254,8 @@ class EditorIO:
             "values": values_list,
             "point_types": types_list, # Сохраняем типы (str/int)
             "areas": areas_list,       # Сохраняем площади
+            "angles": angles_list,     # Сохраняем углы
+            "initial_group_ids": initial_ids_dict, # Сохраняем исходные ID
             "overlay": self.overlay,
             "zoom_val": self.zoom_val,
             "view_cx": self.view_cx,
@@ -237,7 +273,8 @@ class EditorIO:
         if not image_path_str:
             self.image_path = None; self.img_arr = None; self._percent_map = None; self._percent_lookup = None
             self.points = np.zeros((0, 2), float); self.values = np.zeros((0,), float)
-            self.point_types = []; self.areas = np.zeros((0,), float) # Очищаем типы и площади
+            self.point_types = []; self.areas = np.zeros((0,), float); self.angles = np.zeros((0,), float)
+            self.initial_group_ids = {}
             self.overlay = {}; self._preproc_settings = PreprocSettings()
             self.zoom_val = 0; self.view_cx = None; self.view_cy = None
             if hasattr(self, 'zoom_var'): self.zoom_var.set(0)
@@ -251,20 +288,35 @@ class EditorIO:
             self._percent_map, uniq_vals, uniq_perc = compute_percentile_map(self.img_arr)
             self._percent_lookup = (uniq_vals, uniq_perc)
 
-            # Восстанавливаем точки, значения, типы И ПЛОЩАДИ
+            # Восстанавливаем точки, значения, типы, ПЛОЩАДИ, УГЛЫ, Initial IDs
             self.points = np.array(state.get("points", []), dtype=float)
-            saved_values = state.get("values", [])
-            if len(saved_values) == len(self.points): self.values = np.array(saved_values, dtype=float)
-            else: self.values = self._sample_intensities(self.points) # Пересчитываем если не совпадает
+            n_points = len(self.points) # Количество точек
 
-            # --- ИЗМЕНЕНО: Восстанавливаем типы (str/int) и ПЛОЩАДИ ---
+            saved_values = state.get("values", [])
+            if len(saved_values) == n_points: self.values = np.array(saved_values, dtype=float)
+            else: self.values = self._sample_intensities(self.points)
+
+            # --- ИЗМЕНЕНО: Восстанавливаем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
             saved_types = state.get("point_types", [])
-            if len(saved_types) == len(self.points): self.point_types = list(saved_types) # Восстанавливаем как есть
-            else: self.point_types = ["unknown"] * len(self.points)
+            if len(saved_types) == n_points: self.point_types = list(saved_types)
+            else: self.point_types = ["unknown"] * n_points
 
             saved_areas = state.get("areas", [])
-            if len(saved_areas) == len(self.points): self.areas = np.array(saved_areas, dtype=float)
-            else: self.areas = np.zeros(len(self.points), dtype=float) # Заполняем нулями если не совпадает
+            if len(saved_areas) == n_points: self.areas = np.array(saved_areas, dtype=float)
+            else: self.areas = np.zeros(n_points, dtype=float)
+
+            saved_angles = state.get("angles", [])
+            if len(saved_angles) == n_points:
+                 # Заменяем None на np.nan
+                self.angles = np.array([a if a is not None else np.nan for a in saved_angles], dtype=float)
+            else: self.angles = np.full(n_points, np.nan)
+
+            saved_initial_ids = state.get("initial_group_ids", {})
+            # Преобразуем ключи обратно в int, если они сохранились как строки
+            self.initial_group_ids = {int(k): v for k, v in saved_initial_ids.items()}
+            # Добавим None для точек, которых нет в словаре
+            for i in range(n_points):
+                 if i not in self.initial_group_ids: self.initial_group_ids[i] = None
             # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             self.overlay = state.get("overlay", {})
@@ -273,7 +325,17 @@ class EditorIO:
             self._measurement = state.get("measurement")
             if hasattr(self, 'zoom_var'): self.zoom_var.set(self.zoom_val)
 
-            self._cancel_all_interactions() # Сбрасываем все активные режимы
+            # --- ИЗМЕНЕНИЕ: Пересчитываем углы, если они NaN ---
+            if np.isnan(self.angles).any() and self.overlay and self.overlay.get("center"):
+                 center_data = self.overlay["center"]
+                 if isinstance(center_data, dict) and "x" in center_data and "y" in center_data:
+                     cy, cx = float(center_data["y"]), float(center_data["x"])
+                     if n_points > 0:
+                         _, new_angles = self._calculate_angles((cy, cx), self.points)
+                         self.angles = np.where(np.isnan(self.angles), new_angles, self.angles) # Заменяем только NaN
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+            self._cancel_all_interactions()
             self.center_dragging = False
             self.rect_start = None
 
@@ -287,7 +349,7 @@ class EditorIO:
     # ---------- Helpers ----------
     def _sample_intensities(self, pts_yx: np.ndarray) -> np.ndarray:
         """Samples intensity values from the percentile map."""
-        # --- ИЗМЕНЕНИЕ: Всегда возвращаем процентили ---
+        # --- (Без изменений с прошлой версии) ---
         if pts_yx is None or len(pts_yx) == 0: return np.zeros((0,), float)
         # Приоритет - карта процентилей
         if hasattr(self, '_percent_map') and self._percent_map is not None:
@@ -303,12 +365,18 @@ class EditorIO:
         # В крайнем случае - нули
         else:
             return np.zeros(len(pts_yx), dtype=float)
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        # --- КОНЕЦ ---
+
+    # --- НОВЫЙ Хелпер: Расчет углов ---
+    def _calculate_angles(self, center_yx: Tuple[float, float], pts_yx: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculates radii and angles [0, 360) for points relative to center."""
+        return pol_from(center_yx, pts_yx)
+    # --- КОНЕЦ Хелпера ---
 
 
     # ---------- Анализ ----------
     def _start_analysis(self):
-        # --- ИЗМЕНЕНИЕ: Передаем area и type (str/int) в payload ---
+        # --- ИЗМЕНЕНИЕ: Передаем area и type (str/int) и angle в payload ---
         try: saved_spots_path = self._save_points(); output_dir = saved_spots_path.parent; payload_path = output_dir / "fibo_input.json"
         except (ValueError, OSError, Exception) as e: messagebox.showerror("Save Error", f"Cannot proceed. Failed to save:\n{e}"); return
 
@@ -320,19 +388,16 @@ class EditorIO:
             if self.img_arr is not None: H, W = self.img_arr.shape[:2]; geo_center_data = {"x": (W - 1) / 2.0, "y": (H - 1) / 2.0}
 
             # Используем данные, которые УЖЕ сохранены в _save_points
-            pts_list = []
-            current_values = self.values if self.values is not None else np.zeros(len(self.points))
-            current_areas = self.areas if hasattr(self, 'areas') and self.areas is not None else np.zeros(len(self.points))
-            for i, (y, x) in enumerate(self.points):
-                intensity = float(current_values[i]) if i < len(current_values) else 0.0
-                area = int(current_areas[i]) if i < len(current_areas) else 0
-                pt_type = self.point_types[i] if hasattr(self, 'point_types') and i < len(self.point_types) else "unknown" # Может быть str или int
-                pts_list.append({"y": float(y), "x": float(x), "intensity": intensity, "area": area, "type": pt_type})
+            # Открываем spots.json, чтобы получить pts_list
+            if not saved_spots_path.exists():
+                 raise FileNotFoundError("spots.json not found after saving.")
+            spots_data = json.loads(saved_spots_path.read_text(encoding="utf-8"))
+            pts_list = spots_data.get("points", [])
 
             payload = {"image": str(abs_image_path) if abs_image_path else None,
                        "preproc_mode": self._preproc_settings.mode if self._preproc_settings else "raw",
                        "preproc": self._preproc_settings.to_json() if self._preproc_settings else {"mode": "raw"},
-                       "points": pts_list, # Уже содержит area и type (str/int)
+                       "points": pts_list, # Уже содержит area, type (str/int), angle
                        "centers": {"geometric": geo_center_data, "overlay": overlay_center_data},
                        "radii": {"dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
                                  "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0},

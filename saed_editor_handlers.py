@@ -24,9 +24,13 @@ from scipy.signal import find_peaks
 # --- Функции анализа (остаются здесь) ---
 def pol_from(center, pts):
     cy, cx = center
-    dy, dx = pts[:, 0] - cy, pts[:, 1] - cx
+    dy = pts[:, 0] - cy
+    dx = pts[:, 1] - cx
     r = np.hypot(dx, dy)
-    a = (np.degrees(np.arctan2(dy, dx)) + 360) % 360
+    # --- Угол в диапазоне [0, 360) ---
+    a = np.degrees(np.arctan2(dy, dx))
+    a = (a + 360) % 360
+    # --- КОНЕЦ ---
     return r, a
 
 def symmetry_scores(angles, radii, ring_means, top_rings=3):
@@ -42,11 +46,11 @@ def symmetry_scores(angles, radii, ring_means, top_rings=3):
     if len(ang_sel) == 0: return out
     for k in [4, 6, 8, 10, 12]:
         period = 360.0 / k
-        phases_deg = (ang_sel % period) * k
+        phases_deg = (ang_sel % period) * k # Фаза внутри периода, масштабированная до 360
         phases_rad = np.deg2rad(phases_deg)
         C = np.cos(phases_rad).mean();
         S = np.sin(phases_rad).mean()
-        out[f"{k}-fold"] = float(np.hypot(C, S))
+        out[f"{k}-fold"] = float(np.hypot(C, S)) # R-фактор
     return out
 
 def cluster_rings(radii, bins=100, prominence_factor=0.03, min_prominence=2):
@@ -206,10 +210,13 @@ class EditorEventHandlers:
         self.points[valid_indices, 0] = cy + new_dy
         self.points[valid_indices, 1] = cx + new_dx
 
+        # Обновляем intensity, angle И area после усреднения
         if self.values is not None and len(self.values) == len(self.points):
              self.values[valid_indices] = self._sample_intensities(self.points[valid_indices])
+        if hasattr(self, 'angles') and self.angles is not None and len(self.angles) == len(self.points):
+             _, self.angles[valid_indices] = pol_from((cy, cx), self.points[valid_indices]) # Пересчитываем угол
         if hasattr(self, 'areas') and self.areas is not None and len(self.areas) == len(self.points):
-            pass
+            pass # Площади не меняем
 
         count = len(valid_indices)
         self._set_status(f"Averaged {count} points to radius {average_radius:.2f} px.")
@@ -219,11 +226,12 @@ class EditorEventHandlers:
 
     # --- КОНЕЦ МЕТОДОВ ДЛЯ КОЛЬЦА ---
 
-    # --- ИЗМЕНЕНИЕ: Алгоритм авто-группировки (v5 - финальная) ---
+    # --- ИЗМЕНЕНИЕ: Алгоритм авто-группировки (v7 - 2 этапа + типы + ID) ---
     def _auto_group_rings_and_save(self):
         self._set_status("Starting auto-grouping...")
-        num_classified_groups = 0 # structural + superstructural
-        num_numeric_groups = 0    # Группы 2го этапа (только радиус)
+        num_classified_structural = 0
+        num_classified_superstructural = 0
+        num_numeric_groups = 0
 
         if self.points is None or len(self.points) == 0:
             self._set_status("No points to group.")
@@ -246,34 +254,24 @@ class EditorEventHandlers:
         cy, cx = float(center_data["y"]), float(center_data["x"])
         dead_radius = float(self.overlay.get("dead_radius", 0.0))
 
-        all_radii = np.hypot(self.points[:, 1] - cx, self.points[:, 0] - cy)
-        all_angles = np.degrees(np.arctan2(self.points[:, 0] - cy, self.points[:, 1] - cx))
-        all_angles = (all_angles + 360) % 360
+        # --- Рассчитываем радиусы и углы ---
+        all_radii, self.angles = pol_from((cy, cx), self.points)
+        # --- Конец расчета ---
+
         sorted_indices = np.argsort(all_radii)
 
-        # Сначала все "unknown"
-        self.point_types = ["unknown"] * len(self.points)
+        # Типы: сначала все "unknown"
+        # Будет содержать str ("unknown", "structural", "superstructural") или int (ID)
+        self.point_types: list[Union[str, int]] = ["unknown"] * len(self.points)
+        # Словарь для хранения ИСХОДНОГО ID группы для каждой точки
+        self.initial_group_ids: Dict[int, Optional[int]] = {i: None for i in range(len(self.points))}
+
         assigned_indices = set()
-        numeric_group_id_counter = 0 # Счетчик для числовых ID на 2м этапе
+        group_id_counter = 0 # Счетчик для числовых ID на 1м этапе
+        groups_data = {} # {group_id: [indices]}
 
-        # --- Шаг 1: Определить доминирующую симметрию ---
-        potential_ring_means, _, _ = cluster_rings(all_radii[all_radii > dead_radius])
-        sym_scores = symmetry_scores(all_angles, all_radii, potential_ring_means)
-        dominant_symmetry = 0
-        if sym_scores:
-            best_sym_str = max(sym_scores, key=sym_scores.get)
-            dominant_symmetry = int(best_sym_str.split('-')[0])
-            print(f"Dominant symmetry: {dominant_symmetry}-fold")
-            scores_str = "\n".join(f"{key}: {value:.4f}" for key, value in sym_scores.items())
-            ring_str = f"Ring means used for scores:\n{np.array2string(potential_ring_means, precision=2)}\n\n"
-            messagebox.showinfo("Symmetry Scores", f"{ring_str}Scores:\n{scores_str}")
-        else:
-            dominant_symmetry = 0
-            print("Could not determine dominant symmetry.")
-            messagebox.showwarning("Symmetry Warning", "Could not determine dominant symmetry. Symmetry classification skipped.")
-
-        # --- Этап 2: Группировка по Радиусу + Площади и Классификация по симметрии ---
-        print("Starting Pass 1 (Radius + Area + Symmetry)...")
+        # --- Этап 1: Группировка по Радиусу + Площади, присвоение числовых ID ---
+        print("Starting Pass 1 (Radius + Area grouping)...")
         for i in range(len(sorted_indices)):
             current_idx = sorted_indices[i]
             if current_idx in assigned_indices: continue
@@ -302,87 +300,73 @@ class EditorEventHandlers:
             else:
                 final_group_indices = potential_group_indices
 
-            # 3. Классификация по симметрии (если группа не пуста)
+            # 3. Назначаем ID (даже для одиночных точек)
             if final_group_indices:
-                N = len(final_group_indices)
-                point_type = "other" # По умолчанию
-                is_classified_by_symmetry = False # Флаг
+                print(f" Pass 1: Found group ID {group_id_counter} at r~{current_radius:.1f}px: {len(final_group_indices)} points")
+                groups_data[group_id_counter] = final_group_indices # Сохраняем индексы группы
+                for idx in final_group_indices:
+                    # --- ИЗМЕНЕНИЕ: Сохраняем исходный ID ---
+                    self.initial_group_ids[idx] = group_id_counter
+                    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                    assigned_indices.add(idx) # Помечаем как назначенные на этом этапе
+                group_id_counter += 1
 
-                if dominant_symmetry > 0:
-                    if N == dominant_symmetry:
-                        point_type = "structural"
-                        is_classified_by_symmetry = True
-                    elif N > dominant_symmetry and N % dominant_symmetry == 0:
-                        point_type = "superstructural"
-                        is_classified_by_symmetry = True
+        print(f"Pass 1 finished. Found {group_id_counter} initial groups.")
 
-                # Присваиваем тип и помечаем ТОЛЬКО если классифицировано по симметрии
-                if is_classified_by_symmetry:
-                    print(f" Pass 1: Found group type '{point_type}' at r~{current_radius:.1f}px: {N} points")
-                    for idx in final_group_indices:
-                        self.point_types[idx] = point_type
-                        assigned_indices.add(idx)
-                    num_classified_groups += 1
-                # else: Оставляем "unknown", будет обработано на Этапе 3
-
-        print(f"Pass 1 finished. Classified {num_classified_groups} groups by symmetry.")
-
-        # --- Этап 3: Группировка оставшихся ТОЛЬКО по Радиусу (включая одиночные) ---
-        print("Starting Pass 2 (Radius only for remaining points)...")
-        unknown_indices = [i for i, t in enumerate(self.point_types) if t == "unknown"]
-        if not unknown_indices:
-            print("No remaining points for Pass 2.")
+        # --- Этап 2: Определить доминирующую симметрию ---
+        potential_ring_means, _, _ = cluster_rings(all_radii[all_radii > dead_radius])
+        sym_scores = symmetry_scores(self.angles, all_radii, potential_ring_means)
+        dominant_symmetry = 0
+        if sym_scores:
+            best_sym_str = max(sym_scores, key=sym_scores.get)
+            dominant_symmetry = int(best_sym_str.split('-')[0])
+            print(f"Dominant symmetry: {dominant_symmetry}-fold")
+            scores_str = "\n".join(f"{key}: {value:.4f}" for key, value in sym_scores.items())
+            ring_str = f"Ring means used for scores:\n{np.array2string(potential_ring_means, precision=2)}\n\n"
+            messagebox.showinfo("Symmetry Scores", f"{ring_str}Scores:\n{scores_str}")
         else:
-            unknown_radii = all_radii[unknown_indices]
-            sorted_unknown_local_indices = np.argsort(unknown_radii)
+            dominant_symmetry = 0
+            print("Could not determine dominant symmetry.")
+            messagebox.showwarning("Symmetry Warning", "Could not determine dominant symmetry. Classification by symmetry skipped.")
 
-            for i in range(len(sorted_unknown_local_indices)):
-                current_local_idx = sorted_unknown_local_indices[i]
-                current_original_idx = unknown_indices[current_local_idx]
+        # --- Этап 3: Классификация групп на основе симметрии ---
+        print("Starting Pass 2 (Symmetry classification)...")
+        numeric_id_final_counter = 0 # Счетчик для финальных числовых ID
+        for initial_group_id, indices in groups_data.items():
+            N = len(indices)
+            final_type: Union[str, int] = initial_group_id # По умолчанию оставляем числовой ID
 
-                # Пропускаем, если точка уже получила ID во втором проходе
-                if self.point_types[current_original_idx] != "unknown":
-                     continue
+            if dominant_symmetry > 0:
+                if N == dominant_symmetry:
+                    final_type = "structural"
+                    num_classified_structural += 1
+                elif N > dominant_symmetry and N % dominant_symmetry == 0:
+                    final_type = "superstructural"
+                    num_classified_superstructural += 1
+                else: # Если не кратно, присваиваем новый числовой ID
+                     final_type = numeric_id_final_counter
+                     numeric_id_final_counter += 1
+            else: # Если симметрии нет, присваиваем новый числовой ID
+                 final_type = numeric_id_final_counter
+                 numeric_id_final_counter += 1
 
-                current_radius = unknown_radii[current_local_idx]
+            # Присваиваем окончательный тип/ID точкам группы
+            for idx in indices:
+                self.point_types[idx] = final_type
 
-                # Ищем соседей ТОЛЬКО по радиусу среди оставшихся unknown
-                potential_group_original_indices = []
-                for j in range(i, len(sorted_unknown_local_indices)): # Начиная с текущей
-                    check_local_idx = sorted_unknown_local_indices[j]
-                    check_original_idx = unknown_indices[check_local_idx]
+        num_numeric_groups = numeric_id_final_counter # Количество групп, оставшихся числовыми
+        print(f"Pass 2 finished. Classified: {num_classified_structural} structural, {num_classified_superstructural} superstructural. Assigned {num_numeric_groups} numeric IDs.")
 
-                    # Проверяем, не назначена ли уже эта точка
-                    if self.point_types[check_original_idx] != "unknown":
-                        continue
-
-                    radius_diff = abs(unknown_radii[check_local_idx] - current_radius)
-                    if radius_diff <= radius_tol_px:
-                        potential_group_original_indices.append(check_original_idx)
-                    else:
-                        break # Дальше радиусы будут только больше
-
-                # Назначаем новый числовой ID (даже для одиночных точек)
-                if potential_group_original_indices:
-                    print(f" Pass 2: Found group ID {numeric_group_id_counter} at r~{current_radius:.1f}px: {len(potential_group_original_indices)} points")
-                    for idx in potential_group_original_indices:
-                        self.point_types[idx] = numeric_group_id_counter
-                    numeric_group_id_counter += 1 # Увеличиваем счетчик
-
-            num_numeric_groups = numeric_group_id_counter
-            print(f"Pass 2 finished. Assigned {num_numeric_groups} numeric group IDs.")
+        # Точки, не попавшие ни в одну группу на Этапе 1, остаются "unknown"
 
         # --- Шаг 4: Сохранение и обновление UI ---
         self._redo.clear()
         self._redraw()
         final_type_counts = Counter(self.point_types)
         num_unknown = final_type_counts.get("unknown", 0)
-        num_structural = final_type_counts.get("structural", 0)
-        num_superstructural = final_type_counts.get("superstructural", 0)
-        num_other_str = final_type_counts.get("other", 0) # Should be 0 now
         num_numeric_actual = len([t for t in self.point_types if isinstance(t, int)])
 
-        summary_msg = f"Grouping done. Structural: {num_structural}. Superstr: {num_superstructural}. Numeric IDs: {num_numeric_groups}. Unknown: {num_unknown}."
+        summary_msg = f"Grouping done. Structural: {num_classified_structural}. Superstr: {num_classified_superstructural}. Numeric IDs: {num_numeric_groups}. Unknown: {num_unknown}."
         print(summary_msg)
         self._set_status(summary_msg)
 
@@ -410,7 +394,7 @@ class EditorEventHandlers:
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
-    # --- НОВЫЙ МЕТОД: Сохранение отладочных данных ---
+    # --- ИЗМЕНЕНИЕ: Сохранение отладочных данных с final_type и initial_group_id ---
     def _save_debug_data(self, output_dir: Path, filename: str = "auto_grouped_points_debug.json"):
         if self.points is None or len(self.points) == 0:
             messagebox.showwarning("Save Debug", "No points to save.")
@@ -423,47 +407,50 @@ class EditorEventHandlers:
              if "x" in c and "y" in c:
                  center_yx = (float(c["y"]), float(c["x"]))
 
+        # Используем сохраненные углы
+        current_angles = self.angles if hasattr(self, 'angles') and self.angles is not None else [None] * len(self.points)
+
         for i in range(len(self.points)):
             y, x = self.points[i]
             radius = None
+            angle = None
             if center_yx:
                  radius = float(math.hypot(x - center_yx[1], y - center_yx[0]))
+                 angle = float(current_angles[i]) if i < len(current_angles) and current_angles[i] is not None else None
 
             intensity = float(self.values[i]) if i < len(self.values) else None
             area = float(self.areas[i]) if i < len(self.areas) else None
-            # Сохраняем тип (может быть str или int)
-            point_type = self.point_types[i] if i < len(self.point_types) else "error"
+            final_type = self.point_types[i] if i < len(self.point_types) else "error"
+            initial_group_id = self.initial_group_ids.get(i, None) # Получаем исходный ID
 
             data_to_save.append({
                 "index": i,
                 "y": y,
                 "x": x,
                 "radius_px": radius,
+                "angle_deg": angle, # Добавляем угол
                 "intensity_perc": intensity,
                 "area_px2": area,
-                # Сохраняем как есть (str или int)
-                "type": point_type
+                "final_type": final_type, # Финальный тип (str/int)
+                "initial_group_id": initial_group_id # Исходный ID (int/None)
             })
 
         filepath = output_dir / filename
         try:
-            # Используем lambda для сериализации NumPy int64, если вдруг попадется
+            # Сериализатор для NumPy типов
             def default_serializer(obj):
                  if isinstance(obj, np.integer): return int(obj)
-                 # --- ИЗМЕНЕНИЕ: Добавим обработку float32 ---
                  if isinstance(obj, np.floating): return float(obj)
-                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                  raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
             filepath.write_text(json.dumps(data_to_save, indent=2, default=default_serializer), encoding="utf-8")
-            # Обновляем статус, добавляя к предыдущему сообщению
             current_status = self._status_message
             self._set_status(f"{current_status} Debug data saved to {filename}")
             print(f"Debug data saved to {filepath}")
         except Exception as e:
             messagebox.showerror("Save Error", f"Failed to save debug data:\n{e}")
             self._set_status(f"Failed to save {filename}")
-    # --- КОНЕЦ НОВОГО МЕТОДА ---
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
     def _auto_group_and_save_wrapper(self):
@@ -614,7 +601,7 @@ class EditorEventHandlers:
                       redraw_needed |= self._clear_measurement_result()
                       if redraw_needed: self._redraw()
 
-                      # --- Добавление точки (с типом "unknown" и площадью 0) ---
+                      # --- Добавление точки (с типом "unknown", площадью 0 и углом None) ---
                       self._push_undo()
                       self.points = np.vstack([self.points, [y, x]])
                       sampled_value = self._sample_intensities(np.array([[y, x]]))[0]
@@ -627,6 +614,11 @@ class EditorEventHandlers:
                           self.areas = np.append(self.areas, 0.0)
                       else:
                           self.areas = np.zeros(len(self.points), dtype=float)
+                      # Добавляем угол (None, т.к. центр может измениться)
+                      if hasattr(self, 'angles') and self.angles is not None:
+                          self.angles = np.append(self.angles, np.nan) # Используем NaN для невычисленного угла
+                      else:
+                          self.angles = np.full(len(self.points), np.nan)
                       # --- КОНЕЦ Добавления ---
                       self._redo.clear()
                       self._set_status(f"Added point at ({x:.1f}, {y:.1f}).")
@@ -644,7 +636,7 @@ class EditorEventHandlers:
                            if self._undo: self._apply_snapshot(self._undo.pop())
                            return
 
-                      # --- Удаление точки, значения, типа и площади ---
+                      # --- Удаление точки, значения, типа, площади И УГЛА ---
                       self.points = np.delete(self.points, hit_point_idx, axis=0)
                       if self.values is not None and len(self.values) > hit_point_idx:
                            self.values = np.delete(self.values, hit_point_idx, axis=0)
@@ -654,6 +646,8 @@ class EditorEventHandlers:
                           del self.point_types[hit_point_idx]
                       if hasattr(self, 'areas') and self.areas is not None and len(self.areas) > hit_point_idx:
                           self.areas = np.delete(self.areas, hit_point_idx, axis=0)
+                      if hasattr(self, 'angles') and self.angles is not None and len(self.angles) > hit_point_idx:
+                          self.angles = np.delete(self.angles, hit_point_idx, axis=0)
                       # --- КОНЕЦ Удаления ---
 
                       # Обновляем индексы ВЫДЕЛЕННЫХ точек
@@ -684,6 +678,10 @@ class EditorEventHandlers:
             y, x = pos_yx
             if self.overlay is None: self.overlay = {}
             self.overlay["center"] = {"x": float(x), "y": float(y)}
+            # --- ИЗМЕНЕНИЕ: Пересчитываем углы при перетаскивании центра ---
+            if hasattr(self, 'angles') and self.angles is not None and len(self.angles) == len(self.points):
+                 _, self.angles = pol_from((y, x), self.points)
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
             self._redraw()
             self._set_status("Dragging center...")
             return
@@ -728,6 +726,7 @@ class EditorEventHandlers:
         # Отпускание после перетаскивания центра
         if self.center_dragging:
             self.center_dragging = False
+            # Пересчет углов уже произошел в _on_move
             if self._measure_start_idx is None: self._apply_center_filters()
             if self.overlay and isinstance(self.overlay.get("center"), dict):
                 self.view_cx = float(self.overlay["center"]["x"])
@@ -769,7 +768,7 @@ class EditorEventHandlers:
                                   new_ring_indices.add(old_idx - num_deleted_before[old_idx])
                              self._ring_select_indices = new_ring_indices
 
-                    # Теперь удаляем точки, значения, типы и ПЛОЩАДИ
+                    # Теперь удаляем точки, значения, типы, площади И УГЛЫ
                     mask_to_keep = ~mask_in_rect
                     self.points = self.points[mask_to_keep]
                     if self.values is not None and len(self.values) == len(mask_to_keep) + num_to_delete:
@@ -777,10 +776,9 @@ class EditorEventHandlers:
                     else:
                         self.values = self._sample_intensities(self.points)
 
-                    # Удаляем типы точек и ПЛОЩАДИ
+                    # --- ИСПРАВЛЕНИЕ: Удаляем типы, площади И УГЛЫ ---
                     if hasattr(self, 'point_types') and len(self.point_types) == len(mask_to_keep) + num_to_delete:
-                        # Преобразуем в numpy array для индексации маской
-                        types_array = np.array(self.point_types, dtype=object) # Используем dtype=object для смешанных типов
+                        types_array = np.array(self.point_types, dtype=object)
                         self.point_types = types_array[mask_to_keep].tolist()
                     else:
                         print("Warning: point_types length mismatch during rect delete. Resetting types.")
@@ -791,6 +789,13 @@ class EditorEventHandlers:
                     else:
                         print("Warning: areas length mismatch during rect delete. Resetting areas.")
                         self.areas = np.zeros(len(self.points), dtype=float)
+
+                    if hasattr(self, 'angles') and self.angles is not None and len(self.angles) == len(mask_to_keep) + num_to_delete:
+                        self.angles = self.angles[mask_to_keep]
+                    else:
+                         print("Warning: angles length mismatch during rect delete. Resetting angles.")
+                         self.angles = np.full(len(self.points), np.nan)
+                    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
                     self._redo.clear()
                     self._set_status(f"Deleted {num_to_delete} points in selection.")
@@ -826,7 +831,7 @@ class EditorEventHandlers:
         return dist_sq <= self._center_hit_radius ** 2
 
     def _apply_center_filters(self):
-        # --- Удаляем/обновляем типы и ПЛОЩАДИ и здесь ---
+        # --- Удаляем/обновляем типы, ПЛОЩАДИ и УГЛЫ и здесь ---
         if self.points is None or len(self.points) == 0: return
         if not (self.overlay and self.overlay.get("center")): return
 
@@ -858,7 +863,7 @@ class EditorEventHandlers:
                            new_ring_indices.add(old_idx - num_deleted_before[old_idx])
                       self._ring_select_indices = new_ring_indices
 
-            # Удаляем точки, значения, типы и ПЛОЩАДИ
+            # Удаляем точки, значения, типы, ПЛОЩАДИ и УГЛЫ
             self.points = self.points[mask_keep]
             if self.values is not None and len(self.values) == len(mask_keep) + num_deleted:
                 self.values = self.values[mask_keep]
@@ -867,7 +872,6 @@ class EditorEventHandlers:
 
             # Удаляем типы
             if hasattr(self, 'point_types') and len(self.point_types) == len(mask_keep) + num_deleted:
-                # Используем numpy array для индексации маской
                 types_array = np.array(self.point_types, dtype=object) # dtype=object для смешанных типов
                 self.point_types = types_array[mask_keep].tolist()
             else:
@@ -881,7 +885,15 @@ class EditorEventHandlers:
                 print("Warning: areas length mismatch during center filter. Resetting areas.")
                 self.areas = np.zeros(len(self.points), dtype=float)
 
+            # Удаляем углы
+            if hasattr(self, 'angles') and self.angles is not None and len(self.angles) == len(mask_keep) + num_deleted:
+                self.angles = self.angles[mask_keep]
+            else:
+                print("Warning: angles length mismatch during center filter. Resetting angles.")
+                self.angles = np.full(len(self.points), np.nan)
+
 
             self._set_status(f"Applied center filters, removed {num_deleted} points.")
             self._redo.clear()
             # self._redraw() # Не нужно здесь
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---

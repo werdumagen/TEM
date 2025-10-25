@@ -162,7 +162,7 @@ class EditorDrawingView:
                     "unknown": "yellow",         # Желтый
                     "structural": "cyan",        # Голубой
                     "superstructural": "magenta",# Фиолетовый (ярко-розовый)
-                    "other": "purple",           # Пурпурный (темно-фиолетовый)
+                    "other": "gray",             # Серый (группы, не кратные симметрии - больше не используются)
                 }
 
                 # Назначаем цвета

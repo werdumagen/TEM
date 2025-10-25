@@ -33,9 +33,11 @@ class EditorState:
         self._ring_select_thickness: float = 5.0
         self._ring_select_indices: set[int] = set()
         self._ring_select_artist: Optional[list] = None
-        # --- ИЗМЕНЕНИЕ: Типы точек (str или int) и ПЛОЩАДИ ---
+        # --- ИЗМЕНЕНИЕ: Типы точек (str или int), ПЛОЩАДИ, УГЛЫ и ИСХОДНЫЕ ID ---
         self.point_types: list[Union[str, int]] = []
         self.areas: np.ndarray = np.zeros((0,), dtype=float) # Массив для площадей
+        self.angles: np.ndarray = np.zeros((0,), dtype=float) # Массив для углов
+        self.initial_group_ids: Dict[int, Optional[int]] = {} # {point_index: initial_group_id}
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     # ... (Методы Measurement без изменений) ...
@@ -106,7 +108,7 @@ class EditorState:
         center_data = self.overlay["center"]; center_y, center_x = float(center_data["y"]), float(center_data["x"])
         return self._finalize_measurement(end_yx=(center_y, center_x))
 
-    # --- ИЗМЕНЕНИЕ: Tooltip показывает Radius, Intensity(%), Area, Type/GroupID ---
+    # --- ИЗМЕНЕНИЕ: Tooltip показывает Radius, Angle, Area, Type, Initial Group ID ---
     def _clear_tooltip(self, *, keep_measure: bool = False, keep_preview: bool = False):
         removed_tooltip = False
         if hasattr(self, '_tooltip') and self._tooltip is not None:
@@ -130,32 +132,49 @@ class EditorState:
         if hasattr(self, 'areas') and self.areas is not None and idx < len(self.areas):
             area = float(self.areas[idx])
 
-        point_type_or_id_str = "N/A"
-        type_label = "Type" # Метка по умолчанию
+        # Финальный тип (str или int)
+        final_type_str = "N/A"
+        type_label = "Type"
         if hasattr(self, 'point_types') and idx < len(self.point_types):
             type_val = self.point_types[idx]
             if isinstance(type_val, int):
-                 point_type_or_id_str = str(type_val)
-                 type_label = "Group ID" # Меняем метку, если это ID
+                 final_type_str = str(type_val)
+                 type_label = "Numeric ID" # Меняем метку
             elif isinstance(type_val, str):
-                 point_type_or_id_str = type_val
+                 final_type_str = type_val
                  # type_label остается "Type"
-            else: # На случай непредвиденного типа
-                 point_type_or_id_str = str(type_val)
+            else:
+                 final_type_str = str(type_val)
 
+        # Исходный ID группы
+        initial_group_id_str = "N/A"
+        if hasattr(self, 'initial_group_ids') and idx in self.initial_group_ids:
+             initial_id = self.initial_group_ids[idx]
+             if initial_id is not None:
+                  initial_group_id_str = str(initial_id)
 
         radius = None
+        angle = None
         if self.overlay and self.overlay.get("center"):
             center_data = self.overlay["center"]
             if isinstance(center_data, dict) and "x" in center_data and "y" in center_data:
                 cy, cx = float(center_data["y"]), float(center_data["x"])
                 radius = float(math.hypot(x - cx, y - cy))
+                # Используем сохраненный угол
+                if hasattr(self, 'angles') and self.angles is not None and idx < len(self.angles):
+                     raw_angle = self.angles[idx]
+                     if not np.isnan(raw_angle):
+                          angle = float(raw_angle)
 
         txt_lines = []
         if radius is not None:
             txt_lines.append(f"Radius: {radius:.1f} px")
         else:
             txt_lines.append("Radius: N/A (no center)")
+        if angle is not None:
+             txt_lines.append(f"Angle: {angle:.1f}°") # Добавляем угол
+        else:
+             txt_lines.append("Angle: N/A")
         if intensity is not None:
             txt_lines.append(f"Intensity: {intensity:.1f} %")
         else:
@@ -164,7 +183,8 @@ class EditorState:
              txt_lines.append(f"Area: {area:.1f} px²")
         else:
              txt_lines.append("Area: N/A")
-        txt_lines.append(f"{type_label}: {point_type_or_id_str}") # Используем обновленную метку
+        txt_lines.append(f"{type_label}: {final_type_str}") # Финальный тип/ID
+        txt_lines.append(f"Initial Group ID: {initial_group_id_str}") # Исходный ID
 
         txt = "\n".join(txt_lines)
 
@@ -186,9 +206,11 @@ class EditorState:
         if "x" in c and "y" in c: center_data = {"x": float(c["x"]), "y": float(c["y"])}
         points_copy = self.points.copy() if self.points is not None else np.zeros((0, 2))
         values_copy = self.values.copy() if self.values is not None else np.zeros((0,))
-        # --- ИЗМЕНЕНО: Копируем типы (str/int) и ПЛОЩАДИ ---
-        types_copy = list(self.point_types) if hasattr(self, 'point_types') else [] # Копируем как есть
+        # --- ИЗМЕНЕНО: Копируем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
+        types_copy = list(self.point_types) if hasattr(self, 'point_types') else []
         areas_copy = self.areas.copy() if hasattr(self, 'areas') and self.areas is not None else np.zeros((0,))
+        angles_copy = self.angles.copy() if hasattr(self, 'angles') and self.angles is not None else np.zeros((0,))
+        initial_ids_copy = dict(self.initial_group_ids) if hasattr(self, 'initial_group_ids') else {}
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         return {
@@ -200,6 +222,8 @@ class EditorState:
             "ring_select_indices": list(self._ring_select_indices),
             "point_types": types_copy, # Сохраняем типы (str/int)
             "areas": areas_copy,       # Сохраняем площади
+            "angles": angles_copy,     # Сохраняем углы
+            "initial_group_ids": initial_ids_copy, # Сохраняем исходные ID
         }
 
     def _push_undo(self):
@@ -222,20 +246,27 @@ class EditorState:
         self._cancel_measurement_preview()
         self._cancel_ring_selection()
 
-        # Восстанавливаем точки, значения, типы, ПЛОЩАДИ
+        # Восстанавливаем точки, значения, типы, ПЛОЩАДИ, УГЛЫ, Initial IDs
         self.points = snap["points"].copy()
         self.values = snap["values"].copy()
-        # --- ИЗМЕНЕНО: Восстанавливаем типы (str/int) и ПЛОЩАДИ ---
-        self.point_types = list(snap.get("point_types", [])) # Восстанавливаем как есть
-        self.areas = snap.get("areas", np.zeros(len(self.points))).copy() # Восстанавливаем площади
+        # --- ИЗМЕНЕНО: Восстанавливаем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
+        self.point_types = list(snap.get("point_types", []))
+        self.areas = snap.get("areas", np.zeros(len(self.points))).copy()
+        self.angles = snap.get("angles", np.full(len(self.points), np.nan)).copy() # Восстанавливаем углы
+        self.initial_group_ids = dict(snap.get("initial_group_ids", {})) # Восстанавливаем исходные ID
 
         # Проверяем консистентность
-        if len(self.point_types) != len(self.points):
+        n_points = len(self.points)
+        if len(self.point_types) != n_points:
              print("Warning: Snapshot point/type mismatch. Resetting types.")
-             self.point_types = ["unknown"] * len(self.points)
-        if len(self.areas) != len(self.points):
+             self.point_types = ["unknown"] * n_points
+        if len(self.areas) != n_points:
              print("Warning: Snapshot point/area mismatch. Resetting areas.")
-             self.areas = np.zeros(len(self.points), dtype=float) # Заполняем нулями
+             self.areas = np.zeros(n_points, dtype=float)
+        if len(self.angles) != n_points:
+             print("Warning: Snapshot point/angle mismatch. Resetting angles.")
+             self.angles = np.full(n_points, np.nan)
+        # Проверка initial_group_ids не так критична, т.к. это словарь
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # ... (код восстановления overlay, view, measurement, ring_select_indices без изменений) ...
