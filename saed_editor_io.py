@@ -8,6 +8,9 @@ import json
 from pathlib import Path
 from tkinter import filedialog, messagebox
 import numpy as np
+# --- ИСПРАВЛЕНИЕ: Добавлен импорт Tuple ---
+from typing import Tuple
+# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 # Зависимости импортируются динамически
 
 class EditorIO:
@@ -178,7 +181,7 @@ class EditorIO:
 
 
         pts_list = []
-        # --- ИЗМЕНЕНИЕ: Используем текущие values, areas, types (str/int), angles ---
+        # --- Используем текущие values, areas, types (str/int), angles ---
         current_values = self.values if self.values is not None else np.zeros(len(self.points))
         current_areas = self.areas if hasattr(self, 'areas') and self.areas is not None else np.zeros(len(self.points))
         current_angles = self.angles if hasattr(self, 'angles') and self.angles is not None else np.full(len(self.points), np.nan)
@@ -199,16 +202,16 @@ class EditorIO:
                 point_data["angle"] = angle # Добавляем угол, если он рассчитан
 
             pts_list.append(point_data)
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        # --- КОНЕЦ ---
 
         spots_path = output_dir / "spots.json"
-        # --- ИЗМЕНЕНИЕ: Сериализатор для NumPy типов ---
+        # --- Сериализатор для NumPy типов ---
         def default_serializer(obj):
             if isinstance(obj, np.integer): return int(obj)
             if isinstance(obj, np.floating): return float(obj)
             raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
         spots_path.write_text(json.dumps({"points": pts_list}, indent=2, default=default_serializer), encoding="utf-8")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        # --- КОНЕЦ ---
 
         abs_image_path = self.image_path.resolve() if self.image_path else None
         overlay_center_data = None
@@ -240,12 +243,13 @@ class EditorIO:
         """Returns a serializable dictionary of the editor's state."""
         points_list = self.points.tolist() if self.points is not None else []
         values_list = self.values.tolist() if self.values is not None else []
-        # --- ИЗМЕНЕНО: Сохраняем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
+        # --- Сохраняем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
         types_list = list(self.point_types) if hasattr(self, 'point_types') else ["unknown"] * len(points_list) # Сохраняем как есть
         areas_list = self.areas.tolist() if hasattr(self, 'areas') and self.areas is not None else [0.0] * len(points_list)
-        angles_list = self.angles.tolist() if hasattr(self, 'angles') and self.angles is not None else [None] * len(points_list) # None для NaN
+        # Заменяем NaN на None для JSON-совместимости
+        angles_list = [float(a) if not np.isnan(a) else None for a in self.angles] if hasattr(self, 'angles') and self.angles is not None else [None] * len(points_list)
         initial_ids_dict = dict(self.initial_group_ids) if hasattr(self, 'initial_group_ids') else {}
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        # --- КОНЕЦ ---
 
         return {
             "image_path": str(self.image_path.resolve()) if self.image_path else None,
@@ -254,7 +258,7 @@ class EditorIO:
             "values": values_list,
             "point_types": types_list, # Сохраняем типы (str/int)
             "areas": areas_list,       # Сохраняем площади
-            "angles": angles_list,     # Сохраняем углы
+            "angles": angles_list,     # Сохраняем углы (с None вместо NaN)
             "initial_group_ids": initial_ids_dict, # Сохраняем исходные ID
             "overlay": self.overlay,
             "zoom_val": self.zoom_val,
@@ -296,7 +300,7 @@ class EditorIO:
             if len(saved_values) == n_points: self.values = np.array(saved_values, dtype=float)
             else: self.values = self._sample_intensities(self.points)
 
-            # --- ИЗМЕНЕНО: Восстанавливаем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
+            # --- Восстанавливаем типы (str/int), ПЛОЩАДИ, УГЛЫ, Initial IDs ---
             saved_types = state.get("point_types", [])
             if len(saved_types) == n_points: self.point_types = list(saved_types)
             else: self.point_types = ["unknown"] * n_points
@@ -312,12 +316,12 @@ class EditorIO:
             else: self.angles = np.full(n_points, np.nan)
 
             saved_initial_ids = state.get("initial_group_ids", {})
-            # Преобразуем ключи обратно в int, если они сохранились как строки
+            # Преобразуем ключи обратно в int
             self.initial_group_ids = {int(k): v for k, v in saved_initial_ids.items()}
             # Добавим None для точек, которых нет в словаре
             for i in range(n_points):
                  if i not in self.initial_group_ids: self.initial_group_ids[i] = None
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            # --- КОНЕЦ ---
 
             self.overlay = state.get("overlay", {})
             self.zoom_val = state.get("zoom_val", 0)
@@ -325,7 +329,7 @@ class EditorIO:
             self._measurement = state.get("measurement")
             if hasattr(self, 'zoom_var'): self.zoom_var.set(self.zoom_val)
 
-            # --- ИЗМЕНЕНИЕ: Пересчитываем углы, если они NaN ---
+            # --- Пересчитываем углы, если они NaN ---
             if np.isnan(self.angles).any() and self.overlay and self.overlay.get("center"):
                  center_data = self.overlay["center"]
                  if isinstance(center_data, dict) and "x" in center_data and "y" in center_data:
@@ -333,7 +337,7 @@ class EditorIO:
                      if n_points > 0:
                          _, new_angles = self._calculate_angles((cy, cx), self.points)
                          self.angles = np.where(np.isnan(self.angles), new_angles, self.angles) # Заменяем только NaN
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            # --- КОНЕЦ ---
 
             self._cancel_all_interactions()
             self.center_dragging = False
@@ -367,16 +371,32 @@ class EditorIO:
             return np.zeros(len(pts_yx), dtype=float)
         # --- КОНЕЦ ---
 
-    # --- НОВЫЙ Хелпер: Расчет углов ---
+    # --- Хелпер: Расчет углов ---
     def _calculate_angles(self, center_yx: Tuple[float, float], pts_yx: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Calculates radii and angles [0, 360) for points relative to center."""
-        return pol_from(center_yx, pts_yx)
+        # --- ИСПРАВЛЕНИЕ: Используем pol_from из handlers ---
+        # Импортируем функцию, если она еще не импортирована (на всякий случай)
+        try:
+             from saed_editor_handlers import pol_from as calculate_pol_from
+        except ImportError:
+             # Если мы не можем импортировать из handlers (например, при запуске этого файла отдельно),
+             # определяем простую заглушку
+             def calculate_pol_from(center, pts):
+                  print("Warning: Using fallback pol_from in EditorIO")
+                  dy = pts[:, 0] - center[0]
+                  dx = pts[:, 1] - center[1]
+                  r = np.hypot(dx, dy)
+                  a = (np.degrees(np.arctan2(dy, dx)) + 360) % 360
+                  return r, a
+
+        return calculate_pol_from(center_yx, pts_yx)
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
     # --- КОНЕЦ Хелпера ---
 
 
     # ---------- Анализ ----------
     def _start_analysis(self):
-        # --- ИЗМЕНЕНИЕ: Передаем area и type (str/int) и angle в payload ---
+        # --- Передаем area, type (str/int) и angle в payload ---
         try: saved_spots_path = self._save_points(); output_dir = saved_spots_path.parent; payload_path = output_dir / "fibo_input.json"
         except (ValueError, OSError, Exception) as e: messagebox.showerror("Save Error", f"Cannot proceed. Failed to save:\n{e}"); return
 
@@ -388,21 +408,27 @@ class EditorIO:
             if self.img_arr is not None: H, W = self.img_arr.shape[:2]; geo_center_data = {"x": (W - 1) / 2.0, "y": (H - 1) / 2.0}
 
             # Используем данные, которые УЖЕ сохранены в _save_points
-            # Открываем spots.json, чтобы получить pts_list
             if not saved_spots_path.exists():
                  raise FileNotFoundError("spots.json not found after saving.")
             spots_data = json.loads(saved_spots_path.read_text(encoding="utf-8"))
-            pts_list = spots_data.get("points", [])
+            pts_list = spots_data.get("points", []) # Уже содержит area, type (str/int), angle
 
             payload = {"image": str(abs_image_path) if abs_image_path else None,
                        "preproc_mode": self._preproc_settings.mode if self._preproc_settings else "raw",
                        "preproc": self._preproc_settings.to_json() if self._preproc_settings else {"mode": "raw"},
-                       "points": pts_list, # Уже содержит area, type (str/int), angle
+                       "points": pts_list,
                        "centers": {"geometric": geo_center_data, "overlay": overlay_center_data},
                        "radii": {"dead": float(self.overlay.get("dead_radius", 0.0)) if self.overlay else 0.0,
                                  "search": float(self.overlay.get("search_radius", 0.0)) if self.overlay else 0.0},
                        "spots_json": str(saved_spots_path.resolve())}
-            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            # Сериализатор для NumPy типов
+            def default_serializer(obj):
+                 if isinstance(obj, np.integer): return int(obj)
+                 if isinstance(obj, np.floating): return float(obj)
+                 raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=default_serializer), encoding="utf-8")
             self._set_status("Prepared data for analysis…")
         except Exception as e: messagebox.showerror("Data Prep Error", f"Failed to create ({payload_path.name}):\n{e}"); return
 
@@ -410,4 +436,4 @@ class EditorIO:
             try: self.controller.open_analysis(payload_path.resolve(), abs_image_path, saved_spots_path.resolve())
             except Exception as e: print(f"Error calling controller.open_analysis: {e}"); messagebox.showerror("Launch Error", f"Failed to switch to analysis tab.\nDetails: {e}")
         else: messagebox.showwarning("Standalone Mode", "Cannot switch to analysis tab.")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        # --- КОНЕЦ ---
