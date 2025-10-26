@@ -165,6 +165,9 @@ class EditorIO:
         self.controller.update_zoom_hint()
         self.controller.set_status(f"Loaded: {path.name}")
 
+        # --- НОВОЕ: Обновляем панель групп ---
+        self.controller._update_group_panel()
+
     def _save_points(self) -> Path:
         """Saves points and updates 'saed_input.edited.json'."""
         output_dir = self.controller.get_output_dir()  # Получаем путь из контроллера
@@ -271,10 +274,15 @@ class EditorIO:
             self.controller.update_zoom_hint()
             self.controller.set_status(f"Restored state for {self.controller.image_path.name}")
 
+            # --- НОВОЕ: Обновляем панель групп ---
+            self.controller._update_group_panel()
+
         except FileNotFoundError as e:
-            messagebox.showerror("Load Error", str(e)); self.controller.clear_all()
+            messagebox.showerror("Load Error", str(e));
+            self.controller.clear_all()
         except Exception as e:
-            messagebox.showerror("Load Error", f"Failed to restore state:\n{e}"); self.controller.clear_all()
+            messagebox.showerror("Load Error", f"Failed to restore state:\n{e}");
+            self.controller.clear_all()
 
     # --- Сохранение отладки ---
 

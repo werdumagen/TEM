@@ -450,7 +450,10 @@ class EditorEventHandlers:
         # *** Ключевое изменение: Обновляем модель ***
         model.point_types = new_point_types
         model.initial_group_ids = new_initial_group_ids
-        # *** Конец ***
+
+        # --- НОВОЕ: Обновляем панель групп ---
+        self.controller._update_group_panel()
+        # ---
 
         self.controller.redo.clear()
         self.controller.redraw()
@@ -524,7 +527,7 @@ class EditorEventHandlers:
             is_right_click = e.button == 3
             is_shift_pressed = hasattr(e, 'key') and e.key is not None and "shift" in e.key.lower()
             is_ctrl_pressed = hasattr(e, 'key') and e.key is not None and (
-                        "control" in e.key.lower() or "ctrl" in e.key.lower())
+                    "control" in e.key.lower() or "ctrl" in e.key.lower())
 
             if ui_state.ring_select_active and is_left_click:
                 self._select_points_in_ring()
@@ -613,6 +616,10 @@ class EditorEventHandlers:
                     # Модель сама добавит "unknown", 0.0, и np.nan для area, type, angle
                     model.add_point(y, x, sampled_value, center)
 
+                    # --- НОВОЕ: Обновляем панель (добавление 1 точки неэффективно, но необходимо для sync) ---
+                    # self.controller._update_group_panel() # Решено не обновлять на каждом клике
+                    # ---
+
                     self.controller.redo.clear()
                     self.controller.set_status(f"Added point at ({x:.1f}, {y:.1f}).")
                     self.controller.redraw()
@@ -639,6 +646,10 @@ class EditorEventHandlers:
                     # Модель сама удалит всё (point, value, area, type, angle, ...)
                     model.delete_points_by_indices([hit_point_idx])
                     # --- КОНЕЦ Удаления ---
+
+                    # --- НОВОЕ: Обновляем панель (удаление 1 точки неэффективно, но необходимо для sync) ---
+                    # self.controller._update_group_panel() # Решено не обновлять на каждом клике
+                    # ---
 
                     self.controller.redo.clear()
                     self.controller.set_status("Deleted point.")
@@ -726,8 +737,12 @@ class EditorEventHandlers:
                     ui_state.update_ring_indices_after_delete(indices_to_delete)
 
                     # --- Удаляем точки через Модель ---
-                    model.delete_points_by_mask(mask_in_rect)
+                    model.delete_points_by_mask(~mask_in_rect)  # ИСПОЛЬЗУЕМ ~mask_in_rect (True=сохранить)
                     # --- КОНЕЦ ---
+
+                    # --- НОВОЕ: Обновляем панель (удаление 1 точки неэффективно, но необходимо для sync) ---
+                    # self.controller._update_group_panel() # Решено не обновлять на каждом клике
+                    # ---
 
                     self.controller.redo.clear()
                     self.controller.set_status(f"Deleted {num_to_delete} points in selection.")
@@ -793,7 +808,7 @@ class EditorEventHandlers:
             self.controller.ui_state.update_ring_indices_after_delete(indices_to_delete)
 
             # --- Удаляем точки через Модель ---
-            model.delete_points_by_mask(~mask_keep)
+            model.delete_points_by_mask(mask_keep)  # Передаем mask_keep (True=сохранить)
             # --- КОНЕЦ ---
 
             self.controller.set_status(f"Applied center filters, removed {num_deleted} points.")
