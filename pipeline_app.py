@@ -340,12 +340,12 @@ class LicenseManager:
 
 if TYPE_CHECKING:
     from temn import SAEDLauncherFrame
-    from saed_editor import PointEditor
+    from saed_editor_refactored import PointEditor
     from fibonachi_analysis import FibonacciAnalysisFrame
 else:
     try:
         from temn import SAEDLauncherFrame
-        from saed_editor import PointEditor
+        from saed_editor_refactored import PointEditor
         from fibonachi_analysis import FibonacciAnalysisFrame
     except ModuleNotFoundError:
         SAEDLauncherFrame = _import_module("temn").SAEDLauncherFrame
