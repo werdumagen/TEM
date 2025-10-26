@@ -28,7 +28,7 @@ try:
     from skimage.feature import peak_local_max
 except ImportError:
     peak_local_max = None
-    print("ПРЕДУПРЕЖДЕНИЕ: scikit-image не найден или устарел. Метод 'Legacy (Local Maxima)' не будет работать.")
+    print("ПРЕДУПРЕЖДЕНИЕ: scikit-image не найден или устарел. Метод 'Legacy' и 'Hybrid' не будут работать.")
 # --- КОНЕЦ ---
 
 import numpy as np
@@ -39,13 +39,14 @@ except ImportError:
     cKDTree = None
     print("ПРЕДУПРЕЖДЕНИЕ: scipy не найден. Фильтрация по близости (proximity) не будет работать.")
 
-from percentile_utils import compute_percentile_map, map_values_to_percent # Добавлен map_values_to_percent
+from percentile_utils import compute_percentile_map, map_values_to_percent
 from preproc import PreprocSettings, load_grayscale_with_preproc
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 
 # ------ Функции анализа (pol_from, symmetry_scores, cluster_rings) ------
+# ... (Без изменений) ...
 def pol_from(center, pts):
     cy, cx = center
     dy, dx = pts[:, 0] - cy, pts[:, 1] - cx
@@ -93,31 +94,34 @@ class CenterResult:
     method: str
 
 
-# --- МЕТОД 1: Centroid (текущий) ---
+# --- МЕТОД 1: Centroid ---
+# --- ИЗМЕНЕНИЕ: Возвращает точки И маску ---
 def detect_spots_by_centroid(
         arr: np.ndarray,
         user_perc: float = 99.0,
         min_area: int = 3,
         max_spots: int = 6000,
-        proximity_threshold: float = 4.0, # Теперь параметр
-) -> np.ndarray:
+        proximity_threshold: float = 4.0,
+) -> Tuple[np.ndarray, np.ndarray]: # Возвращает (массив Nx4, маску HxW)
     """
-    Detects spots using centroiding of connected components.
-    Returns array of (y, x, intensity_percentile, area).
+    Detects spots using centroiding.
+    Returns: (array of (y, x, intensity_perc, area), master_blob_mask).
     """
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     if cKDTree is None: raise RuntimeError("Пакет 'scipy' не найден.")
 
     H, W = arr.shape
     percent_map, uniq_vals, uniq_perc = compute_percentile_map(arr)
-    master_blob_map = np.zeros((H, W), dtype=np.uint8)
+    master_blob_mask = np.zeros((H, W), dtype=np.uint8) # Маска найденных блобов
     steps = sorted(list(set(list(range(100, int(user_perc), -5)) + [int(user_perc)])), reverse=True)
     if user_perc not in steps: steps.append(user_perc); steps.sort(reverse=True)
 
     kept_points_final: List[Tuple[float, float, float, int]] = []
     kept_coords_list: List[List[float]] = []
     kept_coords_tree: Optional[cKDTree] = None
-    # --- ИЗМЕНЕНИЕ: Используем переданный параметр ---
     prox_threshold_sq = proximity_threshold ** 2
+    # --- ИЗМЕНЕНИЕ: Словарь для хранения масок по индексам ---
+    blob_masks_to_add: Dict[int, np.ndarray] = {} # {label_index: boolean_mask}
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     for th_value in steps:
@@ -141,7 +145,12 @@ def detect_spots_by_centroid(
 
         for (y, x, v, area, label_index) in current_batch_points:
             yi, xi = int(round(y)), int(round(x))
-            if 0 <= yi < H and 0 <= xi < W and master_blob_map[yi, xi] > 0: continue
+            # --- ИЗМЕНЕНИЕ: Проверяем master_blob_mask только если пиксель внутри ---
+            is_occupied = False
+            if 0 <= yi < H and 0 <= xi < W and master_blob_mask[yi, xi] > 0:
+                 is_occupied = True
+            if is_occupied: continue
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             point_coord = [y, x]; min_dist_sq = float('inf')
             if kept_coords_tree is not None:
@@ -157,9 +166,9 @@ def detect_spots_by_centroid(
             newly_added_coords_this_batch.append([y, x])
             newly_added_labels_this_batch.append(label_index)
 
-            if 0 <= yi < H and 0 <= xi < W:
-                 mask_to_add_single = (labels_map == label_index)
-                 master_blob_map[mask_to_add_single] = 1
+            # --- ИЗМЕНЕНИЕ: Сохраняем маску блоба, НЕ обновляем master_blob_mask сразу ---
+            blob_masks_to_add[label_index] = (labels_map == label_index)
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         if newly_added_coords_this_batch:
             kept_coords_list.extend(newly_added_coords_this_batch)
@@ -168,18 +177,36 @@ def detect_spots_by_centroid(
     kept_points_final.sort(key=lambda t: -t[2])
     if len(kept_points_final) > max_spots: kept_points_final = kept_points_final[:max_spots]
 
-    return np.array(kept_points_final, dtype=float) if kept_points_final else np.zeros((0, 4), dtype=float)
+    # --- ИЗМЕНЕНИЕ: Формируем финальную master_blob_mask ТОЛЬКО из сохраненных точек ---
+    final_master_blob_mask = np.zeros((H, W), dtype=np.uint8)
+    # Нужно найти, какие label_index соответствуют kept_points_final (это сложнее, т.к. точки могли быть отфильтрованы по max_spots)
+    # Проще пересоздать маску на основе координат финальных точек
+    if kept_points_final and blob_masks_to_add:
+         # TODO: Более эффективный способ найти маски для kept_points_final
+         # Пока что просто объединим все маски, что были найдены ДО max_spots фильтрации
+         # Это может пометить чуть больше пикселей, чем нужно, но должно работать
+         print(f"Warning: master_blob_mask might cover slightly more pixels than final points due to max_spots limit.")
+         for label_idx, mask in blob_masks_to_add.items():
+              # Проверяем, есть ли точка с таким label_idx в финальном списке (приблизительно)
+              # Это не идеально, но лучше чем ничего
+              # if any(abs(pt[0]-centroids[label_idx][1]) < 1 and abs(pt[1]-centroids[label_idx][0]) < 1 for pt in kept_points_final):
+              final_master_blob_mask[mask] = 1
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+    result_array = np.array(kept_points_final, dtype=float) if kept_points_final else np.zeros((0, 4), dtype=float)
+    return result_array, final_master_blob_mask # Возвращаем точки и маску
 
 
-# --- МЕТОД 2: Legacy (Local Maxima) ---
+# --- МЕТОД 2: Legacy ---
 def detect_spots_legacy(
         arr: np.ndarray,
         user_perc: float = 99.0,
         max_spots: int = 6000,
-        min_distance: int = 4, # Теперь параметр
+        min_distance: int = 4,
+        mask: Optional[np.ndarray] = None # <<< Добавлен параметр маски
 ) -> np.ndarray:
     """
-    Detects spots using local maxima finding after thresholding.
+    Detects spots using local maxima finding, optionally excluding masked areas.
     Returns array of (y, x, intensity_percentile, area=1.0).
     """
     if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден.")
@@ -188,36 +215,121 @@ def detect_spots_legacy(
     percent_map, uniq_vals, uniq_perc = compute_percentile_map(arr)
     threshold_abs = np.interp(user_perc, uniq_perc, uniq_vals)
 
-    # --- ИЗМЕНЕНИЕ: Используем переданный min_distance ---
-    # Убедимся, что min_distance >= 1
+    # --- ИЗМЕНЕНИЕ: Применяем маску, если она есть ---
+    image_to_process = arr
+    if mask is not None:
+         if mask.shape != arr.shape:
+              print("Warning: Mask shape mismatch in detect_spots_legacy. Ignoring mask.")
+              mask = None # Игнорируем некорректную маску
+         else:
+              # Создаем копию и обнуляем замаскированные пиксели
+              image_to_process = arr.copy()
+              image_to_process[mask > 0] = 0 # Или arr.min()
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     safe_min_distance = max(1, int(min_distance))
     coordinates = peak_local_max(
-        arr,
-        min_distance=safe_min_distance, # Используем параметр
+        image_to_process, # <<< Ищем пики на обработанном изображении
+        min_distance=safe_min_distance,
         threshold_abs=threshold_abs
     )
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     if coordinates.shape[0] == 0: return np.zeros((0, 4), dtype=float)
 
     peaks_y = coordinates[:, 0]; peaks_x = coordinates[:, 1]
-    raw_intensities = arr[peaks_y, peaks_x]
+    raw_intensities = arr[peaks_y, peaks_x] # Интенсивность берем из ОРИГИНАЛА
     percentile_intensities = map_values_to_percent(raw_intensities, uniq_vals, uniq_perc)
-
-    # Собираем точки (y, x, v_percentile, area=1.0)
     final_points = np.column_stack((peaks_y, peaks_x, percentile_intensities, np.ones_like(percentile_intensities)))
 
-    # Сортируем по интенсивности
-    sort_indices = np.argsort(final_points[:, 2])[::-1] # Сортировка по убыванию v_perc
+    sort_indices = np.argsort(final_points[:, 2])[::-1]
     final_points = final_points[sort_indices]
+    if final_points.shape[0] > max_spots: final_points = final_points[:max_spots, :]
 
-    # Ограничиваем по max_spots
-    if final_points.shape[0] > max_spots:
-        final_points = final_points[:max_spots, :]
-
-    # --- ИЗМЕНЕНИЕ: Убран KDTree фильтр, т.к. peak_local_max уже сделал это ---
     return final_points.astype(float)
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+
+# --- НОВЫЙ МЕТОД 3: Hybrid (Centroid + Legacy) ---
+def detect_spots_hybrid(
+        arr: np.ndarray,
+        user_perc: float = 99.0,
+        min_area: int = 3,
+        max_spots: int = 6000,
+        proximity_threshold: float = 4.0, # Общий для обоих + финальный
+) -> np.ndarray:
+    """
+    Combines Centroid and Legacy methods.
+    Returns array of (y, x, intensity_percentile, area).
+    """
+    if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден (нужен для Hybrid).")
+    if cKDTree is None: raise RuntimeError("Пакет 'scipy' не найден (нужен для Hybrid).")
+
+    print("Running Hybrid detector...")
+    # 1. Запускаем Centroid
+    print(" Hybrid Step 1: Running Centroid...")
+    points_centroid, blob_mask = detect_spots_by_centroid(
+        arr, user_perc, min_area, max_spots, proximity_threshold
+    )
+    print(f"  Centroid found {len(points_centroid)} points.")
+
+    # 2. Запускаем Legacy на оставшейся части изображения
+    print(" Hybrid Step 2: Running Legacy on remaining areas...")
+    # Ограничиваем max_spots для legacy, чтобы общее число не превышало лимит
+    remaining_max_spots = max(0, max_spots - len(points_centroid))
+    points_legacy = detect_spots_legacy(
+        arr, user_perc, remaining_max_spots, int(round(proximity_threshold)), mask=blob_mask
+    )
+    print(f"  Legacy found {len(points_legacy)} additional points.")
+
+    # 3. Объединяем результаты
+    if len(points_centroid) > 0 and len(points_legacy) > 0:
+         combined_points = np.vstack((points_centroid, points_legacy))
+    elif len(points_centroid) > 0:
+         combined_points = points_centroid
+    elif len(points_legacy) > 0:
+         combined_points = points_legacy
+    else:
+         return np.zeros((0, 4), dtype=float) # Оба метода ничего не нашли
+
+    print(f" Hybrid Step 3: Combined to {len(combined_points)} points. Applying final proximity filter...")
+
+    # 4. Финальная фильтрация по близости (приоритет у Centroid)
+    # Сортируем так, чтобы точки Centroid шли первыми
+    sort_priority = np.concatenate(
+         (np.zeros(len(points_centroid)), np.ones(len(points_legacy)))
+    )
+    # Дополнительно сортируем по интенсивности внутри каждой группы
+    sort_intensity = -combined_points[:, 2] # Умножаем на -1 для убывания
+    # Применяем составную сортировку
+    sort_indices = np.lexsort((sort_intensity, sort_priority))
+    sorted_combined_points = combined_points[sort_indices]
+
+    kept_points_final: List[Tuple[float, float, float, float]] = [] # (y, x, v, area)
+    kept_coords_list: List[List[float]] = []
+    kept_coords_tree: Optional[cKDTree] = None
+    prox_threshold_sq = proximity_threshold ** 2
+
+    for y, x, v_perc, area in sorted_combined_points:
+        point_coord = [y, x]
+        is_too_close = False
+        if kept_coords_tree is not None:
+             # Ищем ближайшего соседа
+             dist, _ = kept_coords_tree.query(point_coord, k=1)
+             if dist**2 < prox_threshold_sq:
+                  is_too_close = True
+
+        if not is_too_close:
+             kept_points_final.append((y, x, v_perc, area))
+             kept_coords_list.append(point_coord)
+             # Перестраиваем дерево (можно оптимизировать, добавляя точки инкрементально)
+             kept_coords_tree = cKDTree(kept_coords_list)
+             # Прерываем, если достигли max_spots
+             if len(kept_points_final) >= max_spots:
+                  break
+
+    print(f" Hybrid Step 4: Final count after proximity filter: {len(kept_points_final)} points.")
+
+    return np.array(kept_points_final, dtype=float) if kept_points_final else np.zeros((0, 4), dtype=float)
+# --- КОНЕЦ НОВОГО МЕТОДА ---
 
 
 # --- Остальные функции (geometric_midpoint, refine_center_antipodal, group_points_by_radius) без изменений ---
@@ -327,21 +439,23 @@ class SAEDLauncherFrame(ttk.Frame):
 
         # --- Выбор метода детекции ---
         ttk.Label(detect_box, text="Detection Method:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        self.cmb_detect_method = ttk.Combobox(detect_box, values=["Centroid (Default)", "Legacy (Local Maxima)"], state="readonly")
+        # --- ИЗМЕНЕНИЕ: Добавлен Hybrid ---
+        self.cmb_detect_method = ttk.Combobox(
+            detect_box, values=["Centroid (Default)", "Legacy (Local Maxima)", "Hybrid (Centroid + Legacy)"], state="readonly"
+        )
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self.cmb_detect_method.current(0); self.cmb_detect_method.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         self.cmb_detect_method.bind("<<ComboboxSelected>>", self._on_detect_method_change)
 
-        # --- НОВЫЙ СПИНБОКС: Min Peak Distance ---
+        # --- Min Peak Distance ---
         self.spn_min_dist = self._spin_param(detect_box, 1, "Min. Peak Distance (px)", 4.0, from_=1.0, to=50.0, increment=0.5, format_str="%.1f")
-        # --- КОНЕЦ НОВОГО СПИНБОКСА ---
 
         ttk.Separator(detect_box).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 6))
-        # Сдвигаем остальные строки вниз еще на 1
         row_offset = 3
 
         ttk.Label(detect_box, text="Peak threshold and search window", font=("TkDefaultFont", 10, "bold")).grid(row=row_offset + 0, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
         self.spn_perc = self._spin_param(detect_box, row_offset + 1, "Detection percentile (%)", 99.0, from_=80.0, to=100.0, increment=0.1, format_str="%.1f")
-        self.spn_min_area = self._spin_param(detect_box, row_offset + 2, "Min. peak area (px) [Centroid]", 3, from_=1, to=500, increment=1)
+        self.spn_min_area = self._spin_param(detect_box, row_offset + 2, "Min. peak area (px) [Centroid/Hybrid]", 3, from_=1, to=500, increment=1) # Обновили подсказку
         self.spn_maxpts = self._spin_param(detect_box, row_offset + 3, "Maximum detected points", 6000, from_=100, to=20000, increment=100)
         ttk.Separator(detect_box).grid(row=row_offset + 4, column=0, columnspan=2, sticky="ew", pady=(6, 8))
         ttk.Label(detect_box, text="Center refinement", font=("TkDefaultFont", 10, "bold")).grid(row=row_offset + 5, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
@@ -364,7 +478,7 @@ class SAEDLauncherFrame(ttk.Frame):
         self._on_detect_method_change(None)
 
 
-    # ... (методы _activate_scroll, _deactivate_scroll, _on_scroll_mousewheel, _on_preproc_change, _on_detect_method_change) ...
+    # ... (методы _activate_scroll, _deactivate_scroll, _on_scroll_mousewheel, _on_preproc_change) ...
     def _activate_scroll(self, _event):
         if self._scroll_canvas is None: return
         self._scroll_canvas.bind_all("<MouseWheel>", self._on_scroll_mousewheel)
@@ -393,17 +507,26 @@ class SAEDLauncherFrame(ttk.Frame):
             self.spn_h_param.configure(state='normal' if mode == "NLM Denoising" else 'readonly')
         except tk.TclError: pass
 
+    # --- ИЗМЕНЕНИЕ: Обновлен _on_detect_method_change ---
     def _on_detect_method_change(self, event=None):
         if not hasattr(self, 'cmb_detect_method') or not hasattr(self, 'spn_min_area') or not hasattr(self, 'lbl_detect_hint'): return
         try:
             method = self.cmb_detect_method.get()
-            is_centroid = "Centroid" in method
+            is_centroid = "Centroid" in method # Работает и для Centroid, и для Hybrid
+            is_legacy = "Legacy" in method
+            # Min Area активен для Centroid и Hybrid
             self.spn_min_area.configure(state='normal' if is_centroid else 'readonly')
-            hint_text = "Centroid method uses 'Min. peak area' to filter noise. Uses OpenCV." if is_centroid \
-                        else "Legacy method uses local maxima finding. 'Min. peak area' is ignored. Requires scikit-image."
+            # Подсказка
+            hint_text = ""
+            if is_centroid and not is_legacy: # Только Centroid
+                 hint_text = "Centroid method uses 'Min. peak area' to filter noise. Uses OpenCV."
+            elif is_legacy and not is_centroid: # Только Legacy
+                 hint_text = "Legacy method uses local maxima. 'Min. peak area' is ignored. Requires scikit-image."
+            else: # Hybrid
+                 hint_text = "Hybrid: Runs Centroid (with 'Min. peak area'), then Legacy on remaining areas. Requires OpenCV & scikit-image."
             self.lbl_detect_hint.configure(text=hint_text)
         except tk.TclError: pass
-    # --- КОНЕЦ ---
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     # ... (методы _spin_param, _set_spinbox_value, _browse_img, _browse_out, _load_session) ...
     def _spin_param(self, parent, row, label, default, *, from_, to, increment, format_str=None):
@@ -487,7 +610,7 @@ class SAEDLauncherFrame(ttk.Frame):
         self._set_spinbox_value(self.spn_search, state.get("search_radius", 0))
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-    # --- ИЗМЕНЕНИЕ: Передача min_dist в детекторы ---
+    # --- ИЗМЕНЕНИЕ: Логика вызова _go_editor ---
     def _go_editor(self):
         try:
             image_path_str = self.ent_img.get(); output_dir_str = self.ent_out.get()
@@ -497,7 +620,6 @@ class SAEDLauncherFrame(ttk.Frame):
             outdir = Path(output_dir_str).expanduser().resolve(); outdir.mkdir(parents=True, exist_ok=True)
             if not image_path.exists(): messagebox.showerror("Error", f"Image not found at: {image_path}"); return
 
-            # Получаем все параметры из UI
             perc = float(self.spn_perc.get())
             min_area = int(float(self.spn_min_area.get()))
             max_pts = int(float(self.spn_maxpts.get()))
@@ -522,21 +644,33 @@ class SAEDLauncherFrame(ttk.Frame):
                 except ValueError: messagebox.showwarning("Input Warning", "Invalid center coords. Using auto."); center0 = geometric_midpoint(arr)
             else: center0 = geometric_midpoint(arr)
 
-            # --- Выбор и вызов метода детекции с передачей min_dist ---
+            # --- Выбор и вызов метода детекции ---
             detect_method_choice = self.cmb_detect_method.get()
+            pts_raw = np.zeros((0, 4), dtype=float) # Инициализация
+            blob_mask_for_log = None # Для логгирования
+
             try:
-                 if "Legacy" in detect_method_choice:
+                 if "Legacy" in detect_method_choice and "Hybrid" not in detect_method_choice :
                       print(f"Using Legacy (Local Maxima) detector with min_distance={min_dist}...")
                       pts_raw = detect_spots_legacy(
                            arr, user_perc=perc, max_spots=max_pts,
-                           min_distance=int(round(min_dist)) # Передаем как int
+                           min_distance=int(round(min_dist))
                       )
-                 else: # По умолчанию используем Centroid
-                      print(f"Using Centroid detector with proximity_threshold={min_dist}...")
-                      pts_raw = detect_spots_by_centroid(
+                 elif "Hybrid" in detect_method_choice:
+                      print(f"Using Hybrid detector with proximity_threshold={min_dist}...")
+                      pts_raw = detect_spots_hybrid(
                            arr, user_perc=perc, min_area=min_area, max_spots=max_pts,
-                           proximity_threshold=min_dist # Передаем как float
+                           proximity_threshold=min_dist
                       )
+                      # Для гибридного метода blob_mask создается внутри, нам она не нужна снаружи
+                 else: # По умолчанию Centroid
+                      print(f"Using Centroid detector with proximity_threshold={min_dist}...")
+                      pts_raw, blob_mask_from_centroid = detect_spots_by_centroid( # <<< Получаем маску
+                           arr, user_perc=perc, min_area=min_area, max_spots=max_pts,
+                           proximity_threshold=min_dist
+                      )
+                      blob_mask_for_log = blob_mask_from_centroid # Сохраняем для лога
+
             except RuntimeError as e: messagebox.showerror("Dependency Error", str(e)); return
             # --- Конец вызова ---
 
@@ -589,7 +723,7 @@ class SAEDLauncherFrame(ttk.Frame):
                     "preproc_mode": settings.mode, "preproc": preproc_payload,
                     "image_size": {"H": int(arr.shape[0]), "W": int(arr.shape[1])},
                     "detection_method": detect_method_choice,
-                    "min_peak_distance_px": min_dist # <<< Добавлено в лог
+                    "min_peak_distance_px": min_dist
                 }, indent=2), encoding="utf-8")
             except Exception as log_err: print(f"Warning: Could not save center_init.json - {log_err}")
 
