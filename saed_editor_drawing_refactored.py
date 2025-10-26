@@ -10,9 +10,21 @@
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
+from typing import Optional, Tuple  # <--- ИСПРАВЛЕНИЕ: Добавлен этот импорт
 
 # Импорт UI State для type hint
-from saed_editor_state_ui import EditorUIState, CENTER_AS_POINT_IDX
+try:
+    from saed_editor_state_ui import EditorUIState, CENTER_AS_POINT_IDX
+except ImportError:
+    # Фоллбэк, если файл еще не создан или есть ошибка импорта
+    print("Warning: Could not import EditorUIState. Using dummy class.")
+
+
+    class EditorUIState:
+        pass
+
+
+    CENTER_AS_POINT_IDX = -1
 
 
 class EditorDrawingView:
@@ -134,7 +146,10 @@ class EditorDrawingView:
         """Удаляет artists кольца из ui_state."""
         if ui_state.ring_select_artist:
             try:
-                for patch in ui_state.ring_select_artist: patch.remove()
+                if isinstance(ui_state.ring_select_artist, list):
+                    for patch in ui_state.ring_select_artist: patch.remove()
+                else:
+                    ui_state.ring_select_artist.remove()
                 ui_state.ring_select_artist = None
                 return True
             except Exception:
@@ -185,6 +200,9 @@ class EditorDrawingView:
         """Рисует прямоугольник выделения."""
         self.remove_rect_artist(ui_state)  # Удаляем старый
 
+        if ui_state.rect_start is None:  # Добавлена проверка
+            return
+
         y0, x0 = ui_state.rect_start
         y1, x1 = pos_yx
 
@@ -211,8 +229,18 @@ class EditorDrawingView:
         """Полностью перерисовывает холст, читая данные из controller."""
 
         self.ax.clear()
-        model = controller.model
-        ui_state = controller.ui_state
+
+        # Получаем компоненты из контроллера
+        # Добавляем проверки на случай, если они еще не инициализированы
+        model = getattr(controller, 'model', None)
+        ui_state = getattr(controller, 'ui_state', None)
+
+        if model is None or ui_state is None:
+            print("Warning: Redraw called before model/ui_state are initialized.")
+            self.ax.axis("off")
+            self._apply_zoom(controller)  # Применяем зум, чтобы показать пустую область
+            self.canvas.draw_idle()
+            return
 
         # --- 1. Фон ---
         img_to_display = controller.get_image_to_display()
@@ -245,9 +273,10 @@ class EditorDrawingView:
             colors = model.get_colors_for_drawing()
             # ***
 
-            self.ax.scatter(points_to_draw[:, 1], points_to_draw[:, 0],
-                            s=22, c=colors, alpha=0.9, marker="o",
-                            linewidths=0.5, edgecolors="black", zorder=3)
+            if colors:  # Убедимся, что список цветов не пуст
+                self.ax.scatter(points_to_draw[:, 1], points_to_draw[:, 0],
+                                s=22, c=colors, alpha=0.9, marker="o",
+                                linewidths=0.5, edgecolors="black", zorder=3)
 
         # --- 4. Подсветка выделенных точек ---
         self.highlight_selected_ring_points(model, ui_state)
@@ -270,7 +299,6 @@ class EditorDrawingView:
         self.draw_ring_preview(ui_state)
 
         # --- 8. Превью Прямоугольника (оно рисуется в _on_move, здесь не нужно) ---
-        # (но мы должны убедиться, что оно очищено, если rect_start=None)
         if ui_state.rect_start is None:
             self.remove_rect_artist(ui_state)
 
