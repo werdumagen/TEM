@@ -98,16 +98,29 @@ def detect_spots_by_centroid(
             cx, cy = centroids[i];
             yi, xi = int(round(cy)), int(round(cx))
             if 0 <= yi < H and 0 <= xi < W:
-                if master_blob_map[yi, xi] == 0:
-                    v = float(percent_map[yi, xi])
-                    current_batch_points.append((cy, cx, v, area, i + current_max_label))
+                # --- ИЗМЕНЕНИЕ: Убран master_blob_map[yi, xi] == 0 ---
+                # Мы проверяем все точки, маскирование будет позже
+                v = float(percent_map[yi, xi])
+                current_batch_points.append((cy, cx, v, area, i + current_max_label))
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         current_max_label += (num_labels - 1)
         current_batch_points.sort(key=lambda t: -t[2])
         newly_added_coords_this_batch: List[List[float]] = []
 
+        # --- ИЗМЕНЕНИЕ: Новая логика цикла ---
         for (y, x, v, area, label_index) in current_batch_points:
             point_coord = [y, x];
+
+            # (1) Маскируем блоб СРАЗУ
+            mask_to_add_single = (full_labels_map == label_index)
+            # Проверяем, не был ли этот блоб уже полностью замаскирован
+            # (хотя этого не должно случиться, если mask_for_ccs работает)
+            if master_blob_map[mask_to_add_single].all():
+                 continue # Блоб уже полностью в маске, пропускаем
+            master_blob_map[mask_to_add_single] = 1  # Маскируем пиксели
+
+            # (2) Проверяем близость
             min_dist_sq = float('inf')
             if kept_coords_tree is not None:
                 dist, _ = kept_coords_tree.query(point_coord, k=1)
@@ -116,12 +129,14 @@ def detect_spots_by_centroid(
                 dists_sq_batch = np.sum((np.array(newly_added_coords_this_batch) - point_coord) ** 2, axis=1)
                 if dists_sq_batch.size > 0: min_dist_sq = min(min_dist_sq, np.min(dists_sq_batch))
 
-            if min_dist_sq < prox_threshold_sq: continue
+            # (3) Если слишком близко, пропускаем только добавление ТОЧКИ
+            if min_dist_sq < prox_threshold_sq:
+                continue # Блоб уже замаскирован, но точка не добавляется
 
+            # (4) Если точка не отброшена, добавляем ее в список
             kept_points_with_labels.append((y, x, v, area, label_index))
             newly_added_coords_this_batch.append([y, x])
-            mask_to_add_single = (full_labels_map == label_index)
-            master_blob_map[mask_to_add_single] = 1  # Отмечаем пиксели блоба как занятые
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         if newly_added_coords_this_batch:
             kept_coords_list.extend(newly_added_coords_this_batch)
@@ -394,16 +409,26 @@ def detect_spots_centroid_multipass(
             cx, cy = centroids[i];
             yi, xi = int(round(cy)), int(round(cx))
             if 0 <= yi < H and 0 <= xi < W:
-                if master_blob_map[yi, xi] == 0:
-                    v = float(percent_map[yi, xi])
-                    current_batch_points.append((cy, cx, v, area, i + current_max_label))
+                # --- ИЗМЕНЕНИЕ: Убран master_blob_map[yi, xi] == 0 ---
+                v = float(percent_map[yi, xi])
+                current_batch_points.append((cy, cx, v, area, i + current_max_label))
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         current_max_label += (num_labels - 1)
         current_batch_points.sort(key=lambda t: -t[2])
         newly_added_coords_this_batch: List[List[float]] = []
 
+        # --- ИЗМЕНЕНИЕ: Новая логика цикла ---
         for (y, x, v, area, label_index) in current_batch_points:
             point_coord = [y, x];
+
+            # (1) Маскируем блоб СРАЗУ
+            mask_to_add_single = (full_labels_map == label_index)
+            if master_blob_map[mask_to_add_single].all():
+                 continue
+            master_blob_map[mask_to_add_single] = 1  # Маскируем пиксели
+
+            # (2) Проверяем близость
             min_dist_sq = float('inf')
             if kept_coords_tree is not None:
                 dist, _ = kept_coords_tree.query(point_coord, k=1)
@@ -412,12 +437,14 @@ def detect_spots_centroid_multipass(
                 dists_sq_batch = np.sum((np.array(newly_added_coords_this_batch) - point_coord) ** 2, axis=1)
                 if dists_sq_batch.size > 0: min_dist_sq = min(min_dist_sq, np.min(dists_sq_batch))
 
-            if min_dist_sq < prox_threshold_sq: continue
+            # (3) Если слишком близко, пропускаем только добавление ТОЧКИ
+            if min_dist_sq < prox_threshold_sq:
+                continue
 
+            # (4) Если точка не отброшена, добавляем ее в список
             kept_points_with_labels.append((y, x, v, area, label_index))
             newly_added_coords_this_batch.append([y, x])
-            mask_to_add_single = (full_labels_map == label_index)
-            master_blob_map[mask_to_add_single] = 1  # Отмечаем пиксели блоба как занятые
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         if newly_added_coords_this_batch:
             kept_coords_list.extend(newly_added_coords_this_batch)
@@ -541,9 +568,13 @@ def detect_spots_legacy_plus_dual_centroid(
 
     # 4b. Mask Centroid 1 blobs
     if len(kept_label_indices_1) > 0:
+        # --- ИЗМЕНЕНИЕ: Используем labels_map_1, а не запускаем C1 заново ---
+        # (Логика C1 теперь маскирует ВСЕ блобы, а не только 'kept',
+        # но для L+2C мы хотим маскировать только те, что НАШЕЛ C1)
         mask_c1_blobs = np.isin(labels_map_1, kept_label_indices_1)
         master_mask[mask_c1_blobs] = 255  # Добавляем в общую маску
         print(f"  Masked {len(kept_label_indices_1)} blobs from Centroid 1.")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     # --- 5. Save Debug Images ---
     outdir = debug_mask_path.parent
@@ -893,7 +924,7 @@ class SAEDLauncherFrame(ttk.Frame):
                   font=("TkDefaultFont", 10, "bold")).grid(row=9, column=0, columnspan=2, sticky="w", padx=6,
                                                            pady=(0, 2))
         self.spn_dc_perc_c2 = self._spin_param(self.dual_centroid_frame, 10, "C2 Percentile (%)", 95.0, from_=80.0,
-                                               to=100.0, increment=0.1, format_str="%.1f")
+                                                to=100.0, increment=0.1, format_str="%.1f")
         self.spn_dc_area_c2 = self._spin_param(self.dual_centroid_frame, 11, "C2 Min Area (px)", 5, from_=1, to=500,
                                                increment=1)
         self.spn_dc_prox_c2 = self._spin_param(self.dual_centroid_frame, 12, "C2 Proximity (px)", 4.0, from_=1.0,
@@ -1412,4 +1443,3 @@ class SAEDApp(tk.Tk):
 
 if __name__ == "__main__":
     SAEDApp().mainloop()
-}
