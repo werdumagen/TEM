@@ -386,14 +386,14 @@ class PipelineController:
             except tk.TclError: # Handle case where tab might be briefly invalid during changes
                 self.set_status("Switching tabs...")
 
-
     def open_editor(self, saed_json_path: Path | str) -> None:
         path = Path(saed_json_path)
         if not path.exists():
             raise FileNotFoundError(f"Editor input file not found: {path}")
         try:
-            self.editor.load_input_json(path, push_undo=False)
-            self.notebook.select(self.editor) # Switch to editor tab
+            # ИСПРАВЛЕННЫЙ ВЫЗОВ:
+            self.editor.io.load_input_json(path, push_undo=False)
+            self.notebook.select(self.editor)  # Switch to editor tab
             self.set_status(f"Editor: Loaded {path.name}")
         except Exception as exc:
             messagebox.showerror("Error", f"Failed to load data into the editor:\n{exc}")
