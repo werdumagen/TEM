@@ -158,6 +158,9 @@ class EditorIO:
         self.controller.undo.clear()
         self.controller.redo.clear()
 
+        # --- Run initial symmetry analysis on loaded data ---
+        self.controller._calculate_initial_symmetry()
+
         self.controller.redraw()
         self.controller.update_zoom_hint()
         self.controller.set_status(f"Loaded: {path.name}")

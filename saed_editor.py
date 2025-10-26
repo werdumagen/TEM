@@ -422,10 +422,7 @@ class PointEditor(tk.Frame):
 
     def _apply_snapshot(self, snap: Dict[str, Any]):
         self.model.apply_snapshot(snap)
-        # --- НОВОЕ: Пересчитываем симметрию после Undo/Redo ---
-        # Это важно, т.к. набор точек изменился
-        self._calculate_initial_symmetry()
-        # ---
+        # Analysis is now only run on load or via auto-group button
 
     def _undo_btn(self, event=None):
         if hasattr(event, 'widget') and isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)): return
