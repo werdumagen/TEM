@@ -18,7 +18,10 @@ class EditorDrawingView:
         if self.view_cx is not None and self.view_cy is not None: return
         cx_def, cy_def = 0.0, 0.0
         if self.overlay and isinstance(self.overlay.get("center"), dict): c = self.overlay["center"]; cx_def = float(c.get("x", 0.0)); cy_def = float(c.get("y", 0.0))
-        elif self.img_arr is not None: H, W = self.img_arr.shape[:2]; cx_def = (W - 1) / 2.0; cy_def = (H - 1) / 2.0
+        # --- ИЗМЕНЕНИЕ: Используем размер обработанного изображения ---
+        elif self.img_arr_processed is not None: H, W = self.img_arr_processed.shape[:2]; cx_def = (W - 1) / 2.0; cy_def = (H - 1) / 2.0
+        elif self.img_arr_raw is not None: H, W = self.img_arr_raw.shape[:2]; cx_def = (W - 1) / 2.0; cy_def = (H - 1) / 2.0
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         if self.view_cx is None: self.view_cx = cx_def
         if self.view_cy is None: self.view_cy = cy_def
 
@@ -26,8 +29,16 @@ class EditorDrawingView:
         if hasattr(self, "zoom_hint"): value = int(round(self.zoom_var.get())) if hasattr(self, "zoom_var") else int(round(self.zoom_val)); self.zoom_hint.configure(text=f"Current zoom: {value}% (0 = full frame)")
 
     def _apply_zoom(self): # ...
-        if self.img_arr is None: self.ax.set_xlim(0, 100); self.ax.set_ylim(100, 0); return
-        H, W = self.img_arr.shape[:2]; self._ensure_view_center()
+        # --- ИЗМЕНЕНИЕ: Используем размер изображения в зависимости от режима ---
+        img_to_use = self.img_arr_raw if self.show_raw_background.get() else self.img_arr_processed
+        if img_to_use is None: # Фоллбэк, если нужное изображение не загружено
+             img_to_use = self.img_arr_processed if self.img_arr_processed is not None else self.img_arr_raw
+
+        if img_to_use is None:
+             self.ax.set_xlim(0, 100); self.ax.set_ylim(100, 0); return
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+        H, W = img_to_use.shape[:2]; self._ensure_view_center()
         x0_full, x1_full = -0.5, W - 0.5; y0_full, y1_full = H - 0.5, -0.5
         if self.zoom_val <= 0: self.ax.set_xlim(x0_full, x1_full); self.ax.set_ylim(y0_full, y1_full); return
         min_dim = min(H, W); L = max(50.0, min_dim - (min_dim - 50.0) * (self.zoom_val / 100.0))
@@ -108,8 +119,15 @@ class EditorDrawingView:
 
     def _redraw(self):
         self.ax.clear()
-        if self.img_arr is not None:
-            self.ax.imshow(self.img_arr, cmap="gray", interpolation="nearest")
+        # --- ИЗМЕНЕНИЕ: Выбираем фон в зависимости от галочки ---
+        img_to_display = self.img_arr_raw if self.show_raw_background.get() else self.img_arr_processed
+        # Фоллбэк, если выбранное изображение не загружено
+        if img_to_display is None:
+            img_to_display = self.img_arr_processed if self.img_arr_processed is not None else self.img_arr_raw
+
+        if img_to_display is not None:
+            self.ax.imshow(img_to_display, cmap="gray", interpolation="nearest")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self.ax.axis("off")
 
         # --- Draw Center and Radii Overlay ---
@@ -152,8 +170,7 @@ class EditorDrawingView:
 
                 # Создаем карту цветов для числовых ID
                 num_numeric_groups = len(numeric_group_ids)
-                # Используем max_numeric_id + 1 для стабильности цветов
-                cmap_N = max(max_numeric_id + 1, 1)
+                cmap_N = max(max_numeric_id + 1, 1) # Используем max ID + 1 для стабильности цветов
                 colormap = plt.get_cmap('viridis', cmap_N)
                 numeric_color_map = {gid: colormap(gid / max(cmap_N - 1, 1)) for gid in numeric_group_ids}
 
@@ -162,7 +179,7 @@ class EditorDrawingView:
                     "unknown": "yellow",         # Желтый
                     "structural": "cyan",        # Голубой
                     "superstructural": "magenta",# Фиолетовый (ярко-розовый)
-                    "other": "gray",             # Серый (группы, не кратные симметрии - больше не используются)
+                    # "other" больше не используется как финальный тип
                 }
 
                 # Назначаем цвета

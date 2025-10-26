@@ -44,12 +44,15 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
         self.points = np.zeros((0, 2), float)
         self.values = np.zeros((0,), float) # Интенсивности в процентилях
         self.areas = np.zeros((0,), float)  # Площади пикселей
-        # --- ИЗМЕНЕНИЕ: point_types хранит int (ID группы) или str ("unknown") ---
+        self.angles: np.ndarray = np.zeros((0,), dtype=float) # Углы
         self.point_types: list[Union[str, int]] = []
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        self.initial_group_ids: Dict[int, Optional[int]] = {}
         self.overlay = None
         self.image_path: Optional[Path] = None
-        self.img_arr: Optional[np.ndarray] = None
+        # --- ИЗМЕНЕНИЕ: Два массива для изображений ---
+        self.img_arr_raw: Optional[np.ndarray] = None      # Исходное изображение
+        self.img_arr_processed: Optional[np.ndarray] = None # Обработанное (для показа по умолчанию)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self._percent_map: Optional[np.ndarray] = None
         self._percent_lookup: Optional[tuple[np.ndarray, np.ndarray]] = None
         self._preproc_settings = None  # Загрузится из PreprocSettings в IO
@@ -64,6 +67,9 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
         self.view_cy = None
         self._tooltip = None
         self._tooltip_idx = None
+        # --- ИЗМЕНЕНИЕ: Переменная для режима фона ---
+        self.show_raw_background = tk.BooleanVar(value=False) # По умолчанию показываем обработанное
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # --- Состояние Undo/Redo ---
         self._undo = []
@@ -169,7 +175,6 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
         file_group.pack(fill=tk.X)
         ttk.Button(file_group, text="Open JSON…", command=self._open_json).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(file_group, text="Save", command=self._save_points_wrapper).pack(side=tk.LEFT, padx=(0, 6))
-        # --- УДАЛЕНА КНОПКА Save Debug Data ---
 
         # --- Analysis Launch ---
         analysis_group = ttk.Frame(controls)
@@ -194,21 +199,35 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
         self.spn_auto_radius_tol = _spin_param(auto_group, 0, "Radius Tol (px)", 3.0, from_=0.1, to=50.0, increment=0.1, format="%.1f")
         self.spn_auto_area_tol = _spin_param(auto_group, 1, "Area Tol (%)", 15.0, from_=0.0, to=100.0, increment=1.0, format="%.1f") # Теперь row=1
 
-        # --- ИЗМЕНЕНИЕ: Кнопка теперь вызывает _auto_group_and_save_wrapper ---
         self.btn_auto_group = ttk.Button(auto_group, text="Auto-Group & Save Debug", command=self._auto_group_and_save_wrapper)
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         self.btn_auto_group.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0)) # Теперь row=2
+
+        # --- ИЗМЕНЕНИЕ: Добавлен Checkbutton для фона ---
+        ttk.Separator(controls, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 10))
+        display_group = ttk.LabelFrame(controls, text="Display Options", padding=(12, 8, 12, 10))
+        display_group.pack(fill=tk.X, pady=(0, 10))
+
+        self.chk_raw_bg = ttk.Checkbutton(
+            display_group,
+            text="Show Raw Image Background",
+            variable=self.show_raw_background,
+            command=self._on_background_toggle # Вызываем redraw при изменении
+        )
+        self.chk_raw_bg.pack(anchor="w")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 
         # --- Help Panel ---
         self.help_panel = ttk.LabelFrame(scrollable_frame, text="Hints", padding=(16, 12, 16, 12))
         help_text = (
+            # ... (текст подсказок без изменений) ...
             "Ctrl+Z / Ctrl+Y — Undo/Redo actions\n"
             "Ctrl+S — Save current session\n"
             "Mouse Wheel — Zoom in/out\n\n"
             "LMB on empty — add point\n"
             "LMB on center — drag center\n"
             "RMB on point — delete point\n"
-            "MMB on point — show info (Radius, Intensity, Area, Group ID)\n\n"
+            "MMB on point — show info (Radius, Angle, Area, Type, Group ID)\n\n" # Обновлено
             "LMB Click (Point A) -> LMB Click (Point B/Center) — measure distance\n\n"
             "Ctrl + LMB Drag — draw selection ring\n"
             "  (+/- keys change thickness)\n"
@@ -218,11 +237,10 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
             "Enter (with points selected) — average selected points (manual only)\n\n"
             "Shift + LMB Drag (no points selected) — rectangular delete\n\n"
             "Auto Ring Grouping:\n"
-            " - Finds rings based on Radius Tolerance.\n"
-            " - Filters points by Area Tolerance (% from max area in group).\n"
-            " - Assigns unique Group ID to each found ring.\n"
-            " - Remaining points get 'unknown' type.\n"
-            " - Saves results to 'auto_grouped_points_debug.json'." # Добавлено
+            " - Groups points by Radius & Area Tolerances.\n" # Обновлено
+            " - Classifies groups based on Dominant Symmetry (structural/superstructural).\n" # Добавлено
+            " - Assigns Numeric IDs to other groups.\n" # Обновлено
+            " - Saves results & debug data to output folder." # Обновлено
         )
         ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=280).pack(fill=tk.X)
         self._help_visible = False
@@ -292,7 +310,13 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
             except Exception:
                 pass
 
-    # --- ИЗМЕНЕНИЕ: Обновлена обертка для новой функции ---
+    # --- ИЗМЕНЕНИЕ: Callback для переключателя фона ---
+    def _on_background_toggle(self):
+        self._redraw()
+        mode = "Raw" if self.show_raw_background.get() else "Processed"
+        self._set_status(f"Background image set to: {mode}")
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     def _auto_group_and_save_wrapper(self):
         """ Обертка для кнопки Auto-Group & Save Debug """
         if self._auto_grouping_active:
@@ -302,7 +326,7 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
              self._auto_grouping_active = True
              self.btn_auto_group.config(state=tk.DISABLED) # Блокируем кнопку
              self.update_idletasks() # Обновляем UI
-             self._auto_group_rings_and_save() # Запускаем основную функцию
+             self._auto_group_rings_and_save() # Запускаем основную функцию ГРУППИРОВКИ И СОХРАНЕНИЯ
         except Exception as e:
              messagebox.showerror("Auto-Grouping Error", f"An error occurred:\n{e}")
              import traceback
@@ -311,7 +335,6 @@ class PointEditor(tk.Frame, EditorIO, EditorState, EditorDrawingView, EditorEven
              self._auto_grouping_active = False
              if hasattr(self, 'btn_auto_group') and self.btn_auto_group.winfo_exists():
                   self.btn_auto_group.config(state=tk.NORMAL) # Разблокируем кнопку
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 
 class PointEditorApp(tk.Tk):
