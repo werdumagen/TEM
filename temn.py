@@ -4,8 +4,9 @@
     "SAED Symmetry – Launcher\n"
     "========================\n"
     "Launcher for SAED point detection.\n"
-    "- Hybrid detection method (Legacy + Centroid -> Final Proximity Filter).\n" # Обновлено
+    "- Added Hybrid detection method (Legacy + Centroid -> Final Proximity Filter).\n"
     "- Added separate percentile thresholds for Centroid and Legacy methods.\n"
+    "- Rewrote Legacy method: Threshold -> Sort by Intensity -> Non-Maximum Suppression.\n" # Обновлено
     "- Removed automatic symmetry analysis and classification from this stage.\n"
 )
 from __future__ import annotations
@@ -15,21 +16,16 @@ from dataclasses import dataclass
 from typing import Tuple, Dict, Any, List, Optional
 # --- Добавлены импорты ---
 import math
-# --- Импорт для skimage.feature ---
-try:
-    from skimage.feature import peak_local_max
-except ImportError:
-    peak_local_max = None
-    print("ПРЕДУПРЕЖДЕНИЕ: scikit-image не найден или устарел. Метод 'Legacy' и 'Hybrid' не будут работать.")
+# --- Убран импорт skimage.feature ---
 # --- КОНЕЦ ---
 
 import numpy as np
 
 try:
-    from scipy.spatial import cKDTree
+    from scipy.spatial import cKDTree # Все еще нужен для Centroid и Hybrid
 except ImportError:
     cKDTree = None
-    print("ПРЕДУПРЕЖДЕНИЕ: scipy не найден. Фильтрация по близости (proximity) не будет работать.")
+    print("ПРЕДУПРЕЖДЕНИЕ: scipy не найден. Методы 'Centroid' и 'Hybrid', а также фильтрация по близости не будут работать.")
 
 from percentile_utils import compute_percentile_map, map_values_to_percent
 from preproc import PreprocSettings, load_grayscale_with_preproc
@@ -49,7 +45,7 @@ class CenterResult:
 
 
 # --- МЕТОД 1: Centroid ---
-# Возвращает точки, labels_map И список ID сохраненных блобов
+# (Без изменений)
 def detect_spots_by_centroid(
         arr: np.ndarray,
         user_perc: float = 99.0,
@@ -135,51 +131,88 @@ def detect_spots_by_centroid(
     return result_array, full_labels_map, kept_label_indices
 
 
-# --- МЕТОД 2: Legacy ---
+# --- МЕТОД 2: Legacy (Переписан) ---
 def detect_spots_legacy(
         arr: np.ndarray,
         user_perc: float = 99.0,
         max_spots: int = 6000,
         min_distance: int = 4,
-        mask: Optional[np.ndarray] = None # Маска ОБЛАСТЕЙ для ИСКЛЮЧЕНИЯ из поиска
+        # mask параметр удален, т.к. больше не используется peak_local_max
 ) -> np.ndarray:
     """
-    Detects spots using local maxima finding, optionally excluding masked areas.
+    Detects spots using thresholding, sorting, and non-maximum suppression.
     Returns array of (y, x, intensity_percentile, area=1.0).
     """
-    if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден.")
+    if cKDTree is None:
+         print("ПРЕДУПРЕЖДЕНИЕ: scipy не найден. Legacy detection без KDTree будет медленнее.")
+         # Можно реализовать фоллбэк без KDTree, но он будет O(N^2)
+         # raise RuntimeError("Пакет 'scipy' не найден (нужен для Legacy detection).")
 
     H, W = arr.shape
     percent_map, uniq_vals, uniq_perc = compute_percentile_map(arr)
-    threshold_abs = np.interp(user_perc, uniq_perc, uniq_vals)
 
-    footprint_mask = None
-    if mask is not None:
-         if mask.shape != arr.shape: print("Warning: Mask shape mismatch in detect_spots_legacy. Ignoring mask.")
-         else: footprint_mask = (mask == 0) # Искать только там, где маска = 0
+    # 1. Находим ВСЕ пиксели выше порога
+    threshold_mask = percent_map >= user_perc
+    candidate_coords_y, candidate_coords_x = np.where(threshold_mask)
 
-    safe_min_distance = max(1, int(min_distance))
-    coordinates = peak_local_max(
-        arr, min_distance=safe_min_distance, threshold_abs=threshold_abs,
-        exclude_border=False, labels=(footprint_mask.astype(np.int32) if footprint_mask is not None else None),
-        num_peaks=max_spots # Ограничиваем здесь
-    )
+    if candidate_coords_y.size == 0:
+        return np.zeros((0, 4), dtype=float)
 
-    if coordinates.shape[0] == 0: return np.zeros((0, 4), dtype=float)
+    # 2. Получаем их интенсивности (процентили)
+    candidate_intensities = percent_map[candidate_coords_y, candidate_coords_x]
 
-    peaks_y = coordinates[:, 0]; peaks_x = coordinates[:, 1]
-    raw_intensities = arr[peaks_y, peaks_x] # Интенсивность берем из ОРИГИНАЛА
-    percentile_intensities = map_values_to_percent(raw_intensities, uniq_vals, uniq_perc)
-    final_points = np.column_stack((peaks_y, peaks_x, percentile_intensities, np.ones_like(percentile_intensities)))
+    # 3. Собираем данные и сортируем по интенсивности (убывание)
+    #    (y, x, intensity_perc)
+    candidates = list(zip(candidate_coords_y, candidate_coords_x, candidate_intensities))
+    candidates.sort(key=lambda item: item[2], reverse=True)
 
-    sort_indices = np.argsort(final_points[:, 2])[::-1]
-    final_points = final_points[sort_indices]
-    if final_points.shape[0] > max_spots: final_points = final_points[:max_spots, :]
+    # 4. Итеративная фильтрация (Non-Maximum Suppression)
+    kept_points_final: List[Tuple[float, float, float, float]] = [] # (y, x, v, area=1.0)
+    # Используем KDTree для быстрого поиска соседей
+    candidate_points_yx = np.array([[c[0], c[1]] for c in candidates], dtype=float)
+    if cKDTree is not None and len(candidate_points_yx) > 1:
+         candidate_tree = cKDTree(candidate_points_yx)
+         # Массив для отслеживания удаленных точек (по ИНДЕКСУ в отсортированном списке candidates)
+         discarded = np.zeros(len(candidates), dtype=bool)
+         min_dist_sq = float(min_distance) ** 2
 
-    return final_points.astype(float)
+         for i in range(len(candidates)):
+              if discarded[i]: # Если точка уже удалена предыдущей итерацией
+                   continue
+
+              # Сохраняем текущую (самую яркую из оставшихся)
+              y, x, v_perc = candidates[i]
+              kept_points_final.append((float(y), float(x), float(v_perc), 1.0))
+
+              # Если достигли лимита, выходим
+              if len(kept_points_final) >= max_spots:
+                   break
+
+              # Находим ВСЕХ соседей текущей точки в радиусе min_distance
+              # query_ball_point возвращает списки индексов соседей для каждой точки
+              # Нам нужна только первая точка (i-я в исходном списке candidates)
+              neighbors_indices = candidate_tree.query_ball_point(candidate_points_yx[i], r=min_distance, p=2) # p=2 -> Euclidean
+
+              # Помечаем всех найденных соседей (кроме самой точки i) как удаленных
+              for neighbor_idx in neighbors_indices:
+                   # neighbor_idx - это индекс в candidate_points_yx (и в candidates)
+                   if neighbor_idx != i: # Не удаляем саму себя
+                        discarded[neighbor_idx] = True
+    else:
+         # Фоллбэк без KDTree или если точек <= 1
+         # Просто берем первые max_spots точки (уже отсортированы)
+         print("Warning: KDTree not available or too few points for Legacy NMS. Returning top points.")
+         for i in range(min(len(candidates), max_spots)):
+              y, x, v_perc = candidates[i]
+              kept_points_final.append((float(y), float(x), float(v_perc), 1.0))
 
 
-# --- НОВЫЙ МЕТОД 3: Hybrid (Legacy + Centroid -> Final Proximity) ---
+    return np.array(kept_points_final, dtype=float) if kept_points_final else np.zeros((0, 4), dtype=float)
+# --- КОНЕЦ Переписанного МЕТОДА 2 ---
+
+
+# --- МЕТОД 3: Hybrid (Legacy -> Centroid -> Filter Blobs -> Final Proximity) ---
+# --- ИЗМЕНЕНИЕ: Обновлена логика Hybrid ---
 def detect_spots_hybrid(
         arr: np.ndarray,
         legacy_perc: float = 99.0,
@@ -189,54 +222,70 @@ def detect_spots_hybrid(
         min_distance: float = 4.0, # Общий для legacy(min_dist) и centroid(prox_thresh) + Final Filter
 ) -> np.ndarray:
     """
-    Combines Legacy and Centroid methods with final proximity filtering.
+    Combines Legacy and Centroid methods with blob-based and final proximity filtering.
     1. Run Legacy (full image).
     2. Run Centroid (full image).
-    3. Combine ALL Legacy points and ALL Centroid points.
-    4. Apply final proximity filter giving priority to Centroid points.
-    5. Sort by intensity and trim to max_spots.
+    3. Remove Legacy points located within the blobs of kept Centroid points.
+    4. Combine remaining Legacy points and all Centroid points.
+    5. Apply final proximity filter giving priority to Centroid points.
+    6. Sort by intensity and trim to max_spots.
     Returns array of (y, x, intensity_percentile, area).
     """
-    if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден (нужен для Hybrid).")
     if cKDTree is None: raise RuntimeError("Пакет 'scipy' не найден (нужен для Hybrid).")
 
-    print("Running Hybrid detector (Legacy + Centroid -> Final Proximity)...")
+    print("Running Hybrid detector (Legacy -> Centroid -> Filter Blobs -> Final Proximity)...")
     H, W = arr.shape
-    int_min_distance = int(round(min_distance))
+    int_min_distance = int(round(min_distance)) # Для Legacy
 
     # 1. Запускаем Legacy
     print(f" Hybrid Step 1: Running Legacy (perc={legacy_perc}, dist={int_min_distance})...")
     points_legacy = detect_spots_legacy(
-        arr, legacy_perc, max_spots, int_min_distance, mask=None
+        arr, legacy_perc, max_spots*2, int_min_distance # Ищем с запасом
     )
     print(f"  Legacy found {len(points_legacy)} points.")
 
     # 2. Запускаем Centroid
     print(f" Hybrid Step 2: Running Centroid (perc={centroid_perc}, area={min_area}, prox={min_distance})...")
-    points_centroid, _, _ = detect_spots_by_centroid( # labels_map и indices здесь не нужны
-        arr, centroid_perc, min_area, max_spots, min_distance
+    points_centroid, labels_map, kept_centroid_label_indices = detect_spots_by_centroid(
+        arr, centroid_perc, min_area, max_spots*2, min_distance # Ищем с запасом
     )
     print(f"  Centroid found {len(points_centroid)} points.")
 
-    # 3. Объединяем ВСЕ точки и добавляем флаг источника
+    # 3. Удаляем Legacy точки, попавшие в блобы Centroid
+    print(" Hybrid Step 3: Removing Legacy points covered by Centroid blobs...")
+    if len(points_centroid) > 0 and len(points_legacy) > 0:
+        legacy_coords_yx = points_legacy[:, :2].round().astype(int)
+        legacy_coords_yx[:, 0] = np.clip(legacy_coords_yx[:, 0], 0, H - 1)
+        legacy_coords_yx[:, 1] = np.clip(legacy_coords_yx[:, 1], 0, W - 1)
+        blob_ids_at_legacy_points = labels_map[legacy_coords_yx[:, 0], legacy_coords_yx[:, 1]]
+        valid_centroid_blob_ids = set(kept_centroid_label_indices)
+        mask_legacy_to_keep = np.array([(blob_id == 0) or (blob_id not in valid_centroid_blob_ids) for blob_id in blob_ids_at_legacy_points])
+        points_legacy_filtered = points_legacy[mask_legacy_to_keep]
+        print(f"  Removed {len(points_legacy) - len(points_legacy_filtered)} Legacy points. {len(points_legacy_filtered)} remaining.")
+    else:
+        points_legacy_filtered = points_legacy
+        print("  No filtering applied (no Centroid points or no Legacy points).")
+
+
+    # 4. Объединяем результаты и добавляем флаг источника
     combined_points_list = []
     sources = [] # 0 for Centroid, 1 for Legacy
     if len(points_centroid) > 0:
         combined_points_list.append(points_centroid)
         sources.extend([0] * len(points_centroid))
-    if len(points_legacy) > 0:
-        combined_points_list.append(points_legacy)
-        sources.extend([1] * len(points_legacy)) # Добавляем ВСЕ Legacy
+    if len(points_legacy_filtered) > 0:
+        combined_points_list.append(points_legacy_filtered)
+        sources.extend([1] * len(points_legacy_filtered))
 
     if not combined_points_list:
         return np.zeros((0, 4), dtype=float)
 
     combined_points = np.vstack(combined_points_list)
     sources = np.array(sources)
-    print(f" Hybrid Step 3: Combined to {len(combined_points)} points.")
+    print(f" Hybrid Step 4: Combined to {len(combined_points)} points.")
 
-    # 4. Финальная фильтрация по близости с приоритетом Centroid
-    print(f" Hybrid Step 4: Applying final proximity filter (dist={min_distance}, priority=Centroid)...")
+    # 5. Финальная фильтрация по близости с приоритетом Centroid
+    print(f" Hybrid Step 5: Applying final proximity filter (dist={min_distance}, priority=Centroid)...")
     sort_indices = np.lexsort((-combined_points[:, 2], sources)) # -V для убывания интенсивности
     sorted_combined_points = combined_points[sort_indices]
 
@@ -251,14 +300,13 @@ def detect_spots_hybrid(
         is_too_close = False
         if kept_coords_tree is not None:
              dist, _ = kept_coords_tree.query(point_coord, k=1)
-             # Используем >= , чтобы точки СТРОГО ближе порога удалялись
              if dist**2 < prox_threshold_sq:
                   is_too_close = True
 
         if not is_too_close:
              kept_points_final.append((y, x, v_perc, area))
              kept_coords_list.append(point_coord)
-             kept_coords_tree = cKDTree(kept_coords_list) # Перестраиваем дерево
+             kept_coords_tree = cKDTree(kept_coords_list)
 
     print(f"  Kept {len(kept_points_final)} points after final proximity filter.")
 
@@ -267,7 +315,7 @@ def detect_spots_hybrid(
 
     final_points_array = np.array(kept_points_final, dtype=float)
 
-    # 5. Финальная сортировка по интенсивности и обрезка
+    # 6. Финальная сортировка по интенсивности и обрезка
     sort_indices_final = np.argsort(final_points_array[:, 2])[::-1]
     final_points_sorted = final_points_array[sort_indices_final]
 
@@ -276,7 +324,7 @@ def detect_spots_hybrid(
         print(f"  Trimmed to {max_spots} final points.")
 
     return final_points_sorted
-# --- КОНЕЦ НОВОГО МЕТОДА ---
+# --- КОНЕЦ МЕТОДА 3 ---
 
 
 # --- Остальные функции (geometric_midpoint, refine_center_antipodal) без изменений ---
@@ -372,23 +420,17 @@ class SAEDLauncherFrame(ttk.Frame):
 
         detect_box = ttk.LabelFrame(scrollable, text="Detector and refinement", padding=(12, 10, 12, 12)); detect_box.grid(row=0, column=0, sticky="nsew"); detect_box.grid_columnconfigure(1, weight=1)
 
-        # --- Выбор метода детекции ---
         ttk.Label(detect_box, text="Detection Method:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
         self.cmb_detect_method = ttk.Combobox(detect_box, values=["Centroid (Default)", "Legacy (Local Maxima)", "Hybrid (Legacy + Centroid)"], state="readonly")
         self.cmb_detect_method.current(0); self.cmb_detect_method.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         self.cmb_detect_method.bind("<<ComboboxSelected>>", self._on_detect_method_change)
-
-        # --- Min Peak Distance ---
         self.spn_min_dist = self._spin_param(detect_box, 1, "Min. Peak Distance (px)", 4.0, from_=1.0, to=50.0, increment=0.5, format_str="%.1f")
-
         ttk.Separator(detect_box).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 6))
         row_offset = 3
 
         ttk.Label(detect_box, text="Peak threshold and search window", font=("TkDefaultFont", 10, "bold")).grid(row=row_offset + 0, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 2))
-        # --- Два спинбокса для процентилей ---
         self.spn_perc_centroid = self._spin_param(detect_box, row_offset + 1, "Centroid/Hybrid-C Perc (%)", 99.0, from_=80.0, to=100.0, increment=0.1, format_str="%.1f")
         self.spn_perc_legacy = self._spin_param(detect_box, row_offset + 2, "Legacy/Hybrid-L Perc (%)", 99.0, from_=80.0, to=100.0, increment=0.1, format_str="%.1f")
-        # --- КОНЕЦ ---
         self.spn_min_area = self._spin_param(detect_box, row_offset + 3, "Min. peak area (px) [Centroid/Hybrid]", 3, from_=1, to=500, increment=1)
         self.spn_maxpts = self._spin_param(detect_box, row_offset + 4, "Maximum detected points", 6000, from_=100, to=20000, increment=100)
         ttk.Separator(detect_box).grid(row=row_offset + 5, column=0, columnspan=2, sticky="ew", pady=(6, 8))
@@ -462,9 +504,9 @@ class SAEDLauncherFrame(ttk.Frame):
             if is_centroid and not is_legacy:
                  hint_text = "Centroid: Uses connected components & area filtering. Requires OpenCV."
             elif is_legacy and not is_centroid:
-                 hint_text = "Legacy: Uses local maxima & distance filter. 'Min. peak area' ignored. Requires scikit-image."
+                 hint_text = "Legacy: Uses threshold, intensity sort & distance filter. 'Min. peak area' ignored." # Обновлено
             else: # Hybrid
-                 hint_text = "Hybrid: Runs Legacy (Legacy Perc), then Centroid (Centroid Perc). Removes Legacy points covered by Centroid blobs, then filters by distance. Requires OpenCV & scikit-image."
+                 hint_text = "Hybrid: Runs Legacy (Legacy Perc), then Centroid (Centroid Perc). Removes Legacy points in Centroid blobs, then filters by distance. Requires OpenCV & Scipy." # Обновлено
             self.lbl_detect_hint.configure(text=hint_text)
         except tk.TclError: pass
     # --- КОНЕЦ ---
@@ -511,8 +553,8 @@ class SAEDLauncherFrame(ttk.Frame):
             "preproc_mode": self.cmb_pre.get(), "h_param": self.spn_h_param.get(),
             "detect_method": self.cmb_detect_method.get(),
             "min_dist": self.spn_min_dist.get(),
-            "perc_centroid": self.spn_perc_centroid.get(), # <<< Обновлено
-            "perc_legacy": self.spn_perc_legacy.get(),   # <<< Обновлено
+            "perc_centroid": self.spn_perc_centroid.get(),
+            "perc_legacy": self.spn_perc_legacy.get(),
             "min_area": self.spn_min_area.get(),
             "max_pts": self.spn_maxpts.get(), "refine_iters": self.spn_iters.get(),
             "tol_angle": self.spn_tolang.get(), "tol_radius": self.spn_tolr.get(),
@@ -543,10 +585,8 @@ class SAEDLauncherFrame(ttk.Frame):
         # _on_detect_method_change вызовется ниже
 
         self._set_spinbox_value(self.spn_min_dist, state.get("min_dist", 4.0))
-        # --- Восстанавливаем два процентиля ---
-        self._set_spinbox_value(self.spn_perc_centroid, state.get("perc_centroid", 99.0)) # <<< Обновлено
-        self._set_spinbox_value(self.spn_perc_legacy, state.get("perc_legacy", 99.0))     # <<< Обновлено
-        # --- КОНЕЦ ---
+        self._set_spinbox_value(self.spn_perc_centroid, state.get("perc_centroid", 99.0))
+        self._set_spinbox_value(self.spn_perc_legacy, state.get("perc_legacy", 99.0))
         self._set_spinbox_value(self.spn_min_area, state.get("min_area", 3))
         self._set_spinbox_value(self.spn_maxpts, state.get("max_pts", 6000))
         self._set_spinbox_value(self.spn_iters, state.get("refine_iters", 4))
@@ -568,10 +608,8 @@ class SAEDLauncherFrame(ttk.Frame):
             outdir = Path(output_dir_str).expanduser().resolve(); outdir.mkdir(parents=True, exist_ok=True)
             if not image_path.exists(): messagebox.showerror("Error", f"Image not found at: {image_path}"); return
 
-            # --- Получаем ДВА процентиля ---
             perc_centroid = float(self.spn_perc_centroid.get())
             perc_legacy = float(self.spn_perc_legacy.get())
-            # --- КОНЕЦ ---
             min_area = int(float(self.spn_min_area.get()))
             max_pts = int(float(self.spn_maxpts.get()))
             min_dist = float(self.spn_min_dist.get())
@@ -595,7 +633,7 @@ class SAEDLauncherFrame(ttk.Frame):
                 except ValueError: messagebox.showwarning("Input Warning", "Invalid center coords. Using auto."); center0 = geometric_midpoint(arr)
             else: center0 = geometric_midpoint(arr)
 
-            # --- Вызов метода детекции с нужными параметрами ---
+            # --- Вызов метода детекции ---
             detect_method_choice = self.cmb_detect_method.get()
             pts_raw = np.zeros((0, 4), dtype=float)
             try:
