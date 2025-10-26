@@ -8,6 +8,8 @@
     "- Added Hybrid detection method (Legacy -> Centroid -> Filter Blobs -> Final Proximity Filter).\n"
     "- Added separate percentile thresholds for Centroid and Legacy methods.\n"
     "- Removed automatic symmetry analysis and classification from this stage.\n"
+    # --- НОВОЕ: v4.8 ---
+    "- Added 'Legacy + Dual Centroid' detection method (L -> C1 -> Mask(L+C1) -> C2(Masked))"
 )
 from __future__ import annotations
 import json, subprocess, sys, cv2
@@ -434,7 +436,156 @@ def detect_spots_centroid_multipass(
 
     return result_array, full_labels_map, kept_label_indices
 
+
 # <<< КОНЕЦ НОВОГО МЕТОДА 4 >>>
+
+
+# <<< НОВЫЙ МЕТОД 5: Legacy + Dual Centroid >>>
+def detect_spots_legacy_plus_dual_centroid(
+        arr: np.ndarray,
+        legacy_perc: float,
+        legacy_min_dist: float,
+        c1_perc: float,
+        c1_min_area: int,
+        c1_prox: float,
+        c2_perc: float,
+        c2_min_area: int,
+        c2_prox: float,
+        max_spots: int,
+        debug_mask_path: Path,
+        final_proximity_filter: float,
+) -> np.ndarray:
+    """
+    Runs Legacy, then Centroid 1, masks pixels from both, then runs Centroid 2 on the masked image.
+    Finally, combines all, filters by proximity with priority, sorts, and trims.
+    """
+    if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден (нужен для Legacy + Dual Centroid).")
+    if cKDTree is None: raise RuntimeError("Пакет 'scipy' не найден (нужен для Legacy + Dual Centroid).")
+
+    H, W = arr.shape
+    int_legacy_min_dist = int(round(legacy_min_dist))
+
+    # --- 1. Legacy Pass ---
+    print(f"[L+2C] Step 1: Running Legacy (perc={legacy_perc}, dist={int_legacy_min_dist})...")
+    points_legacy = detect_spots_legacy(
+        arr, legacy_perc, max_spots, int_legacy_min_dist, mask=None
+    )
+    print(f"  Legacy found {len(points_legacy)} points.")
+
+    # --- 2. Centroid Pass 1 (на оригинальном изображении) ---
+    print(f"[L+2C] Step 2: Running Centroid 1 (perc={c1_perc}, area={c1_min_area}, prox={c1_prox})...")
+    points_centroid_1, labels_map_1, kept_label_indices_1 = detect_spots_by_centroid(
+        arr, c1_perc, c1_min_area, max_spots, c1_prox
+    )
+    print(f"  Centroid 1 found {len(points_centroid_1)} points.")
+
+    # --- 3. Mask Generation ---
+    print("[L+2C] Step 3: Generating mask from Legacy (radius) and Centroid 1 (blobs)...")
+    master_mask = np.zeros(arr.shape, dtype=np.uint8)
+
+    # 3a. Mask Legacy points by radius
+    if len(points_legacy) > 0:
+        radius_to_mask = int(round(legacy_min_dist))
+        if radius_to_mask > 0:
+            for y, x, _, _ in points_legacy:
+                cv2.circle(master_mask, (int(round(x)), int(round(y))), radius_to_mask, 255, -1)
+        print(f"  Masked {len(points_legacy)} Legacy points with radius {radius_to_mask}px.")
+
+    # 3b. Mask Centroid 1 blobs
+    if len(kept_label_indices_1) > 0:
+        mask_c1_blobs = np.isin(labels_map_1, kept_label_indices_1)
+        master_mask[mask_c1_blobs] = 255
+        print(f"  Masked {len(kept_label_indices_1)} blobs from Centroid 1.")
+
+    # --- 4. Save Debug Image ---
+    print(f"[L+2C] Step 4: Saving debug mask to {debug_mask_path.name}...")
+    try:
+        # Нормализуем исходное float32 изображение в uint8 0-255
+        arr_norm = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        # Конвертируем в BGR для цветной маски
+        debug_img_bgr = cv2.cvtColor(arr_norm, cv2.COLOR_GRAY2BGR)
+        # Применяем маску (черный цвет)
+        debug_img_bgr[master_mask == 255] = [0, 0, 0]  # BGR = Black
+        cv2.imwrite(str(debug_mask_path), debug_img_bgr)
+        print("  Debug mask saved.")
+    except Exception as e:
+        print(f"  Warning: Failed to save debug mask image: {e}")
+
+    # --- 5. Centroid Pass 2 (на замаскированном изображении) ---
+    print(f"[L+2C] Step 5: Running Centroid 2 (perc={c2_perc}, area={c2_min_area}, prox={c2_prox}) on masked image...")
+    arr_masked = arr.copy()
+    arr_masked[master_mask == 255] = 0  # Обнуляем замаскированные пиксели
+
+    points_centroid_2, _, _ = detect_spots_by_centroid(
+        arr_masked, c2_perc, c2_min_area, max_spots, c2_prox
+    )
+    print(f"  Centroid 2 found {len(points_centroid_2)} points.")
+
+    # --- 6. Combine Results (Приоритет: C1 > C2 > Legacy) ---
+    print("[L+2C] Step 6: Combining and applying final proximity filter...")
+    combined_points_list = []
+    sources = []  # 0=C1, 1=C2, 2=Legacy
+    if len(points_centroid_1) > 0:
+        combined_points_list.append(points_centroid_1)
+        sources.extend([0] * len(points_centroid_1))
+    if len(points_centroid_2) > 0:
+        combined_points_list.append(points_centroid_2)
+        sources.extend([1] * len(points_centroid_2))
+    if len(points_legacy) > 0:
+        combined_points_list.append(points_legacy)
+        sources.extend([2] * len(points_legacy))
+
+    if not combined_points_list:
+        return np.zeros((0, 4), dtype=float)
+
+    combined_points = np.vstack(combined_points_list)
+    sources = np.array(sources)
+    print(f"  Combined to {len(combined_points)} total points before final filter.")
+
+    # Сортируем: сначала по источнику (C1=0, C2=1, L=2), потом по интенсивности (убывание)
+    sort_indices = np.lexsort((-combined_points[:, 2], sources))  # -V для убывания
+    sorted_combined_points = combined_points[sort_indices]
+
+    # --- 7. Final Proximity Filter ---
+    kept_points_final: List[Tuple[float, float, float, float]] = []
+    kept_coords_list: List[List[float]] = []
+    kept_coords_tree: Optional[cKDTree] = None
+    final_prox_threshold_sq = final_proximity_filter ** 2
+    print(f"  Applying final proximity filter (dist={final_proximity_filter:.2f}px)...")
+
+    for point_data in sorted_combined_points:
+        y, x, v_perc, area = point_data
+        point_coord = [y, x]
+        is_too_close = False
+        if kept_coords_tree is not None:
+            dist, _ = kept_coords_tree.query(point_coord, k=1)
+            if dist ** 2 < final_prox_threshold_sq:
+                is_too_close = True
+
+        if not is_too_close:
+            kept_points_final.append((y, x, v_perc, area))
+            kept_coords_list.append(point_coord)
+            kept_coords_tree = cKDTree(kept_coords_list)
+
+    print(f"  Kept {len(kept_points_final)} points after final proximity filter.")
+
+    if not kept_points_final:
+        return np.zeros((0, 4), dtype=float)
+
+    final_points_array = np.array(kept_points_final, dtype=float)
+
+    # --- 8. Final Sort by Intensity & Trim ---
+    sort_indices_final = np.argsort(final_points_array[:, 2])[::-1]
+    final_points_sorted = final_points_array[sort_indices_final]
+
+    if final_points_sorted.shape[0] > max_spots:
+        final_points_sorted = final_points_sorted[:max_spots, :]
+        print(f"  Trimmed to {max_spots} final points.")
+
+    return final_points_sorted
+
+
+# <<< КОНЕЦ НОВОГО МЕТОДА 5 >>>
 
 
 # --- Остальные функции (geometric_midpoint, refine_center_antipodal) без изменений ---
@@ -578,22 +729,23 @@ class SAEDLauncherFrame(ttk.Frame):
 
         # --- Выбор метода детекции ---
         ttk.Label(detect_box, text="Detection Method:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        # <<< ИЗМЕНЕНИЕ: Добавлен 'Centroid (Multi-Pass)' >>>
+        # <<< ИЗМЕНЕНИЕ: Добавлен 'Legacy + Dual Centroid' >>>
         self.cmb_detect_method = ttk.Combobox(detect_box, values=["Centroid (Default)", "Legacy (Local Maxima)",
                                                                   "Hybrid (Legacy + Centroid)",
-                                                                  "Centroid (Multi-Pass)"], state="readonly")
+                                                                  "Centroid (Multi-Pass)",
+                                                                  "Legacy + Dual Centroid"], state="readonly")
         # <<< КОНЕЦ >>>
         self.cmb_detect_method.current(0);
         self.cmb_detect_method.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         self.cmb_detect_method.bind("<<ComboboxSelected>>", self._on_detect_method_change)
 
-        # --- Min Peak Distance ---
+        # --- Min Peak Distance (ВНЕШНИЙ, используется только Legacy/Hybrid) ---
         self.spn_min_dist = self._spin_param(detect_box, 1, "Min. Peak Distance (px)", 4.0, from_=1.0, to=50.0,
                                              increment=0.5, format_str="%.1f")
 
         ttk.Separator(detect_box).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 6))
 
-        # <<< ИЗМЕНЕНИЕ: Рамка для стандартных параметров (Centroid/Legacy/Hybrid) >>>
+        # --- Рамка 1: (Centroid/Legacy/Hybrid) ---
         self.centroid_legacy_frame = ttk.Frame(detect_box, padding=0)
         self.centroid_legacy_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
         self.centroid_legacy_frame.grid_columnconfigure(1, weight=1)
@@ -608,7 +760,7 @@ class SAEDLauncherFrame(ttk.Frame):
         self.spn_min_area = self._spin_param(self.centroid_legacy_frame, 3, "Min. peak area (px) [Centroid/Hybrid]", 3,
                                              from_=1, to=500, increment=1)
 
-        # <<< НОВОЕ: Рамка для Multi-Pass параметров (изначально скрыта) >>>
+        # --- Рамка 2: Multi-Pass ---
         self.multipass_frame = ttk.Frame(detect_box, padding=0)
         # self.multipass_frame.grid(row=3, column=0, columnspan=2, sticky="ew") # Не grid-им сразу
         self.multipass_frame.grid_columnconfigure(1, weight=1)
@@ -628,6 +780,46 @@ class SAEDLauncherFrame(ttk.Frame):
                                                 to=100.0, increment=0.1, format_str="%.1f")
         self.spn_mp_area_dim = self._spin_param(self.multipass_frame, 4, "Dim Pass Min Area (px)", 5, from_=1, to=500,
                                                 increment=1)
+
+        # <<< НОВОЕ: Рамка 3: Legacy + Dual Centroid >>>
+        self.dual_centroid_frame = ttk.Frame(detect_box, padding=0)
+        self.dual_centroid_frame.grid_columnconfigure(1, weight=1)
+
+        ttk.Label(self.dual_centroid_frame, text="Legacy Pass Parameters", font=("TkDefaultFont", 10, "bold")).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=6,
+            pady=(0,
+                  2))
+        self.spn_dc_perc_legacy = self._spin_param(self.dual_centroid_frame, 1, "Legacy Percentile (%)", 99.0,
+                                                   from_=80.0, to=100.0, increment=0.1, format_str="%.1f")
+        self.spn_dc_dist_legacy = self._spin_param(self.dual_centroid_frame, 2, "Legacy Min Dist (px)", 4.0, from_=1.0,
+                                                   to=50.0, increment=0.5, format_str="%.1f")
+
+        ttk.Separator(self.dual_centroid_frame).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+        ttk.Label(self.dual_centroid_frame, text="Centroid Pass 1 Parameters (Original)",
+                  font=("TkDefaultFont", 10, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", padx=6,
+                                                           pady=(0, 2))
+        self.spn_dc_perc_c1 = self._spin_param(self.dual_centroid_frame, 5, "C1 Percentile (%)", 99.0, from_=80.0,
+                                               to=100.0, increment=0.1, format_str="%.1f")
+        self.spn_dc_area_c1 = self._spin_param(self.dual_centroid_frame, 6, "C1 Min Area (px)", 3, from_=1, to=500,
+                                               increment=1)
+        self.spn_dc_prox_c1 = self._spin_param(self.dual_centroid_frame, 7, "C1 Proximity (px)", 4.0, from_=1.0,
+                                               to=50.0,
+                                               increment=0.5, format_str="%.1f")
+
+        ttk.Separator(self.dual_centroid_frame).grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+        ttk.Label(self.dual_centroid_frame, text="Centroid Pass 2 Parameters (Masked)",
+                  font=("TkDefaultFont", 10, "bold")).grid(row=9, column=0, columnspan=2, sticky="w", padx=6,
+                                                           pady=(0, 2))
+        self.spn_dc_perc_c2 = self._spin_param(self.dual_centroid_frame, 10, "C2 Percentile (%)", 95.0, from_=80.0,
+                                               to=100.0, increment=0.1, format_str="%.1f")
+        self.spn_dc_area_c2 = self._spin_param(self.dual_centroid_frame, 11, "C2 Min Area (px)", 5, from_=1, to=500,
+                                               increment=1)
+        self.spn_dc_prox_c2 = self._spin_param(self.dual_centroid_frame, 12, "C2 Proximity (px)", 4.0, from_=1.0,
+                                               to=50.0, increment=0.5, format_str="%.1f")
         # <<< КОНЕЦ НОВОГО >>>
 
         # Смещаем оставшиеся элементы
@@ -714,17 +906,21 @@ class SAEDLauncherFrame(ttk.Frame):
     def _on_detect_method_change(self, event=None):
         widgets_exist = all(hasattr(self, w) for w in [
             'cmb_detect_method', 'spn_min_area', 'lbl_detect_hint',
-            'spn_perc_centroid', 'spn_perc_legacy',
-            'centroid_legacy_frame', 'multipass_frame'  # Добавлены новые рамки
+            'spn_perc_centroid', 'spn_perc_legacy', 'spn_min_dist',
+            'centroid_legacy_frame', 'multipass_frame', 'dual_centroid_frame'  # Добавлены новые рамки
         ])
         if not widgets_exist: return
 
         try:
             method = self.cmb_detect_method.get()
 
-            # Сначала прячем обе рамки
+            # Сначала прячем все рамки параметров
             self.centroid_legacy_frame.grid_forget()
             self.multipass_frame.grid_forget()
+            self.dual_centroid_frame.grid_forget()
+
+            # По умолчанию внешний spn_min_dist активен
+            self.spn_min_dist.configure(state='normal')
 
             hint_text = ""
             if method == "Centroid (Default)":
@@ -732,7 +928,8 @@ class SAEDLauncherFrame(ttk.Frame):
                 self.spn_perc_centroid.configure(state='normal')
                 self.spn_perc_legacy.configure(state='readonly')
                 self.spn_min_area.configure(state='normal')
-                hint_text = "Centroid: Uses connected components & area filtering. Requires OpenCV."
+                # 'spn_min_dist' используется как 'proximity_threshold'
+                hint_text = "Centroid: Uses connected components & area filtering. 'Min. Peak Distance' is used as Proximity Threshold."
 
             elif method == "Legacy (Local Maxima)":
                 self.centroid_legacy_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
@@ -746,12 +943,18 @@ class SAEDLauncherFrame(ttk.Frame):
                 self.spn_perc_centroid.configure(state='normal')
                 self.spn_perc_legacy.configure(state='normal')
                 self.spn_min_area.configure(state='normal')
-                hint_text = "Hybrid: Runs Legacy (Legacy Perc), then Centroid (Centroid Perc). Removes Legacy points covered by Centroid blobs."
+                hint_text = "Hybrid: Runs Legacy (Legacy Perc), then Centroid (Centroid Perc). 'Min. Peak Distance' is used for both."
 
             elif method == "Centroid (Multi-Pass)":
-                # Показываем рамку Multi-Pass
                 self.multipass_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
-                hint_text = "Multi-Pass: Uses Bright Pass (High-Perc/Low-Area) + Dim Pass (Low-Perc/High-Area) to find all spots and reject noise."
+                # 'spn_min_dist' используется как 'proximity_threshold'
+                hint_text = "Multi-Pass: Uses Bright Pass + Dim Pass. 'Min. Peak Distance' is used as Proximity Threshold."
+
+            elif method == "Legacy + Dual Centroid":
+                self.dual_centroid_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
+                # Выключаем внешний spn_min_dist, т.к. все настройки внутри рамки
+                self.spn_min_dist.configure(state='readonly')
+                hint_text = "L+2C: Runs Legacy, then C1. Masks pixels from both. Runs C2 on masked image. Saves debug mask."
 
             self.lbl_detect_hint.configure(text=hint_text)
         except tk.TclError:
@@ -810,11 +1013,20 @@ class SAEDLauncherFrame(ttk.Frame):
             "perc_centroid": self.spn_perc_centroid.get(),
             "perc_legacy": self.spn_perc_legacy.get(),
             "min_area": self.spn_min_area.get(),
-            # --- НОВОЕ: Сохраняем Multi-Pass ---
+            # --- Multi-Pass ---
             "mp_perc_bright": self.spn_mp_perc_bright.get(),
             "mp_area_bright": self.spn_mp_area_bright.get(),
             "mp_perc_dim": self.spn_mp_perc_dim.get(),
             "mp_area_dim": self.spn_mp_area_dim.get(),
+            # --- НОВОЕ: Legacy + Dual Centroid ---
+            "dc_perc_legacy": self.spn_dc_perc_legacy.get(),
+            "dc_dist_legacy": self.spn_dc_dist_legacy.get(),
+            "dc_perc_c1": self.spn_dc_perc_c1.get(),
+            "dc_area_c1": self.spn_dc_area_c1.get(),
+            "dc_prox_c1": self.spn_dc_prox_c1.get(),
+            "dc_perc_c2": self.spn_dc_perc_c2.get(),
+            "dc_area_c2": self.spn_dc_area_c2.get(),
+            "dc_prox_c2": self.spn_dc_prox_c2.get(),
             # --- КОНЕЦ НОВОГО ---
             "max_pts": self.spn_maxpts.get(), "refine_iters": self.spn_iters.get(),
             "tol_angle": self.spn_tolang.get(), "tol_radius": self.spn_tolr.get(),
@@ -836,41 +1048,54 @@ class SAEDLauncherFrame(ttk.Frame):
             if preproc_mode in self.cmb_pre['values']:
                 self.cmb_pre.set(preproc_mode)
             else:
-                print(f"Warning: Saved preproc_mode '{preproc_mode}' not found."); self.cmb_pre.current(0)
+                print(f"Warning: Saved preproc_mode '{preproc_mode}' not found.");
+                self.cmb_pre.current(0)
         elif isinstance(self.cmb_pre, ttk.Combobox):
             self.cmb_pre.current(0)
         self._on_preproc_change(None)
         self._set_spinbox_value(self.spn_h_param, state.get("h_param", 0.3))
 
         detect_method = state.get("detect_method")
-        # --- ИЗМЕНЕНИЕ: Добавляем Multi-Pass в проверку ---
         default_method = "Centroid (Default)"
-        # Проверяем, существует ли опция, прежде чем ее использовать
         all_methods = self.cmb_detect_method['values']
-        if "Centroid (Multi-Pass)" in all_methods:
-            default_method = "Centroid (Multi-Pass)"  # Делаем новый метод по умолчанию, если он есть
+
+        # --- ИЗМЕНЕНИЕ: Устанавливаем "Legacy + Dual Centroid" как новый default, если он есть ---
+        if "Legacy + Dual Centroid" in all_methods:
+            default_method = "Legacy + Dual Centroid"
+        elif "Centroid (Multi-Pass)" in all_methods:
+            default_method = "Centroid (Multi-Pass)"
 
         if detect_method and isinstance(self.cmb_detect_method, ttk.Combobox):
             if detect_method in all_methods:
                 self.cmb_detect_method.set(detect_method)
             else:
-                print(f"Warning: Saved detect_method '{detect_method}' not found."); self.cmb_detect_method.set(
+                print(f"Warning: Saved detect_method '{detect_method}' not found.");
+                self.cmb_detect_method.set(
                     default_method)
         elif isinstance(self.cmb_detect_method, ttk.Combobox):
             self.cmb_detect_method.set(default_method)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         self._set_spinbox_value(self.spn_min_dist, state.get("min_dist", 4.0))
-        # --- Восстанавливаем два процентиля ---
         self._set_spinbox_value(self.spn_perc_centroid, state.get("perc_centroid", 99.0))
         self._set_spinbox_value(self.spn_perc_legacy, state.get("perc_legacy", 99.0))
         self._set_spinbox_value(self.spn_min_area, state.get("min_area", 3))
 
-        # --- НОВОЕ: Восстанавливаем Multi-Pass ---
+        # --- Multi-Pass ---
         self._set_spinbox_value(self.spn_mp_perc_bright, state.get("mp_perc_bright", 99.0))
         self._set_spinbox_value(self.spn_mp_area_bright, state.get("mp_area_bright", 2))
         self._set_spinbox_value(self.spn_mp_perc_dim, state.get("mp_perc_dim", 95.0))
         self._set_spinbox_value(self.spn_mp_area_dim, state.get("mp_area_dim", 5))
+
+        # --- НОВОЕ: Legacy + Dual Centroid ---
+        self._set_spinbox_value(self.spn_dc_perc_legacy, state.get("dc_perc_legacy", 99.0))
+        self._set_spinbox_value(self.spn_dc_dist_legacy, state.get("dc_dist_legacy", 4.0))
+        self._set_spinbox_value(self.spn_dc_perc_c1, state.get("dc_perc_c1", 99.0))
+        self._set_spinbox_value(self.spn_dc_area_c1, state.get("dc_area_c1", 3))
+        self._set_spinbox_value(self.spn_dc_prox_c1, state.get("dc_prox_c1", 4.0))
+        self._set_spinbox_value(self.spn_dc_perc_c2, state.get("dc_perc_c2", 95.0))
+        self._set_spinbox_value(self.spn_dc_area_c2, state.get("dc_area_c2", 5))
+        self._set_spinbox_value(self.spn_dc_prox_c2, state.get("dc_prox_c2", 4.0))
         # --- КОНЕЦ НОВОГО ---
 
         self._set_spinbox_value(self.spn_maxpts, state.get("max_pts", 6000))
@@ -901,15 +1126,24 @@ class SAEDLauncherFrame(ttk.Frame):
             perc_legacy = float(self.spn_perc_legacy.get())
             min_area = int(float(self.spn_min_area.get()))
 
-            # --- НОВОЕ: Получаем параметры Multi-Pass ---
             mp_perc_bright = float(self.spn_mp_perc_bright.get())
             mp_area_bright = int(float(self.spn_mp_area_bright.get()))
             mp_perc_dim = float(self.spn_mp_perc_dim.get())
             mp_area_dim = int(float(self.spn_mp_area_dim.get()))
+
+            # --- НОВОЕ: Получаем параметры L+2C ---
+            dc_perc_legacy = float(self.spn_dc_perc_legacy.get())
+            dc_dist_legacy = float(self.spn_dc_dist_legacy.get())
+            dc_perc_c1 = float(self.spn_dc_perc_c1.get())
+            dc_area_c1 = int(float(self.spn_dc_area_c1.get()))
+            dc_prox_c1 = float(self.spn_dc_prox_c1.get())
+            dc_perc_c2 = float(self.spn_dc_perc_c2.get())
+            dc_area_c2 = int(float(self.spn_dc_area_c2.get()))
+            dc_prox_c2 = float(self.spn_dc_prox_c2.get())
             # --- КОНЕЦ НОВОГО ---
 
             max_pts = int(float(self.spn_maxpts.get()))
-            min_dist = float(self.spn_min_dist.get())
+            min_dist = float(self.spn_min_dist.get())  # Внешний min_dist
             iters = int(float(self.spn_iters.get()))
             tol_ang = float(self.spn_tolang.get())
             tol_relr = float(self.spn_tolr.get())
@@ -925,9 +1159,11 @@ class SAEDLauncherFrame(ttk.Frame):
             try:
                 arr = load_grayscale_with_preproc(image_path, settings)
             except RuntimeError as cv_err:
-                messagebox.showerror("Dependency Error", str(cv_err)); return
+                messagebox.showerror("Dependency Error", str(cv_err));
+                return
             except Exception as img_load_err:
-                messagebox.showerror("Image Error", f"Failed to load/process image:\n{img_load_err}"); return
+                messagebox.showerror("Image Error", f"Failed to load/process image:\n{img_load_err}");
+                return
             preproc_payload = settings.to_json()
 
             cx_txt = self.ent_cx.get().strip();
@@ -937,26 +1173,31 @@ class SAEDLauncherFrame(ttk.Frame):
                     center0 = CenterResult(cy=float(cy_txt), cx=float(cx_txt), method="user")
                 except ValueError:
                     messagebox.showwarning("Input Warning",
-                                           "Invalid center coords. Using auto."); center0 = geometric_midpoint(arr)
+                                           "Invalid center coords. Using auto.");
+                    center0 = geometric_midpoint(arr)
             else:
                 center0 = geometric_midpoint(arr)
 
             # --- Вызов метода детекции с нужными параметрами ---
             detect_method_choice = self.cmb_detect_method.get()
             pts_raw = np.zeros((0, 4), dtype=float)
+            log_params = {}  # Для сохранения параметров в лог
+
             try:
-                if "Legacy" in detect_method_choice and "Hybrid" not in detect_method_choice:
+                if "Legacy (Local Maxima)" == detect_method_choice:
                     print(f"Using Legacy detector (perc={perc_legacy}, dist={min_dist})...")
                     pts_raw = detect_spots_legacy(arr, user_perc=perc_legacy, max_spots=max_pts,
                                                   min_distance=int(round(min_dist)))
+                    log_params = {"perc_legacy": perc_legacy, "min_distance": min_dist}
 
                 elif "Hybrid" in detect_method_choice:
                     print(
                         f"Using Hybrid detector (L.perc={perc_legacy}, C.perc={perc_centroid}, area={min_area}, dist={min_dist})...")
                     pts_raw = detect_spots_hybrid(arr, legacy_perc=perc_legacy, centroid_perc=perc_centroid,
                                                   min_area=min_area, max_spots=max_pts, min_distance=min_dist)
+                    log_params = {"perc_legacy": perc_legacy, "perc_centroid": perc_centroid, "min_area": min_area,
+                                  "min_distance": min_dist}
 
-                # --- НОВОЕ: Вызов Multi-Pass ---
                 elif "Multi-Pass" in detect_method_choice:
                     print(
                         f"Using Centroid (Multi-Pass) detector (Bright: {mp_perc_bright}%/{mp_area_bright}px, Dim: {mp_perc_dim}%/{mp_area_dim}px, prox={min_dist})...")
@@ -966,15 +1207,44 @@ class SAEDLauncherFrame(ttk.Frame):
                         perc_dim=mp_perc_dim, min_area_dim=mp_area_dim,
                         max_spots=max_pts, proximity_threshold=min_dist
                     )
+                    log_params = {"mp_perc_bright": mp_perc_bright, "mp_area_bright": mp_area_bright,
+                                  "mp_perc_dim": mp_perc_dim, "mp_area_dim": mp_area_dim,
+                                  "proximity_threshold": min_dist}
+
+                # --- НОВОЕ: Вызов Legacy + Dual Centroid ---
+                elif "Legacy + Dual Centroid" in detect_method_choice:
+                    print(f"Using Legacy + Dual Centroid detector...")
+                    debug_mask_path = outdir / "debug_mask_L-C1.png"
+                    # Определяем финальный фильтр
+                    final_prox = min(dc_dist_legacy, dc_prox_c1, dc_prox_c2)
+                    print(f"  Final proximity filter distance set to: {final_prox:.2f}px")
+
+                    pts_raw = detect_spots_legacy_plus_dual_centroid(
+                        arr,
+                        legacy_perc=dc_perc_legacy, legacy_min_dist=dc_dist_legacy,
+                        c1_perc=dc_perc_c1, c1_min_area=dc_area_c1, c1_prox=dc_prox_c1,
+                        c2_perc=dc_perc_c2, c2_min_area=dc_area_c2, c2_prox=dc_prox_c2,
+                        max_spots=max_pts,
+                        debug_mask_path=debug_mask_path,
+                        final_proximity_filter=final_prox
+                    )
+                    log_params = {
+                        "dc_perc_legacy": dc_perc_legacy, "dc_dist_legacy": dc_dist_legacy,
+                        "dc_perc_c1": dc_perc_c1, "dc_area_c1": dc_area_c1, "dc_prox_c1": dc_prox_c1,
+                        "dc_perc_c2": dc_perc_c2, "dc_area_c2": dc_area_c2, "dc_prox_c2": dc_prox_c2,
+                        "final_proximity_filter": final_prox
+                    }
                 # --- КОНЕЦ НОВОГО ---
 
                 else:  # По умолчанию Centroid
                     print(f"Using Centroid detector (perc={perc_centroid}, area={min_area}, prox={min_dist})...")
                     pts_raw, _, _ = detect_spots_by_centroid(arr, user_perc=perc_centroid, min_area=min_area,
                                                              max_spots=max_pts, proximity_threshold=min_dist)
+                    log_params = {"perc_centroid": perc_centroid, "min_area": min_area, "proximity_threshold": min_dist}
 
             except RuntimeError as e:
-                messagebox.showerror("Dependency Error", str(e)); return
+                messagebox.showerror("Dependency Error", str(e));
+                return
             # --- Конец вызова ---
 
             # --- Логика без симметрии ---
@@ -1034,16 +1304,8 @@ class SAEDLauncherFrame(ttk.Frame):
                     "preproc_mode": settings.mode, "preproc": preproc_payload,
                     "image_size": {"H": int(arr.shape[0]), "W": int(arr.shape[1])},
                     "detection_method": detect_method_choice,
-                    "min_peak_distance_px": min_dist,
-                    "perc_centroid": perc_centroid,  # Сохраняем все
-                    "perc_legacy": perc_legacy,  # Сохраняем все
-                    "min_area_px": min_area,  # Сохраняем все
-                    # --- НОВОЕ: Логирование Multi-Pass ---
-                    "mp_perc_bright": mp_perc_bright if "Multi-Pass" in detect_method_choice else None,
-                    "mp_area_bright": mp_area_bright if "Multi-Pass" in detect_method_choice else None,
-                    "mp_perc_dim": mp_perc_dim if "Multi-Pass" in detect_method_choice else None,
-                    "mp_area_dim": mp_area_dim if "Multi-Pass" in detect_method_choice else None,
-                    # --- КОНЕЦ НОВОГО ---
+                    # Добавляем параметры конкретного метода
+                    **log_params
                 }
                 # Очищаем None значения
                 log_payload_clean = {k: v for k, v in log_payload.items() if v is not None}
