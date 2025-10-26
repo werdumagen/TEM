@@ -440,6 +440,32 @@ def detect_spots_centroid_multipass(
 # <<< КОНЕЦ НОВОГО МЕТОДА 4 >>>
 
 
+# +++ НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ +++
+def _save_points_on_image(
+        img_arr_u8_bgr: np.ndarray,
+        points_yx: np.ndarray,
+        color_bgr: Tuple[int, int, int],
+        output_path: Path,
+        radius: int = 3,
+        thickness: int = 1
+):
+    """Вспомогательная функция: рисует точки (y, x) на BGR-изображении и сохраняет его."""
+    img_with_points = img_arr_u8_bgr.copy()
+    if points_yx is not None and len(points_yx) > 0:
+        for y, x, *rest in points_yx:
+            # cv2.circle принимает координаты (x, y)
+            pt_xy = (int(round(x)), int(round(y)))
+            cv2.circle(img_with_points, pt_xy, radius, color_bgr, thickness)
+    try:
+        cv2.imwrite(str(output_path), img_with_points)
+        print(f"  Сохранено отладочное изображение точек: {output_path.name}")
+    except Exception as e:
+        print(f"  Предупреждение: Не удалось сохранить отладочное изображение {output_path.name}: {e}")
+
+
+# +++ КОНЕЦ НОВОЙ ФУНКЦИИ +++
+
+
 # <<< НОВЫЙ МЕТОД 5: Legacy + Dual Centroid >>>
 def detect_spots_legacy_plus_dual_centroid(
         arr: np.ndarray,
@@ -456,8 +482,8 @@ def detect_spots_legacy_plus_dual_centroid(
         final_proximity_filter: float,
 ) -> np.ndarray:
     """
-    Runs Legacy, then Centroid 1, masks pixels from both, then runs Centroid 2 on the masked image.
-    Finally, combines all, filters by proximity with priority, sorts, and trims.
+    Runs Legacy, filters them against C1 blobs, masks both, runs C2, combines, and filters.
+    Saves debug images for L, C1 (on L mask), and C2 (on L+C1 mask).
     """
     if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден (нужен для Legacy + Dual Centroid).")
     if cKDTree is None: raise RuntimeError("Пакет 'scipy' не найден (нужен для Legacy + Dual Centroid).")
@@ -479,40 +505,83 @@ def detect_spots_legacy_plus_dual_centroid(
     )
     print(f"  Centroid 1 found {len(points_centroid_1)} points.")
 
-    # --- 3. Mask Generation ---
-    print("[L+2C] Step 3: Generating mask from Legacy (radius) and Centroid 1 (blobs)...")
+    # --- 3. Filter Legacy Points (NEW) ---
+    print("[L+2C] Step 3: Filtering Legacy points covered by C1 blobs...")
+    if len(points_centroid_1) > 0 and len(points_legacy) > 0:
+        legacy_coords_yx = points_legacy[:, :2].round().astype(int)
+        legacy_coords_yx[:, 0] = np.clip(legacy_coords_yx[:, 0], 0, H - 1)
+        legacy_coords_yx[:, 1] = np.clip(legacy_coords_yx[:, 1], 0, W - 1)
+
+        blob_ids_at_legacy_points = labels_map_1[legacy_coords_yx[:, 0], legacy_coords_yx[:, 1]]
+        valid_centroid_blob_ids = set(kept_label_indices_1)
+
+        mask_legacy_to_keep = np.array(
+            [(blob_id == 0) or (blob_id not in valid_centroid_blob_ids) for blob_id in blob_ids_at_legacy_points]
+        )
+        points_legacy_filtered = points_legacy[mask_legacy_to_keep]
+        print(
+            f"  Removed {len(points_legacy) - len(points_legacy_filtered)} Legacy points. {len(points_legacy_filtered)} remaining.")
+    else:
+        points_legacy_filtered = points_legacy
+        print("  No filtering applied (no C1 points or no Legacy points).")
+
+    # --- 4. Mask Generation ---
+    print("[L+2C] Step 4: Generating masks...")
+    legacy_mask = np.zeros(arr.shape, dtype=np.uint8)
     master_mask = np.zeros(arr.shape, dtype=np.uint8)
 
-    # 3a. Mask Legacy points by radius
-    if len(points_legacy) > 0:
+    # 4a. Mask *filtered* Legacy points by radius
+    if len(points_legacy_filtered) > 0:
         radius_to_mask = int(round(legacy_min_dist))
         if radius_to_mask > 0:
-            for y, x, _, _ in points_legacy:
-                cv2.circle(master_mask, (int(round(x)), int(round(y))), radius_to_mask, 255, -1)
-        print(f"  Masked {len(points_legacy)} Legacy points with radius {radius_to_mask}px.")
+            for y, x, _, _ in points_legacy_filtered:
+                cv2.circle(legacy_mask, (int(round(x)), int(round(y))), radius_to_mask, 255, -1)
+        print(f"  Masked {len(points_legacy_filtered)} filtered Legacy points with radius {radius_to_mask}px.")
+        master_mask[legacy_mask == 255] = 255  # Добавляем в общую маску
 
-    # 3b. Mask Centroid 1 blobs
+    # 4b. Mask Centroid 1 blobs
     if len(kept_label_indices_1) > 0:
         mask_c1_blobs = np.isin(labels_map_1, kept_label_indices_1)
-        master_mask[mask_c1_blobs] = 255
+        master_mask[mask_c1_blobs] = 255  # Добавляем в общую маску
         print(f"  Masked {len(kept_label_indices_1)} blobs from Centroid 1.")
 
-    # --- 4. Save Debug Image ---
-    print(f"[L+2C] Step 4: Saving debug mask to {debug_mask_path.name}...")
+    # --- 5. Save Debug Images ---
+    outdir = debug_mask_path.parent
+    print(f"[L+2C] Step 5: Saving debug images to {outdir.name}...")
+
+    # Создаем базовые изображения U8 и BGR
+    arr_norm_u8 = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    arr_norm_bgr = cv2.cvtColor(arr_norm_u8, cv2.COLOR_GRAY2BGR)
+
+    # 5a. Сохраняем *отфильтрованные* точки Legacy на ОРИГИНАЛЬНОМ изображении
+    _save_points_on_image(
+        arr_norm_bgr,
+        points_legacy_filtered,
+        (0, 255, 255),  # Желтый (BGR)
+        outdir / "debug_points_legacy.png"
+    )
+
+    # 5b. Сохраняем точки C1 на изображении с МАСКОЙ LEGACY
+    debug_img_bgr_L_masked = arr_norm_bgr.copy()
+    debug_img_bgr_L_masked[legacy_mask == 255] = [0, 0, 0]  # Применяем только маску Legacy
+    _save_points_on_image(
+        debug_img_bgr_L_masked,
+        points_centroid_1,
+        (255, 0, 0),  # Синий (BGR)
+        outdir / "debug_points_c1_on_L_mask.png"  # Новое имя
+    )
+
+    # 5c. Создаем и сохраняем изображение С ОБЩЕЙ МАСКОЙ (L+C1)
+    debug_img_bgr_L_C1_masked = arr_norm_bgr.copy()
+    debug_img_bgr_L_C1_masked[master_mask == 255] = [0, 0, 0]  # BGR = Black
     try:
-        # Нормализуем исходное float32 изображение в uint8 0-255
-        arr_norm = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-        # Конвертируем в BGR для цветной маски
-        debug_img_bgr = cv2.cvtColor(arr_norm, cv2.COLOR_GRAY2BGR)
-        # Применяем маску (черный цвет)
-        debug_img_bgr[master_mask == 255] = [0, 0, 0]  # BGR = Black
-        cv2.imwrite(str(debug_mask_path), debug_img_bgr)
-        print("  Debug mask saved.")
+        cv2.imwrite(str(debug_mask_path), debug_img_bgr_L_C1_masked)
+        print(f"  Saved debug mask: {debug_mask_path.name}")
     except Exception as e:
         print(f"  Warning: Failed to save debug mask image: {e}")
 
-    # --- 5. Centroid Pass 2 (на замаскированном изображении) ---
-    print(f"[L+2C] Step 5: Running Centroid 2 (perc={c2_perc}, area={c2_min_area}, prox={c2_prox}) on masked image...")
+    # --- 6. Centroid Pass 2 (на замаскированном изображении) ---
+    print(f"[L+2C] Step 6: Running Centroid 2 (perc={c2_perc}, area={c2_min_area}, prox={c2_prox}) on masked image...")
     arr_masked = arr.copy()
     arr_masked[master_mask == 255] = 0  # Обнуляем замаскированные пиксели
 
@@ -521,8 +590,16 @@ def detect_spots_legacy_plus_dual_centroid(
     )
     print(f"  Centroid 2 found {len(points_centroid_2)} points.")
 
-    # --- 6. Combine Results (Приоритет: C1 > C2 > Legacy) ---
-    print("[L+2C] Step 6: Combining and applying final proximity filter...")
+    # 6b. Сохраняем точки C2 на ОБЩЕЙ МАСКЕ (L+C1)
+    _save_points_on_image(
+        debug_img_bgr_L_C1_masked,  # Используем изображение с общей маской
+        points_centroid_2,
+        (0, 0, 255),  # Красный (BGR)
+        outdir / "debug_points_c2_on_L_C1_mask.png"  # Новое имя
+    )
+
+    # --- 7. Combine Results (Приоритет: C1 > C2 > Legacy_Filtered) ---
+    print("[L+2C] Step 7: Combining and applying final proximity filter...")
     combined_points_list = []
     sources = []  # 0=C1, 1=C2, 2=Legacy
     if len(points_centroid_1) > 0:
@@ -531,9 +608,10 @@ def detect_spots_legacy_plus_dual_centroid(
     if len(points_centroid_2) > 0:
         combined_points_list.append(points_centroid_2)
         sources.extend([1] * len(points_centroid_2))
-    if len(points_legacy) > 0:
-        combined_points_list.append(points_legacy)
-        sources.extend([2] * len(points_legacy))
+    # --- ИСПОЛЬЗУЕМ ОТФИЛЬТРОВАННЫЕ ---
+    if len(points_legacy_filtered) > 0:
+        combined_points_list.append(points_legacy_filtered)
+        sources.extend([2] * len(points_legacy_filtered))
 
     if not combined_points_list:
         return np.zeros((0, 4), dtype=float)
@@ -546,7 +624,7 @@ def detect_spots_legacy_plus_dual_centroid(
     sort_indices = np.lexsort((-combined_points[:, 2], sources))  # -V для убывания
     sorted_combined_points = combined_points[sort_indices]
 
-    # --- 7. Final Proximity Filter ---
+    # --- 8. Final Proximity Filter ---
     kept_points_final: List[Tuple[float, float, float, float]] = []
     kept_coords_list: List[List[float]] = []
     kept_coords_tree: Optional[cKDTree] = None
@@ -574,7 +652,7 @@ def detect_spots_legacy_plus_dual_centroid(
 
     final_points_array = np.array(kept_points_final, dtype=float)
 
-    # --- 8. Final Sort by Intensity & Trim ---
+    # --- 9. Final Sort by Intensity & Trim ---
     sort_indices_final = np.argsort(final_points_array[:, 2])[::-1]
     final_points_sorted = final_points_array[sort_indices_final]
 
@@ -954,7 +1032,7 @@ class SAEDLauncherFrame(ttk.Frame):
                 self.dual_centroid_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
                 # Выключаем внешний spn_min_dist, т.к. все настройки внутри рамки
                 self.spn_min_dist.configure(state='readonly')
-                hint_text = "L+2C: Runs Legacy, then C1. Masks pixels from both. Runs C2 on masked image. Saves debug mask."
+                hint_text = "L+2C: Runs Legacy, filters vs C1 blobs, masks (L+C1), runs C2. Saves debug images."
 
             self.lbl_detect_hint.configure(text=hint_text)
         except tk.TclError:
@@ -1216,7 +1294,7 @@ class SAEDLauncherFrame(ttk.Frame):
                     print(f"Using Legacy + Dual Centroid detector...")
                     debug_mask_path = outdir / "debug_mask_L-C1.png"
                     # Определяем финальный фильтр
-                    final_prox = min(dc_dist_legacy, dc_prox_c1, dc_prox_c2)
+                    final_prox = min(dc_dist_legacy, dc_prox_c1, dc_prox_c2, min_dist)  # Включаем и внешний min_dist
                     print(f"  Final proximity filter distance set to: {final_prox:.2f}px")
 
                     pts_raw = detect_spots_legacy_plus_dual_centroid(
@@ -1334,3 +1412,4 @@ class SAEDApp(tk.Tk):
 
 if __name__ == "__main__":
     SAEDApp().mainloop()
+}
