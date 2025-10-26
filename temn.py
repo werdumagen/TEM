@@ -311,6 +311,7 @@ def detect_spots_hybrid(
 
 # <<< НОВЫЙ МЕТОД 4: Centroid (Multi-Pass) >>>
 def detect_spots_centroid_multipass(
+        # --- МЕТОД 3: Centroid (Multi-Pass) [Обновленная логика шагов] ---
         arr: np.ndarray,
         perc_bright: float = 99.0,
         min_area_bright: int = 2,
@@ -320,7 +321,9 @@ def detect_spots_centroid_multipass(
         proximity_threshold: float = 4.0,
 ) -> Tuple[np.ndarray, np.ndarray, List[int]]:
     """
-    Detects spots using a multi-pass centroiding approach with variable min_area.
+    Detects spots using a multi-pass centroiding approach with variable min_area
+    AND iterative percentile stepping (like the original Centroid method).
+
     Pass 1: High percentile, Low min_area (for bright, sharp spots)
     Pass 2: Low percentile, High min_area (for dim, fuzzy spots, filters noise)
     Returns: (array of (y, x, intensity_perc, area), labels_map, kept_label_indices).
@@ -332,42 +335,33 @@ def detect_spots_centroid_multipass(
     master_blob_map = np.zeros((H, W), dtype=np.uint8)
     full_labels_map = np.zeros((H, W), dtype=np.int32)
 
-    # --- Создаем список шагов с разными min_area ---
-    steps_with_area = []
-
-    # 1. Шаги для "Яркого прохода"
-    # Убедимся, что perc_bright > perc_dim
+    # --- ИЗМЕНЕНИЕ: Генерируем шаги с шагом -5 (как в оригинальном Centroid) ---
+    step_size = -5
     perc_bright_safe = max(perc_bright, perc_dim)
     perc_dim_safe = min(perc_bright, perc_dim)
 
-    # Диапазон от 100 до perc_bright (включительно)
-    # Используем int(round(...)) для корректной работы с float
+    steps_map = {}
+
+    # 1. Сначала генерируем шаги для "тусклого" прохода (они будут переписаны "яркими")
+    # range(100, int(95) - 1, -5) -> [100, 95]
+    steps_dim_list = sorted(list(set(list(range(100, int(perc_dim_safe) - 1, step_size)) + [int(perc_dim_safe)])),
+                            reverse=True)
+    for th in steps_dim_list:
+        steps_map[th] = min_area_dim
+
+    # 2. Теперь генерируем шаги для "яркого" прохода (они перезапишут верхние значения)
+    # range(100, int(99) - 1, -5) -> [100]
     steps_bright_list = sorted(
-        list(set(list(range(100, int(round(perc_bright_safe)), -1)) + [int(round(perc_bright_safe))])), reverse=True)
-    if perc_bright_safe not in steps_bright_list: steps_bright_list.append(perc_bright_safe); steps_bright_list.sort(
-        reverse=True)
-    steps_with_area.extend([(th, min_area_bright) for th in steps_bright_list])
-
-    # 2. Шаги для "Тусклого прохода"
-    # Диапазон от (perc_bright - 1) до perc_dim (включительно)
-    start_dim_th = int(round(perc_bright_safe)) - 1
-    end_dim_th = int(round(perc_dim_safe))
-
-    if start_dim_th >= end_dim_th:
-        steps_dim_list = sorted(list(set(list(range(start_dim_th, end_dim_th - 1, -1)) + [end_dim_th])), reverse=True)
-        steps_with_area.extend([(th, min_area_dim) for th in steps_dim_list])
-
-    # Удаляем дубликаты, если perc_bright и perc_dim были близки
-    final_steps_map = {}
-    for th, area in steps_with_area:
-        if th not in final_steps_map:
-            final_steps_map[th] = area
+        list(set(list(range(100, int(perc_bright_safe) - 1, step_size)) + [int(perc_bright_safe)])), reverse=True)
+    for th in steps_bright_list:
+        steps_map[th] = min_area_bright
 
     # Сортируем по порогу (убывание)
-    final_steps_tuples = sorted(final_steps_map.items(), key=lambda item: -item[0])
+    final_steps_tuples = sorted(steps_map.items(), key=lambda item: -item[0])
 
     print(f"[Multi-Pass] Bright pass (>= {perc_bright_safe}%): min_area={min_area_bright} px")
-    print(f"[Multi-Pass] Dim pass ({perc_dim_safe}% ... {start_dim_th}%): min_area={min_area_dim} px")
+    print(f"[Multi-Pass] Dim pass ({perc_dim_safe}% - {perc_bright_safe - 1}%): min_area={min_area_dim} px")
+    print(f"[Multi-Pass] Using steps: {final_steps_tuples}")
     # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     kept_points_with_labels: List[Tuple[float, float, float, int, int]] = []
@@ -376,9 +370,9 @@ def detect_spots_centroid_multipass(
     prox_threshold_sq = proximity_threshold ** 2
     current_max_label = 0
 
-    # --- ИЗМЕНЕНИЕ: Итерация по объединенному списку шагов ---
+    # --- Итерация по объединенному списку шагов ---
     for th_value, min_area_for_step in final_steps_tuples:
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        # --- КОНЕЦ ---
         current_binary_mask = np.where(percent_map >= th_value, 255, 0).astype(np.uint8)
         mask_for_ccs = cv2.bitwise_and(current_binary_mask, current_binary_mask, mask=cv2.bitwise_not(master_blob_map))
         num_labels, labels_map_step, stats, centroids = cv2.connectedComponentsWithStats(mask_for_ccs, connectivity=8)
@@ -392,9 +386,9 @@ def detect_spots_centroid_multipass(
         current_batch_points: List[Tuple[float, float, float, int, int]] = []
         for i in range(1, num_labels):
             area = stats[i, cv2.CC_STAT_AREA]
-            # --- ИЗМЕНЕНИЕ: Используем min_area для текущего шага ---
+            # --- Используем min_area для текущего шага ---
             if area < min_area_for_step: continue
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            # --- КОНЕЦ ---
             cx, cy = centroids[i];
             yi, xi = int(round(cy)), int(round(cx))
             if 0 <= yi < H and 0 <= xi < W:
@@ -439,7 +433,6 @@ def detect_spots_centroid_multipass(
         kept_label_indices = []
 
     return result_array, full_labels_map, kept_label_indices
-
 
 # <<< КОНЕЦ НОВОГО МЕТОДА 4 >>>
 
