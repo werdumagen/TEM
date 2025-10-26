@@ -314,7 +314,7 @@ class EditorEventHandlers:
                 self.controller.btn_auto_group.config(state=tk.NORMAL)
 
     def _auto_group_rings_and_save(self):
-        """Логика авто-группировки (v7 - 2 этапа + типы + ID)"""
+        """Логика авто-группировки (только по радиусу + симметрия)."""
         self.controller.set_status("Starting auto-grouping...")
         model = self.controller.model
 
@@ -329,7 +329,7 @@ class EditorEventHandlers:
 
         try:
             radius_tol_px = float(self.controller.spn_auto_radius_tol.get())
-            area_tol_perc = float(self.controller.spn_auto_area_tol.get()) / 100.0
+            # area_tol_perc УБРАН
         except (ValueError, tk.TclError) as e:
             messagebox.showerror("Input Error", f"Invalid tolerance value entered:\n{e}")
             self.controller.set_status("Auto-grouping cancelled due to invalid input.")
@@ -346,8 +346,8 @@ class EditorEventHandlers:
 
         sorted_indices = np.argsort(all_radii)
 
-        # --- Получаем текущие площади из модели ---
-        all_areas = model.areas
+        # --- Площади больше не используются ---
+        # all_areas = model.areas
         # ---
 
         # Типы: сначала все "unknown"
@@ -357,15 +357,16 @@ class EditorEventHandlers:
 
         assigned_indices = set()
         group_id_counter = 0
-        groups_data = {}  # {group_id: [indices]}
+        groups_data = {}  # {initial_group_id: [indices]}
 
-        # --- Этап 1: Группировка по Радиусу + Площади ---
-        print("Starting Pass 1 (Radius + Area grouping)...")
+        # --- Этап 1: Группировка по Радиусу ---
+        print("Starting Pass 1 (Radius grouping)...")
         for i in range(len(sorted_indices)):
             current_idx = sorted_indices[i]
             if current_idx in assigned_indices: continue
             current_radius = all_radii[current_idx]
 
+            # 1. Находим точки в пределах допуска по радиусу
             potential_group_indices = []
             for j in range(i, len(sorted_indices)):
                 check_idx = sorted_indices[j]
@@ -374,25 +375,17 @@ class EditorEventHandlers:
                 if radius_diff <= radius_tol_px:
                     potential_group_indices.append(check_idx)
                 else:
+                    # Т.к. точки отсортированы по радиусу, дальше можно не смотреть
                     break
-            if not potential_group_indices: continue
 
-            # 2. Фильтр по площади
-            candidate_areas = all_areas[potential_group_indices]
-            final_group_indices = []
-            if len(candidate_areas) > 0 and np.any(candidate_areas > 0):
-                max_area = np.max(candidate_areas)
-                min_allowed_area = max_area * (1.0 - area_tol_perc)
-                area_mask = (candidate_areas >= min_allowed_area)
-                final_group_indices = np.array(potential_group_indices)[area_mask].tolist()
-            else:
-                final_group_indices = potential_group_indices
+            # 2. Фильтр по площади УБРАН
 
             # 3. Назначаем ID
-            if final_group_indices:
-                groups_data[group_id_counter] = final_group_indices
-                for idx in final_group_indices:
-                    new_initial_group_ids[idx] = group_id_counter
+            if potential_group_indices:
+                initial_group_id = group_id_counter # Используем счетчик как ID
+                groups_data[initial_group_id] = potential_group_indices
+                for idx in potential_group_indices:
+                    new_initial_group_ids[idx] = initial_group_id # Сохраняем ID
                     assigned_indices.add(idx)
                 group_id_counter += 1
 
@@ -416,13 +409,14 @@ class EditorEventHandlers:
 
         # --- Этап 3: Классификация групп на основе симметрии ---
         print("Starting Pass 2 (Symmetry classification)...")
-        numeric_id_final_counter = 0
+        numeric_type_id_counter = 0 # Отдельный счетчик для числового ТИПА
         num_classified_structural = 0
         num_classified_superstructural = 0
 
+        # Проходим по группам, созданным на Этапе 1
         for initial_group_id, indices in groups_data.items():
             N = len(indices)
-            final_type: Union[str, int] = initial_group_id
+            final_type: Union[str, int] # Тип, который пойдет в model.point_types
 
             if dominant_symmetry > 0:
                 if N == dominant_symmetry:
@@ -432,35 +426,41 @@ class EditorEventHandlers:
                     final_type = "superstructural"
                     num_classified_superstructural += 1
                 else:
-                    final_type = numeric_id_final_counter
-                    numeric_id_final_counter += 1
+                    # Группа не соответствует симметрии -> "другая"
+                    final_type = numeric_type_id_counter
+                    numeric_type_id_counter += 1
             else:
-                final_type = numeric_id_final_counter
-                numeric_id_final_counter += 1
+                # Симметрия не определена -> все "другие"
+                final_type = numeric_type_id_counter
+                numeric_type_id_counter += 1
 
+            # Присваиваем финальный ТИП всем точкам этой ИСХОДНОЙ группы
             for idx in indices:
                 new_point_types[idx] = final_type
+                # new_initial_group_ids[idx] уже присвоен на Этапе 1
 
-        num_numeric_groups = numeric_id_final_counter
+        num_numeric_types = numeric_type_id_counter # Сколько числовых ТИПОВ было присвоено
         print(
-            f"Pass 2 finished. Classified: {num_classified_structural} structural, {num_classified_superstructural} superstructural. Assigned {num_numeric_groups} numeric IDs.")
+            f"Pass 2 finished. Classified: {num_classified_structural} structural, {num_classified_superstructural} superstructural. Assigned {num_numeric_types} numeric types."
+        )
 
         # --- Шаг 4: Обновляем Модель, Сохранение и UI ---
 
         # *** Ключевое изменение: Обновляем модель ***
-        model.point_types = new_point_types
-        model.initial_group_ids = new_initial_group_ids
+        model.point_types = new_point_types # Содержит "structural", "superstructural" или int (numeric type id)
+        model.initial_group_ids = new_initial_group_ids # Содержит int (group id from pass 1)
+        # *** Конец ***
 
-        # --- НОВОЕ: Обновляем панель групп ---
+        # --- Обновляем панель групп ---
         self.controller._update_group_panel()
         # ---
 
         self.controller.redo.clear()
-        self.controller.redraw()
+        self.controller.redraw() # Перерисовка покажет новые цвета
 
         final_type_counts = Counter(model.point_types)
-        num_unknown = final_type_counts.get("unknown", 0)
-        summary_msg = f"Grouping done. Structural: {num_classified_structural}. Superstr: {num_classified_superstructural}. Numeric IDs: {num_numeric_groups}. Unknown: {num_unknown}."
+        num_unknown = final_type_counts.get("unknown", 0) # Точки, не попавшие ни в одну группу
+        summary_msg = f"Grouping done. Structural: {num_classified_structural}. Superstr: {num_classified_superstructural}. Numeric types: {num_numeric_types}. Unknown: {num_unknown}."
         print(summary_msg)
         self.controller.set_status(summary_msg)
 
@@ -527,7 +527,7 @@ class EditorEventHandlers:
             is_right_click = e.button == 3
             is_shift_pressed = hasattr(e, 'key') and e.key is not None and "shift" in e.key.lower()
             is_ctrl_pressed = hasattr(e, 'key') and e.key is not None and (
-                    "control" in e.key.lower() or "ctrl" in e.key.lower())
+                        "control" in e.key.lower() or "ctrl" in e.key.lower())
 
             if ui_state.ring_select_active and is_left_click:
                 self._select_points_in_ring()
@@ -613,11 +613,11 @@ class EditorEventHandlers:
                     self.controller.push_undo()
                     sampled_value = self.controller.sample_intensities(np.array([[y, x]]))[0]
 
-                    # Модель сама добавит "unknown", 0.0, и np.nan для area, type, angle
+                    # Модель сама добавит "unknown", и None ID
                     model.add_point(y, x, sampled_value, center)
 
-                    # --- НОВОЕ: Обновляем панель (добавление 1 точки неэффективно, но необходимо для sync) ---
-                    # self.controller._update_group_panel() # Решено не обновлять на каждом клике
+                    # --- Обновляем панель (добавление 1 точки неэффективно, но необходимо для sync) ---
+                    self.controller._update_group_panel()
                     # ---
 
                     self.controller.redo.clear()
@@ -647,8 +647,8 @@ class EditorEventHandlers:
                     model.delete_points_by_indices([hit_point_idx])
                     # --- КОНЕЦ Удаления ---
 
-                    # --- НОВОЕ: Обновляем панель (удаление 1 точки неэффективно, но необходимо для sync) ---
-                    # self.controller._update_group_panel() # Решено не обновлять на каждом клике
+                    # --- Обновляем панель (удаление 1 точки неэффективно, но необходимо для sync) ---
+                    self.controller._update_group_panel()
                     # ---
 
                     self.controller.redo.clear()
@@ -737,11 +737,11 @@ class EditorEventHandlers:
                     ui_state.update_ring_indices_after_delete(indices_to_delete)
 
                     # --- Удаляем точки через Модель ---
-                    model.delete_points_by_mask(~mask_in_rect)  # ИСПОЛЬЗУЕМ ~mask_in_rect (True=сохранить)
+                    model.delete_points_by_mask(~mask_in_rect) # ИСПОЛЬЗУЕМ ~mask_in_rect (True=сохранить)
                     # --- КОНЕЦ ---
 
-                    # --- НОВОЕ: Обновляем панель (удаление 1 точки неэффективно, но необходимо для sync) ---
-                    # self.controller._update_group_panel() # Решено не обновлять на каждом клике
+                    # --- Обновляем панель групп ---
+                    self.controller._update_group_panel()
                     # ---
 
                     self.controller.redo.clear()
@@ -808,8 +808,12 @@ class EditorEventHandlers:
             self.controller.ui_state.update_ring_indices_after_delete(indices_to_delete)
 
             # --- Удаляем точки через Модель ---
-            model.delete_points_by_mask(mask_keep)  # Передаем mask_keep (True=сохранить)
+            model.delete_points_by_mask(mask_keep) # Передаем mask_keep (True=сохранить)
             # --- КОНЕЦ ---
+
+            # --- Обновляем панель групп ---
+            self.controller._update_group_panel()
+            # ---
 
             self.controller.set_status(f"Applied center filters, removed {num_deleted} points.")
             self.controller.redo.clear()
