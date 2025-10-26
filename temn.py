@@ -117,7 +117,7 @@ def detect_spots_by_centroid(
             # Проверяем, не был ли этот блоб уже полностью замаскирован
             # (хотя этого не должно случиться, если mask_for_ccs работает)
             if master_blob_map[mask_to_add_single].all():
-                 continue # Блоб уже полностью в маске, пропускаем
+                continue  # Блоб уже полностью в маске, пропускаем
             master_blob_map[mask_to_add_single] = 1  # Маскируем пиксели
 
             # (2) Проверяем близость
@@ -131,7 +131,7 @@ def detect_spots_by_centroid(
 
             # (3) Если слишком близко, пропускаем только добавление ТОЧКИ
             if min_dist_sq < prox_threshold_sq:
-                continue # Блоб уже замаскирован, но точка не добавляется
+                continue  # Блоб уже замаскирован, но точка не добавляется
 
             # (4) Если точка не отброшена, добавляем ее в список
             kept_points_with_labels.append((y, x, v, area, label_index))
@@ -425,7 +425,7 @@ def detect_spots_centroid_multipass(
             # (1) Маскируем блоб СРАЗУ
             mask_to_add_single = (full_labels_map == label_index)
             if master_blob_map[mask_to_add_single].all():
-                 continue
+                continue
             master_blob_map[mask_to_add_single] = 1  # Маскируем пиксели
 
             # (2) Проверяем близость
@@ -441,7 +441,7 @@ def detect_spots_centroid_multipass(
             if min_dist_sq < prox_threshold_sq:
                 continue
 
-            # (4) Если точка не отброшена, добавляем ее в список
+                # (4) Если точка не отброшена, добавляем ее в список
             kept_points_with_labels.append((y, x, v, area, label_index))
             newly_added_coords_this_batch.append([y, x])
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
@@ -493,7 +493,7 @@ def _save_points_on_image(
 # +++ КОНЕЦ НОВОЙ ФУНКЦИИ +++
 
 
-# <<< НОВЫЙ МЕТОД 5: Legacy + Dual Centroid >>>
+# <<< НОВЫЙ МЕТОД 5: Centroid + Legacy + Centroid (C1+L+C2) >>>
 def detect_spots_legacy_plus_dual_centroid(
         arr: np.ndarray,
         legacy_perc: float,
@@ -505,35 +505,35 @@ def detect_spots_legacy_plus_dual_centroid(
         c2_min_area: int,
         c2_prox: float,
         max_spots: int,
-        debug_mask_path: Path,
+        debug_mask_path: Path,  # e.g., "debug_mask_C1-L.png"
         final_proximity_filter: float,
 ) -> np.ndarray:
     """
-    Runs Legacy, filters them against C1 blobs, masks both, runs C2, combines, and filters.
-    Saves debug images for L, C1 (on L mask), and C2 (on L+C1 mask).
+    Runs C1, then Legacy, filters Legacy against C1 blobs, masks both, runs C2, combines, and filters.
+    Saves debug images for C1, L (on C1 mask), and C2 (on C1+L mask).
     """
-    if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден (нужен для Legacy + Dual Centroid).")
-    if cKDTree is None: raise RuntimeError("Пакет 'scipy' не найден (нужен для Legacy + Dual Centroid).")
+    if peak_local_max is None: raise RuntimeError("Пакет 'scikit-image' не найден (нужен для C1+L+C2).")
+    if cKDTree is None: raise RuntimeError("Пакет 'scipy' не найден (нужен для C1+L+C2).")
 
     H, W = arr.shape
     int_legacy_min_dist = int(round(legacy_min_dist))
 
-    # --- 1. Legacy Pass ---
-    print(f"[L+2C] Step 1: Running Legacy (perc={legacy_perc}, dist={int_legacy_min_dist})...")
-    points_legacy = detect_spots_legacy(
-        arr, legacy_perc, max_spots, int_legacy_min_dist, mask=None
-    )
-    print(f"  Legacy found {len(points_legacy)} points.")
-
-    # --- 2. Centroid Pass 1 (на оригинальном изображении) ---
-    print(f"[L+2C] Step 2: Running Centroid 1 (perc={c1_perc}, area={c1_min_area}, prox={c1_prox})...")
+    # --- 1. Centroid Pass 1 (на оригинальном изображении) ---
+    print(f"[C1+L+C2] Step 1: Running Centroid 1 (perc={c1_perc}, area={c1_min_area}, prox={c1_prox})...")
     points_centroid_1, labels_map_1, kept_label_indices_1 = detect_spots_by_centroid(
         arr, c1_perc, c1_min_area, max_spots, c1_prox
     )
     print(f"  Centroid 1 found {len(points_centroid_1)} points.")
 
-    # --- 3. Filter Legacy Points (NEW) ---
-    print("[L+2C] Step 3: Filtering Legacy points covered by C1 blobs...")
+    # --- 2. Legacy Pass ---
+    print(f"[C1+L+C2] Step 2: Running Legacy (perc={legacy_perc}, dist={int_legacy_min_dist})...")
+    points_legacy = detect_spots_legacy(
+        arr, legacy_perc, max_spots, int_legacy_min_dist, mask=None
+    )
+    print(f"  Legacy found {len(points_legacy)} points.")
+
+    # --- 3. Filter Legacy Points ---
+    print("[C1+L+C2] Step 3: Filtering Legacy points covered by C1 blobs...")
     if len(points_centroid_1) > 0 and len(points_legacy) > 0:
         legacy_coords_yx = points_legacy[:, :2].round().astype(int)
         legacy_coords_yx[:, 0] = np.clip(legacy_coords_yx[:, 0], 0, H - 1)
@@ -553,66 +553,64 @@ def detect_spots_legacy_plus_dual_centroid(
         print("  No filtering applied (no C1 points or no Legacy points).")
 
     # --- 4. Mask Generation ---
-    print("[L+2C] Step 4: Generating masks...")
-    legacy_mask = np.zeros(arr.shape, dtype=np.uint8)
-    master_mask = np.zeros(arr.shape, dtype=np.uint8)
+    print("[C1+L+C2] Step 4: Generating masks...")
+    c1_mask = np.zeros(arr.shape, dtype=np.uint8)  # Маска только для C1 (для отладки)
+    master_mask = np.zeros(arr.shape, dtype=np.uint8)  # Общая маска (C1 + L)
 
-    # 4a. Mask *filtered* Legacy points by radius
+    # 4a. Mask Centroid 1 blobs
+    if len(kept_label_indices_1) > 0:
+        mask_c1_blobs = np.isin(labels_map_1, kept_label_indices_1)
+        c1_mask[mask_c1_blobs] = 255  # Добавляем в маску C1
+        master_mask[mask_c1_blobs] = 255  # Добавляем в общую маску
+        print(f"  Masked {len(kept_label_indices_1)} blobs from Centroid 1.")
+
+    # 4b. Mask *filtered* Legacy points by radius
     if len(points_legacy_filtered) > 0:
         radius_to_mask = int(round(legacy_min_dist))
         if radius_to_mask > 0:
             for y, x, _, _ in points_legacy_filtered:
-                cv2.circle(legacy_mask, (int(round(x)), int(round(y))), radius_to_mask, 255, -1)
+                # Добавляем только в общую маску
+                cv2.circle(master_mask, (int(round(x)), int(round(y))), radius_to_mask, 255, -1)
         print(f"  Masked {len(points_legacy_filtered)} filtered Legacy points with radius {radius_to_mask}px.")
-        master_mask[legacy_mask == 255] = 255  # Добавляем в общую маску
-
-    # 4b. Mask Centroid 1 blobs
-    if len(kept_label_indices_1) > 0:
-        # --- ИЗМЕНЕНИЕ: Используем labels_map_1, а не запускаем C1 заново ---
-        # (Логика C1 теперь маскирует ВСЕ блобы, а не только 'kept',
-        # но для L+2C мы хотим маскировать только те, что НАШЕЛ C1)
-        mask_c1_blobs = np.isin(labels_map_1, kept_label_indices_1)
-        master_mask[mask_c1_blobs] = 255  # Добавляем в общую маску
-        print(f"  Masked {len(kept_label_indices_1)} blobs from Centroid 1.")
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     # --- 5. Save Debug Images ---
     outdir = debug_mask_path.parent
-    print(f"[L+2C] Step 5: Saving debug images to {outdir.name}...")
+    print(f"[C1+L+C2] Step 5: Saving debug images to {outdir.name}...")
 
     # Создаем базовые изображения U8 и BGR
     arr_norm_u8 = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     arr_norm_bgr = cv2.cvtColor(arr_norm_u8, cv2.COLOR_GRAY2BGR)
 
-    # 5a. Сохраняем *отфильтрованные* точки Legacy на ОРИГИНАЛЬНОМ изображении
+    # 5a. Сохраняем точки C1 на ОРИГИНАЛЬНОМ изображении
     _save_points_on_image(
         arr_norm_bgr,
-        points_legacy_filtered,
-        (0, 255, 255),  # Желтый (BGR)
-        outdir / "debug_points_legacy.png"
-    )
-
-    # 5b. Сохраняем точки C1 на изображении с МАСКОЙ LEGACY
-    debug_img_bgr_L_masked = arr_norm_bgr.copy()
-    debug_img_bgr_L_masked[legacy_mask == 255] = [0, 0, 0]  # Применяем только маску Legacy
-    _save_points_on_image(
-        debug_img_bgr_L_masked,
         points_centroid_1,
         (255, 0, 0),  # Синий (BGR)
-        outdir / "debug_points_c1_on_L_mask.png"  # Новое имя
+        outdir / "debug_points_c1.png"
     )
 
-    # 5c. Создаем и сохраняем изображение С ОБЩЕЙ МАСКОЙ (L+C1)
-    debug_img_bgr_L_C1_masked = arr_norm_bgr.copy()
-    debug_img_bgr_L_C1_masked[master_mask == 255] = [0, 0, 0]  # BGR = Black
+    # 5b. Сохраняем *отфильтрованные* точки Legacy на изображении с МАСКОЙ C1
+    debug_img_bgr_C1_masked = arr_norm_bgr.copy()
+    debug_img_bgr_C1_masked[c1_mask == 255] = [0, 0, 0]  # Применяем только маску C1
+    _save_points_on_image(
+        debug_img_bgr_C1_masked,
+        points_legacy_filtered,
+        (0, 255, 255),  # Желтый (BGR)
+        outdir / "debug_points_legacy_on_C1_mask.png"
+    )
+
+    # 5c. Создаем и сохраняем изображение С ОБЩЕЙ МАСКОЙ (C1+L)
+    debug_img_bgr_C1_L_masked = arr_norm_bgr.copy()
+    debug_img_bgr_C1_L_masked[master_mask == 255] = [0, 0, 0]  # BGR = Black
     try:
-        cv2.imwrite(str(debug_mask_path), debug_img_bgr_L_C1_masked)
+        cv2.imwrite(str(debug_mask_path), debug_img_bgr_C1_L_masked)
         print(f"  Saved debug mask: {debug_mask_path.name}")
     except Exception as e:
         print(f"  Warning: Failed to save debug mask image: {e}")
 
     # --- 6. Centroid Pass 2 (на замаскированном изображении) ---
-    print(f"[L+2C] Step 6: Running Centroid 2 (perc={c2_perc}, area={c2_min_area}, prox={c2_prox}) on masked image...")
+    print(
+        f"[C1+L+C2] Step 6: Running Centroid 2 (perc={c2_perc}, area={c2_min_area}, prox={c2_prox}) on masked image...")
     arr_masked = arr.copy()
     arr_masked[master_mask == 255] = 0  # Обнуляем замаскированные пиксели
 
@@ -621,28 +619,27 @@ def detect_spots_legacy_plus_dual_centroid(
     )
     print(f"  Centroid 2 found {len(points_centroid_2)} points.")
 
-    # 6b. Сохраняем точки C2 на ОБЩЕЙ МАСКЕ (L+C1)
+    # 6b. Сохраняем точки C2 на ОБЩЕЙ МАСКЕ (C1+L)
     _save_points_on_image(
-        debug_img_bgr_L_C1_masked,  # Используем изображение с общей маской
+        debug_img_bgr_C1_L_masked,  # Используем изображение с общей маской
         points_centroid_2,
         (0, 0, 255),  # Красный (BGR)
-        outdir / "debug_points_c2_on_L_C1_mask.png"  # Новое имя
+        outdir / "debug_points_c2_on_C1_L_mask.png"
     )
 
-    # --- 7. Combine Results (Приоритет: C1 > C2 > Legacy_Filtered) ---
-    print("[L+2C] Step 7: Combining and applying final proximity filter...")
+    # --- 7. Combine Results (Приоритет: C1 > Legacy_Filtered > C2) ---
+    print("[C1+L+C2] Step 7: Combining and applying final proximity filter...")
     combined_points_list = []
-    sources = []  # 0=C1, 1=C2, 2=Legacy
+    sources = []  # 0=C1, 1=Legacy_Filtered, 2=C2
     if len(points_centroid_1) > 0:
         combined_points_list.append(points_centroid_1)
         sources.extend([0] * len(points_centroid_1))
-    if len(points_centroid_2) > 0:
-        combined_points_list.append(points_centroid_2)
-        sources.extend([1] * len(points_centroid_2))
-    # --- ИСПОЛЬЗУЕМ ОТФИЛЬТРОВАННЫЕ ---
     if len(points_legacy_filtered) > 0:
         combined_points_list.append(points_legacy_filtered)
-        sources.extend([2] * len(points_legacy_filtered))
+        sources.extend([1] * len(points_legacy_filtered))  # Приоритет 1
+    if len(points_centroid_2) > 0:
+        combined_points_list.append(points_centroid_2)
+        sources.extend([2] * len(points_centroid_2))  # Приоритет 2
 
     if not combined_points_list:
         return np.zeros((0, 4), dtype=float)
@@ -651,7 +648,7 @@ def detect_spots_legacy_plus_dual_centroid(
     sources = np.array(sources)
     print(f"  Combined to {len(combined_points)} total points before final filter.")
 
-    # Сортируем: сначала по источнику (C1=0, C2=1, L=2), потом по интенсивности (убывание)
+    # Сортируем: сначала по источнику (C1=0, L=1, C2=2), потом по интенсивности (убывание)
     sort_indices = np.lexsort((-combined_points[:, 2], sources))  # -V для убывания
     sorted_combined_points = combined_points[sort_indices]
 
@@ -894,41 +891,45 @@ class SAEDLauncherFrame(ttk.Frame):
         self.dual_centroid_frame = ttk.Frame(detect_box, padding=0)
         self.dual_centroid_frame.grid_columnconfigure(1, weight=1)
 
+        # --- ИЗМЕНЕНИЕ: Порядок C1 -> L -> C2 ---
+        ttk.Label(self.dual_centroid_frame, text="Centroid Pass 1 Parameters (Original)",
+                  font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=6,
+                                                           pady=(0, 2))
+        self.spn_dc_perc_c1 = self._spin_param(self.dual_centroid_frame, 1, "C1 Percentile (%)", 99.0, from_=80.0,
+                                               to=100.0, increment=0.1, format_str="%.1f")
+        self.spn_dc_area_c1 = self._spin_param(self.dual_centroid_frame, 2, "C1 Min Area (px)", 3, from_=1, to=500,
+                                               increment=1)
+        self.spn_dc_prox_c1 = self._spin_param(self.dual_centroid_frame, 3, "C1 Proximity (px)", 4.0, from_=1.0,
+                                               to=50.0,
+                                               increment=0.5, format_str="%.1f")
+
+        ttk.Separator(self.dual_centroid_frame).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+
         ttk.Label(self.dual_centroid_frame, text="Legacy Pass Parameters", font=("TkDefaultFont", 10, "bold")).grid(
-            row=0,
+            row=5,
             column=0,
             columnspan=2,
             sticky="w",
             padx=6,
             pady=(0,
                   2))
-        self.spn_dc_perc_legacy = self._spin_param(self.dual_centroid_frame, 1, "Legacy Percentile (%)", 99.0,
+        self.spn_dc_perc_legacy = self._spin_param(self.dual_centroid_frame, 6, "Legacy Percentile (%)", 99.0,
                                                    from_=80.0, to=100.0, increment=0.1, format_str="%.1f")
-        self.spn_dc_dist_legacy = self._spin_param(self.dual_centroid_frame, 2, "Legacy Min Dist (px)", 4.0, from_=1.0,
+        self.spn_dc_dist_legacy = self._spin_param(self.dual_centroid_frame, 7, "Legacy Min Dist (px)", 4.0, from_=1.0,
                                                    to=50.0, increment=0.5, format_str="%.1f")
 
-        ttk.Separator(self.dual_centroid_frame).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 6))
-        ttk.Label(self.dual_centroid_frame, text="Centroid Pass 1 Parameters (Original)",
-                  font=("TkDefaultFont", 10, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", padx=6,
-                                                           pady=(0, 2))
-        self.spn_dc_perc_c1 = self._spin_param(self.dual_centroid_frame, 5, "C1 Percentile (%)", 99.0, from_=80.0,
-                                               to=100.0, increment=0.1, format_str="%.1f")
-        self.spn_dc_area_c1 = self._spin_param(self.dual_centroid_frame, 6, "C1 Min Area (px)", 3, from_=1, to=500,
-                                               increment=1)
-        self.spn_dc_prox_c1 = self._spin_param(self.dual_centroid_frame, 7, "C1 Proximity (px)", 4.0, from_=1.0,
-                                               to=50.0,
-                                               increment=0.5, format_str="%.1f")
-
         ttk.Separator(self.dual_centroid_frame).grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 6))
+
         ttk.Label(self.dual_centroid_frame, text="Centroid Pass 2 Parameters (Masked)",
                   font=("TkDefaultFont", 10, "bold")).grid(row=9, column=0, columnspan=2, sticky="w", padx=6,
                                                            pady=(0, 2))
         self.spn_dc_perc_c2 = self._spin_param(self.dual_centroid_frame, 10, "C2 Percentile (%)", 95.0, from_=80.0,
-                                                to=100.0, increment=0.1, format_str="%.1f")
+                                               to=100.0, increment=0.1, format_str="%.1f")
         self.spn_dc_area_c2 = self._spin_param(self.dual_centroid_frame, 11, "C2 Min Area (px)", 5, from_=1, to=500,
                                                increment=1)
         self.spn_dc_prox_c2 = self._spin_param(self.dual_centroid_frame, 12, "C2 Proximity (px)", 4.0, from_=1.0,
                                                to=50.0, increment=0.5, format_str="%.1f")
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         # <<< КОНЕЦ НОВОГО >>>
 
         # Смещаем оставшиеся элементы
@@ -1063,7 +1064,9 @@ class SAEDLauncherFrame(ttk.Frame):
                 self.dual_centroid_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
                 # Выключаем внешний spn_min_dist, т.к. все настройки внутри рамки
                 self.spn_min_dist.configure(state='readonly')
-                hint_text = "L+2C: Runs Legacy, filters vs C1 blobs, masks (L+C1), runs C2. Saves debug images."
+                # --- ИЗМЕНЕНИЕ: Обновлена подсказка ---
+                hint_text = "C1+L+C2: Runs C1, then Legacy (filtered vs C1), masks (C1+L), runs C2. Saves debug images."
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
             self.lbl_detect_hint.configure(text=hint_text)
         except tk.TclError:
@@ -1320,10 +1323,10 @@ class SAEDLauncherFrame(ttk.Frame):
                                   "mp_perc_dim": mp_perc_dim, "mp_area_dim": mp_area_dim,
                                   "proximity_threshold": min_dist}
 
-                # --- НОВОЕ: Вызов Legacy + Dual Centroid ---
+                # --- НОВОЕ: Вызов C1+L+C2 ---
                 elif "Legacy + Dual Centroid" in detect_method_choice:
-                    print(f"Using Legacy + Dual Centroid detector...")
-                    debug_mask_path = outdir / "debug_mask_L-C1.png"
+                    print(f"Using Centroid + Legacy + Centroid (C1+L+C2) detector...")
+                    debug_mask_path = outdir / "debug_mask_C1-L.png"  # Новое имя
                     # Определяем финальный фильтр
                     final_prox = min(dc_dist_legacy, dc_prox_c1, dc_prox_c2, min_dist)  # Включаем и внешний min_dist
                     print(f"  Final proximity filter distance set to: {final_prox:.2f}px")
