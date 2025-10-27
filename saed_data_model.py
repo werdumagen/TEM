@@ -224,10 +224,9 @@ class SaedDataModel:
         self.point_types = []
         for t in raw_types:
             try:
-                # Пытаемся прочитать как int (для старых форматов или если тип числовой)
                 self.point_types.append(int(t))
             except (ValueError, TypeError):
-                self.point_types.append(str(t)) # Иначе сохраняем как строку
+                self.point_types.append(str(t))
 
         self.areas = np.array([float(p.get("area", 0.0)) for p in points_list], dtype=float)
 
@@ -235,9 +234,9 @@ class SaedDataModel:
         saved_angles = [p.get("angle") for p in points_list]
         if any(a is not None for a in saved_angles):
             self.angles = np.array([a if a is not None else np.nan for a in saved_angles], dtype=float)
-        else:  # Если углов нет в JSON, инициализируем
+        else:
             self.angles = np.full(n, np.nan)
-            self.recalculate_angles(center)  # и пытаемся рассчитать
+            self.recalculate_angles(center)
 
         # Интенсивности
         if any("intensity" in p for p in points_list):
@@ -245,14 +244,14 @@ class SaedDataModel:
         else:
             self.values = sample_values_func(self.points)
 
-        # ID группы (initial_group_id) - если есть в JSON, читаем, иначе None
+        # ID группы
         self.initial_group_ids = {}
         for i, p in enumerate(points_list):
             gid = p.get("initial_group_id")
             try:
                 self.initial_group_ids[i] = int(gid) if gid is not None else None
             except (ValueError, TypeError):
-                self.initial_group_ids[i] = None # Ставим None, если не удалось прочитать как int
+                self.initial_group_ids[i] = None
 
         self._validate_consistency()
 
@@ -261,17 +260,17 @@ class SaedDataModel:
         pts_list = []
         for i, (y, x) in enumerate(self.points):
             angle = float(self.angles[i]) if i < len(self.angles) and not np.isnan(self.angles[i]) else None
-            initial_gid = self.initial_group_ids.get(i) # Получаем ID
+            initial_gid = self.initial_group_ids.get(i)
 
             point_data = {
                 "y": float(y), "x": float(x),
                 "intensity": float(self.values[i]) if i < len(self.values) else 0.0,
-                "area": int(self.areas[i]) if i < len(self.areas) else 0,  # Сохраняем area как int
+                "area": int(self.areas[i]) if i < len(self.areas) else 0,
                 "type": self.point_types[i] if i < len(self.point_types) else "unknown"
             }
             if angle is not None:
                 point_data["angle"] = angle
-            if initial_gid is not None: # Сохраняем ID, если он есть
+            if initial_gid is not None:
                 point_data["initial_group_id"] = initial_gid
             pts_list.append(point_data)
         return pts_list
@@ -283,18 +282,14 @@ class SaedDataModel:
         numeric_group_ids = set()
         max_numeric_id = -1
 
-        # Собираем все УНИКАЛЬНЫЕ initial_group_id (которые не None)
         for gid in self.initial_group_ids.values():
             if isinstance(gid, int):
                 numeric_group_ids.add(gid)
                 if gid > max_numeric_id:
                     max_numeric_id = gid
 
-        # Обновляем максимальный ID и карту цветов, если нужно
         if max_numeric_id != self._cmap_max_id or numeric_group_ids != self._numeric_color_map.keys():
             self._cmap_max_id = max_numeric_id
-            # Нормализуем ID к диапазону [0, 1] для палитры
-            # Используем max_numeric_id + 1, чтобы избежать деления на 0 и дать уникальные цвета
             divisor = max(self._cmap_max_id + 1, 1)
             self._numeric_color_map = {gid: self._colormap(gid / divisor)
                                        for gid in numeric_group_ids}
@@ -304,22 +299,20 @@ class SaedDataModel:
         if self.is_empty():
             return []
 
-        self._update_color_maps()  # Обновляем карты при необходимости
+        self._update_color_maps()
 
         colors = []
         for i, pt_type in enumerate(self.point_types):
             if isinstance(pt_type, str):
-                # Для строк используем фиксированные цвета
                 colors.append(self._string_color_map.get(pt_type, "gray"))
             elif isinstance(pt_type, int):
-                # Для числовых ТИПОВ (т.е. "другие") цвет берем по initial_group_id
                 initial_gid = self.initial_group_ids.get(i)
                 if initial_gid is not None:
                     colors.append(self._numeric_color_map.get(initial_gid, "gray"))
                 else:
-                    colors.append("gray") # Если initial_gid не найден
+                    colors.append("gray")
             else:
-                colors.append("gray") # Неизвестный тип
+                colors.append("gray")
         return colors
 
     def get_point_data_for_tooltip(self, idx: int, center: Optional[Tuple[float, float]]) -> str:
@@ -328,37 +321,32 @@ class SaedDataModel:
             return "Error: Invalid Index"
 
         y, x = self.points[idx]
-
         intensity = float(self.values[idx])
         area = float(self.areas[idx])
-
-        # Определяем строку для "Type"
         final_type = self.point_types[idx]
         if isinstance(final_type, int):
             type_str = f"Numeric ({final_type})"
         else:
             type_str = str(final_type)
-
         initial_group_id_str = str(self.initial_group_ids.get(idx, "N/A"))
-
         radius = None
         angle = float(self.angles[idx]) if not np.isnan(self.angles[idx]) else None
 
         if center:
             cy, cx = center
             radius = float(math.hypot(x - cx, y - cy))
-            if angle is None:  # Если угол не был рассчитан, считаем на лету
+            if angle is None:
                 _, angle_arr = self._calculate_pol_from(center, np.array([[y, x]]))
                 angle = float(angle_arr[0])
 
-        txt_lines = []
-        txt_lines.append(f"Radius: {radius:.1f} px" if radius is not None else "Radius: N/A (no center)")
-        txt_lines.append(f"Angle: {angle:.1f}°" if angle is not None else "Angle: N/A")
-        txt_lines.append(f"Intensity: {intensity:.1f} %")
-        txt_lines.append(f"Area: {area:.1f} px²")
-        txt_lines.append(f"Type: {type_str}") # Показываем финальный тип
-        txt_lines.append(f"Initial Group ID: {initial_group_id_str}") # Показываем исходный ID
-
+        txt_lines = [
+            f"Radius: {radius:.1f} px" if radius is not None else "Radius: N/A (no center)",
+            f"Angle: {angle:.1f}°" if angle is not None else "Angle: N/A",
+            f"Intensity: {intensity:.1f} %",
+            f"Area: {area:.1f} px²",
+            f"Type: {type_str}",
+            f"Initial Group ID: {initial_group_id_str}"
+        ]
         return "\n".join(txt_lines)
 
     def get_all_data_for_debug(self) -> List[Dict[str, Any]]:
@@ -366,18 +354,16 @@ class SaedDataModel:
         data_to_save = []
         for i in range(len(self.points)):
             y, x = self.points[i]
-            # radius = None # Радиус не храним
             angle = float(self.angles[i]) if i < len(self.angles) and not np.isnan(self.angles[i]) else None
 
             data_to_save.append({
                 "index": i,
                 "y": y,
                 "x": x,
-                # "radius_px": None, # Убрали
                 "angle_deg": angle,
                 "intensity_perc": float(self.values[i]),
                 "area_px2": float(self.areas[i]),
-                "final_type": self.point_types[i], # Сохраняем финальный тип
-                "initial_group_id": self.initial_group_ids.get(i) # Сохраняем исходный ID
+                "final_type": self.point_types[i],
+                "initial_group_id": self.initial_group_ids.get(i)
             })
         return data_to_save
