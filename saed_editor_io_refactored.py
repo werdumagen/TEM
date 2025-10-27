@@ -159,45 +159,6 @@ class EditorIO:
             "ring_select_indices": list(self.controller.ui_state.ring_select_indices),
         }
 
-    def set_state(self, state: dict):
-        """Восстанавливает состояние редактора (без типов/ID)."""
-        image_path_str = state.get("image_path")
-        if not image_path_str:
-            self.controller.clear_all(); return
-        try:
-            self.controller.image_path = Path(image_path_str).resolve()
-            if not self.controller.image_path.exists(): raise FileNotFoundError(f"Image not found: {self.controller.image_path}")
-
-            self.controller._preproc_settings = PreprocSettings.from_json(state.get("preproc_settings", {}))
-            self.controller.img_arr_raw = load_grayscale_with_preproc(self.controller.image_path, PreprocSettings(mode="raw"))
-            self.controller.img_arr_processed = load_grayscale_with_preproc(self.controller.image_path, self.controller._preproc_settings)
-            p_map, uniq_vals, uniq_perc = compute_percentile_map(self.controller.img_arr_processed)
-            self.controller._percent_map = p_map; self.controller._percent_lookup = (uniq_vals, uniq_perc)
-
-            self.controller.overlay = state.get("overlay", {})
-            self.controller.zoom_val = state.get("zoom_val", 0)
-            self.controller.view_cx = state.get("view_cx"); self.controller.view_cy = state.get("view_cy")
-            self.controller.zoom_var.set(self.controller.zoom_val)
-            self.controller.show_raw_background.set(state.get("show_raw_background", False))
-
-            # Модель применит снэпшот без типов/ID
-            data_snapshot = state.get("data_snapshot", {})
-            self.controller.model.apply_snapshot(data_snapshot)
-
-            self.controller.ui_state.measurement = state.get("measurement")
-            self.controller.ui_state.ring_select_indices = set(state.get("ring_select_indices", []))
-            self.controller.ui_state.cancel_all_interactions()
-            self.controller.ui_state.center_dragging = False; self.controller.ui_state.rect_start = None
-
-            self.controller.ensure_view_center()
-            self.controller.redraw()
-            self.controller.update_zoom_hint()
-            self.controller.set_status(f"Restored state for {self.controller.image_path.name}")
-            # УДАЛЕНО: _update_group_panel()
-
-        except FileNotFoundError as e: messagebox.showerror("Load Error", str(e)); self.controller.clear_all()
-        except Exception as e: messagebox.showerror("Load Error", f"Failed to restore state:\n{e}"); self.controller.clear_all()
-
     # --- Сохранение отладки (Упрощено) ---
 
     def save_debug_data(self, filename: str = "points_debug.json"): # Изменено имя по умолчанию
