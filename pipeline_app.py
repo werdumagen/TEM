@@ -345,7 +345,7 @@ if TYPE_CHECKING:
 else:
     try:
         from temn import SAEDLauncherFrame
-        from saed_editor_refactored import PointEditor
+        from saed_editor import PointEditor
         from fibonachi_analysis import FibonacciAnalysisFrame
     except ModuleNotFoundError:
         SAEDLauncherFrame = _import_module("temn").SAEDLauncherFrame
