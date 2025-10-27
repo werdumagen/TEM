@@ -14,13 +14,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import math
-import random # Для выбора случайной точки
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from pathlib import Path
 import json
 from typing import Optional, Dict, Any, List, Tuple, Union
-from collections import Counter, defaultdict
+from collections import Counter
 
 # Импорт специального индекса
 from saed_editor_state_ui import CENTER_AS_POINT_IDX
@@ -96,7 +95,6 @@ class EditorEventHandlers:
         """
         self.controller = controller
         self._auto_grouping_active = False
-        self._completing_groups_active = False # Флаг для достройки
 
     def connect_mpl_events(self, canvas):
         """Подключает обработчики к Matplotlib canvas."""
@@ -130,7 +128,9 @@ class EditorEventHandlers:
 
     def _cancel_all_interactions(self, *, keep_status: bool = False) -> bool:
         """Отменяет текущие UI-взаимодействия (замер, выделение)."""
+        # Логика сброса перенесена в ui_state
         cleared = self.controller.ui_state.cancel_all_interactions()
+
         cleared_drag = self.controller.ui_state.center_dragging
         self.controller.ui_state.center_dragging = False
 
@@ -139,7 +139,7 @@ class EditorEventHandlers:
         return cleared or cleared_drag
 
     # --- Методы для выбора кольцом (Ring Selection) ---
-    # ... (методы _start_ring_selection ... _average_selected_points_to_ring без изменений) ...
+
     def _start_ring_selection(self, pos_yx: tuple[float, float]) -> None:
         """Начинает режим выбора кольцом."""
         center = self.controller.get_center()
@@ -154,6 +154,7 @@ class EditorEventHandlers:
         cursor_y, cursor_x = pos_yx
         radius = math.hypot(cursor_x - center_x, cursor_y - center_y)
 
+        # Обновляем ui_state
         self.controller.ui_state.ring_select_center_yx = (center_y, center_x)
         self.controller.ui_state.ring_select_radius = max(1.0, radius)
         self.controller.ui_state.ring_select_active = True
@@ -208,8 +209,8 @@ class EditorEventHandlers:
         indices_in_ring = np.where((point_radii >= r_min) & (point_radii <= r_max))[0]
 
         ui_state.ring_select_indices = set(indices_in_ring.tolist())
-        ui_state.ring_select_active = False
-        self.controller.view.remove_ring_preview_artist(ui_state)
+        ui_state.ring_select_active = False  # Выходим из режима рисования
+        self.controller.view.remove_ring_preview_artist(ui_state)  # Передаем ui_state во view
 
         count = len(ui_state.ring_select_indices)
         if count > 0:
@@ -250,8 +251,8 @@ class EditorEventHandlers:
 
         indices = list(ui_state.ring_select_indices)
         valid_indices = [i for i in indices if 0 <= i < len(model.points)]
-        if len(valid_indices) < 1: # ИЗМЕНЕНО: Достаточно одной точки для выравнивания
-            self.controller.set_status(f"Need at least 1 valid point (found {len(valid_indices)}).")
+        if len(valid_indices) < 2:
+            self.controller.set_status(f"Need at least 2 valid points to average (found {len(valid_indices)}).")
             return
 
         self.controller.push_undo()
@@ -266,7 +267,7 @@ class EditorEventHandlers:
 
         if len(non_zero_radii) == 0:
             self.controller.set_status("Cannot average: All selected points are at the center.")
-            self.controller.pop_undo()
+            self.controller.pop_undo()  # Отменяем push_undo
             return
 
         average_radius = np.mean(non_zero_radii)
@@ -275,18 +276,21 @@ class EditorEventHandlers:
         new_dx = unit_dx * average_radius
         new_dy = unit_dy * average_radius
 
+        # --- Обновляем точки в Модели ---
         new_points_yx = np.column_stack([cy + new_dy, cx + new_dx])
         new_values = self.controller.sample_intensities(new_points_yx)
 
+        # Модель сама обновит все связанные данные (углы, etc.)
         model.update_points(valid_indices, new_points_yx, new_values, center)
+        # --- Конец обновления ---
 
         count = len(valid_indices)
         self.controller.set_status(f"Averaged {count} points to radius {average_radius:.2f} px.")
         ui_state.ring_select_indices.clear()
         self.controller.redo.clear()
         self.controller.redraw()
-    # --- КОНЕЦ МЕТОДОВ ДЛЯ КОЛЬЦА ---
 
+    # --- КОНЕЦ МЕТОДОВ ДЛЯ КОЛЬЦА ---
 
     # --- Авто-группировка ---
 
@@ -294,9 +298,6 @@ class EditorEventHandlers:
         """ Обертка для кнопки Auto-Group & Save Debug """
         if self._auto_grouping_active:
             messagebox.showwarning("Busy", "Auto-grouping is already running.")
-            return
-        if self._completing_groups_active: # Не запускать одновременно с достройкой
-            messagebox.showwarning("Busy", "Group completion is running.")
             return
         try:
             self._auto_grouping_active = True
@@ -328,6 +329,7 @@ class EditorEventHandlers:
 
         try:
             radius_tol_px = float(self.controller.spn_auto_radius_tol.get())
+            # area_tol_perc УБРАН
         except (ValueError, tk.TclError) as e:
             messagebox.showerror("Input Error", f"Invalid tolerance value entered:\n{e}")
             self.controller.set_status("Auto-grouping cancelled due to invalid input.")
@@ -343,6 +345,10 @@ class EditorEventHandlers:
         # --- Конец расчета ---
 
         sorted_indices = np.argsort(all_radii)
+
+        # --- Площади больше не используются ---
+        # all_areas = model.areas
+        # ---
 
         # Типы: сначала все "unknown"
         new_point_types: list[Union[str, int]] = ["unknown"] * len(model.points)
@@ -360,6 +366,7 @@ class EditorEventHandlers:
             if current_idx in assigned_indices: continue
             current_radius = all_radii[current_idx]
 
+            # 1. Находим точки в пределах допуска по радиусу
             potential_group_indices = []
             for j in range(i, len(sorted_indices)):
                 check_idx = sorted_indices[j]
@@ -368,8 +375,12 @@ class EditorEventHandlers:
                 if radius_diff <= radius_tol_px:
                     potential_group_indices.append(check_idx)
                 else:
+                    # Т.к. точки отсортированы по радиусу, дальше можно не смотреть
                     break
 
+            # 2. Фильтр по площади УБРАН
+
+            # 3. Назначаем ID
             if potential_group_indices:
                 initial_group_id = group_id_counter # Используем счетчик как ID
                 groups_data[initial_group_id] = potential_group_indices
@@ -402,6 +413,7 @@ class EditorEventHandlers:
         num_classified_structural = 0
         num_classified_superstructural = 0
 
+        # Проходим по группам, созданным на Этапе 1
         for initial_group_id, indices in groups_data.items():
             N = len(indices)
             final_type: Union[str, int] # Тип, который пойдет в model.point_types
@@ -414,24 +426,30 @@ class EditorEventHandlers:
                     final_type = "superstructural"
                     num_classified_superstructural += 1
                 else:
+                    # Группа не соответствует симметрии -> "другая"
                     final_type = numeric_type_id_counter
                     numeric_type_id_counter += 1
             else:
+                # Симметрия не определена -> все "другие"
                 final_type = numeric_type_id_counter
                 numeric_type_id_counter += 1
 
+            # Присваиваем финальный ТИП всем точкам этой ИСХОДНОЙ группы
             for idx in indices:
                 new_point_types[idx] = final_type
                 # new_initial_group_ids[idx] уже присвоен на Этапе 1
 
-        num_numeric_types = numeric_type_id_counter
+        num_numeric_types = numeric_type_id_counter # Сколько числовых ТИПОВ было присвоено
         print(
             f"Pass 2 finished. Classified: {num_classified_structural} structural, {num_classified_superstructural} superstructural. Assigned {num_numeric_types} numeric types."
         )
 
         # --- Шаг 4: Обновляем Модель, Сохранение и UI ---
-        model.point_types = new_point_types
-        model.initial_group_ids = new_initial_group_ids
+
+        # *** Ключевое изменение: Обновляем модель ***
+        model.point_types = new_point_types # Содержит "structural", "superstructural" или int (numeric type id)
+        model.initial_group_ids = new_initial_group_ids # Содержит int (group id from pass 1)
+        # *** Конец ***
 
         # --- Обновляем панель групп ---
         self.controller._update_group_panel()
@@ -449,195 +467,6 @@ class EditorEventHandlers:
         # Сохраняем отладочный файл (через controller.io)
         self.controller.io.save_debug_data(filename="auto_grouped_points_debug.json")
 
-    # --- НОВОЕ: Достройка конкретной группы (вызывается из контекстного меню) ---
-
-    def complete_specific_group_wrapper(self, group_id: int):
-        """Обертка для кнопки 'Complete Groups'."""
-        if self._completing_groups_active:
-            messagebox.showwarning("Busy", "Group completion is already running.")
-            return
-        if self._auto_grouping_active: # Не запускать одновременно с группировкой
-            messagebox.showwarning("Busy", "Auto-grouping is running.")
-            return
-        try:
-            self._completing_groups_active = True
-            # Можно временно деактивировать Treeview или показать статус
-            self.controller.set_status(f"Completing group {group_id}...")
-            self.controller.update_idletasks()
-            self._complete_specific_group(group_id)
-        except Exception as e:
-            messagebox.showerror("Group Completion Error", f"An error occurred while completing group {group_id}:\n{e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            self._completing_groups_active = False
-            # Возвращаем статус по умолчанию или обновляем
-            # self.controller.set_status(self.controller.default_status)
-
-    def _complete_specific_group(self, group_id: int):
-        """Достраивает точки в конкретной группе по ID, используя вращение."""
-        model = self.controller.model
-        center = self.controller.get_center()
-
-        if model.is_empty() or center is None:
-            self.controller.set_status("Cannot complete: No points or center.")
-            return
-
-        # 1. Находим индексы точек для данной группы ID
-        point_indices = [idx for idx, gid in model.initial_group_ids.items() if gid == group_id]
-        if not point_indices:
-            self.controller.set_status(f"Cannot complete: Group ID {group_id} not found.")
-            return
-
-        # 2. Определяем симметрию (N)
-        symmetry_N = self.controller.selected_symmetry_var.get()
-        if symmetry_N <= 0:
-             symmetry_N = self.controller._calculate_initial_symmetry()
-        if symmetry_N <= 1:
-             self.controller.set_status(f"Cannot complete: Symmetry (N={symmetry_N}) must be > 1.")
-             return
-
-        cy, cx = center
-        angle_step = 360.0 / symmetry_N
-        # Уменьшим допуск, т.к. мы активно ищем совпадения
-        angle_tolerance = angle_step / 10.0 # Например, 1/10 шага
-
-        # 3. Выравниваем радиусы
-        group_points = model.points[point_indices]
-        group_radii, group_angles_deg = pol_from(center, group_points)
-        if len(group_radii) == 0: return
-        avg_radius = np.mean(group_radii)
-
-        if avg_radius < 1e-6:
-             self.controller.set_status(f"Cannot complete group {group_id}: Points are at the center.")
-             return
-
-        # Применяем усредненный радиус к существующим точкам
-        self.controller.push_undo() # Сохраняем состояние ДО изменений
-        moved_count = 0
-        if len(point_indices) > 0:
-             # Используем существующий метод _average_selected_points_to_ring,
-             # но сначала надо выделить эти точки в ui_state
-             original_selection = self.controller.ui_state.ring_select_indices.copy()
-             self.controller.ui_state.ring_select_indices = set(point_indices)
-             try:
-                  self._average_selected_points_to_ring() # Этот метод сам сделает push_undo, redraw и т.д.
-                  moved_count = len(point_indices)
-                  # Важно: _average_selected_points_to_ring сбрасывает выделение,
-                  # восстанавливать его не нужно для дальнейшей логики.
-             except Exception as avg_err:
-                  print(f"Error averaging radii for group {group_id}: {avg_err}")
-                  self.controller.pop_undo() # Отменяем undo, если усреднение не удалось
-                  self.controller.ui_state.ring_select_indices = original_selection # Восстанавливаем выделение
-                  self.controller.set_status(f"Error averaging radii for group {group_id}.")
-                  return
-        else:
-             self.controller.pop_undo() # Нет точек для усреднения, отменяем undo
-             self.controller.set_status(f"No points found for group {group_id} to average.")
-             return
-
-
-        # 4. Выбираем случайную точку и ее угол
-        # Важно: после усреднения индексы могли измениться, если были удалены точки!
-        # Поэтому получаем актуальные индексы и углы СНОВА
-        current_point_indices = [idx for idx, gid in model.initial_group_ids.items() if gid == group_id]
-        if not current_point_indices:
-            self.controller.set_status(f"Group {group_id} disappeared after averaging?")
-            return # Странная ситуация, лучше прерваться
-
-        # Обновляем углы после усреднения
-        model.recalculate_angles(center)
-        current_angles_deg = model.angles[current_point_indices]
-
-        random_idx_in_list = random.randrange(len(current_point_indices))
-        # reference_point_index = current_point_indices[random_idx_in_list] # Индекс в model
-        reference_angle_deg = current_angles_deg[random_idx_in_list]
-
-        # 5. Генерируем N целевых углов на основе опорного
-        target_angles_deg = [(reference_angle_deg + i * angle_step) % 360 for i in range(symmetry_N)]
-
-        # 6. Добавляем точки для недостающих углов
-        points_added_count = 0
-        group_type = model.point_types[current_point_indices[0]] # Тип группы
-
-        for target_angle in target_angles_deg:
-            angle_diffs = np.abs(current_angles_deg - target_angle)
-            angle_diffs = np.minimum(angle_diffs, 360.0 - angle_diffs) # Учитываем переход 0/360
-
-            # Проверяем, есть ли уже точка близко к этому углу
-            if np.any(angle_diffs <= angle_tolerance):
-                 continue # Угол уже занят, пропускаем
-
-            # Добавляем новую точку
-            angle_rad = math.radians(target_angle)
-            new_x = cx + avg_radius * math.cos(angle_rad)
-            new_y = cy + avg_radius * math.sin(angle_rad)
-            sampled_value = self.controller.sample_intensities(np.array([[new_y, new_x]]))[0]
-
-            model.add_point(new_y, new_x, sampled_value, center,
-                            area=0.0,
-                            point_type=group_type, # Используем тип группы
-                            initial_id=group_id) # Используем ID группы
-            points_added_count += 1
-            # Добавляем свежевычисленный угол в current_angles_deg для следующих проверок
-            current_angles_deg = np.append(current_angles_deg, target_angle)
-
-        # 7. Финализация
-        if points_added_count > 0:
-            # self.controller.redo.clear() # Не нужно, т.к. _average_selected_points_to_ring уже очистил
-            self.controller._update_group_panel() # Обновляем правую панель
-            self.controller.redraw()
-            self.controller.set_status(f"Completed group {group_id}. Added {points_added_count} points.")
-            print(f"Added {points_added_count} points to complete group {group_id}.")
-        elif moved_count > 0: # Только радиусы выровняли
-             self.controller.set_status(f"Aligned radii for group {group_id}. No points added.")
-             print(f"Aligned radii for group {group_id}.")
-        else: # Ничего не сделали
-            # self.controller.pop_undo() # Undo уже был отменен ранее, если усреднение не удалось
-            self.controller.set_status(f"Group {group_id} seems complete or could not be processed.")
-            print(f"No points added or moved for group {group_id}.")
-
-    # --- НОВОЕ: Удаление группы ---
-
-    def delete_group_wrapper(self, group_id: int):
-        """Обертка для удаления группы."""
-        try:
-            self._delete_group(group_id)
-        except Exception as e:
-            messagebox.showerror("Delete Group Error", f"Failed to delete group {group_id}:\n{e}")
-
-    def _delete_group(self, group_id: int):
-        """Удаляет все точки с указанным initial_group_id."""
-        model = self.controller.model
-        indices_to_delete = [idx for idx, gid in model.initial_group_ids.items() if gid == group_id]
-
-        if not indices_to_delete:
-            self.controller.set_status(f"No points found for group ID {group_id}.")
-            return
-
-        self.controller.push_undo()
-
-        # Обновляем выделение ДО удаления
-        self.controller.ui_state.update_ring_indices_after_delete(indices_to_delete)
-        if self.controller.ui_state.ring_select_indices: # Если выделение было из этой группы, чистим
-             current_selection = self.controller.ui_state.ring_select_indices.copy()
-             for idx in indices_to_delete:
-                  if idx in current_selection:
-                       self.controller.ui_state.ring_select_indices.clear()
-                       break
-
-        # Удаляем точки
-        model.delete_points_by_indices(indices_to_delete)
-
-        self.controller.redo.clear()
-        self.controller._update_group_panel() # Обновляем панель
-        self.controller.redraw()
-        self.controller.set_status(f"Deleted {len(indices_to_delete)} points from group ID {group_id}.")
-        print(f"Deleted group {group_id}.")
-
-    # --- КОНЕЦ Удаления ---
-
-
     # ---------- Mouse / Keyboard events ----------
 
     def _on_key(self, e):
@@ -646,7 +475,7 @@ class EditorEventHandlers:
         if e.key == "escape":
             cleared_tooltip = ui_state.tooltip is not None
             if ui_state.tooltip:
-                ui_state.clear_tooltip(self.controller.view)
+                ui_state.clear_tooltip(self.controller.view)  # Передаем view для clear
 
             cleared_interactions = self._cancel_all_interactions()
             if cleared_interactions:
@@ -689,7 +518,7 @@ class EditorEventHandlers:
             idx = model.find_nearest_point_idx(pos_yx[0], pos_yx[1], pix_tol=8)
             if idx is not None:
                 center = self.controller.get_center()
-                ui_state.show_tooltip_for_idx(idx, model, center, view)
+                ui_state.show_tooltip_for_idx(idx, model, center, view)  # Передаем view
             return
 
         # LMB или RMB
@@ -724,7 +553,9 @@ class EditorEventHandlers:
             if is_shift_pressed and is_left_click and not ui_state.ring_select_indices:
                 if pos_yx is not None:
                     if self._cancel_all_interactions(): self.controller.redraw()
+                    # self.controller.push_undo() # Undo push теперь в _on_up
                     ui_state.rect_start = pos_yx
+                    # self.controller.redo.clear()
                     self.controller.set_status("Drag to select points for deletion.")
                 return
 
@@ -778,11 +609,17 @@ class EditorEventHandlers:
                     redraw_needed |= ui_state.clear_measurement_result(view)
                     if redraw_needed: self.controller.redraw()
 
-                    # --- Добавление точки ---
+                    # --- Добавление точки (через Модель) ---
                     self.controller.push_undo()
                     sampled_value = self.controller.sample_intensities(np.array([[y, x]]))[0]
-                    model.add_point(y, x, sampled_value, center) # ID будет None по умолчанию
-                    self.controller._update_group_panel() # Обновляем панель
+
+                    # Модель сама добавит "unknown", и None ID
+                    model.add_point(y, x, sampled_value, center)
+
+                    # --- Обновляем панель (добавление 1 точки неэффективно, но необходимо для sync) ---
+                    self.controller._update_group_panel()
+                    # ---
+
                     self.controller.redo.clear()
                     self.controller.set_status(f"Added point at ({x:.1f}, {y:.1f}).")
                     self.controller.redraw()
@@ -792,16 +629,28 @@ class EditorEventHandlers:
                 if hit_point_idx is not None:  # Удаление точки
                     if self._cancel_all_interactions(): self.controller.redraw()
                     self.controller.push_undo()
+
                     was_selected = hit_point_idx in ui_state.ring_select_indices
                     if was_selected:
                         ui_state.ring_select_indices.remove(hit_point_idx)
+
                     if hit_point_idx >= len(model.points):
                         self.controller.set_status("Error: Point index out of bounds during deletion.")
-                        self.controller.pop_undo()
+                        self.controller.pop_undo()  # Отменяем push_undo
                         return
+
+                    # --- Удаление точки (через Модель) ---
+                    # Обновляем индексы ВЫДЕЛЕННЫХ точек
                     ui_state.update_ring_indices_after_delete([hit_point_idx])
+
+                    # Модель сама удалит всё (point, value, area, type, angle, ...)
                     model.delete_points_by_indices([hit_point_idx])
-                    self.controller._update_group_panel() # Обновляем панель
+                    # --- КОНЕЦ Удаления ---
+
+                    # --- Обновляем панель (удаление 1 точки неэффективно, но необходимо для sync) ---
+                    self.controller._update_group_panel()
+                    # ---
+
                     self.controller.redo.clear()
                     self.controller.set_status("Deleted point.")
                     self.controller.redraw()
@@ -815,22 +664,30 @@ class EditorEventHandlers:
         ui_state = self.controller.ui_state
         view = self.controller.view
 
+        # Перетаскивание центра
         if ui_state.center_dragging and pos_yx is not None and ui_state.measure_start_idx is None:
             y, x = pos_yx
-            self.controller.set_center(x, y)
+            self.controller.set_center(x, y)  # Обновляем центр в контроллере
+
+            # --- Пересчитываем углы в Модели ---
             self.controller.model.recalculate_angles((y, x))
+            # --- КОНЕЦ ---
+
             self.controller.redraw()
             self.controller.set_status("Dragging center...")
             return
 
+        # Обновление превью кольца
         if ui_state.ring_select_active:
             self._update_ring_preview(pos_yx)
             return
 
+        # Обновление превью замера
         if ui_state.measure_start_idx is not None:
-            ui_state.update_measurement_preview(pos_yx, view)
+            ui_state.update_measurement_preview(pos_yx, view)  # Передаем view
             return
 
+        # Обновление прямоугольного выделения
         if ui_state.rect_start and e.xdata is not None and e.ydata is not None:
             view.draw_rect_preview(ui_state, (e.ydata, e.xdata))
             return
@@ -840,42 +697,61 @@ class EditorEventHandlers:
         model = self.controller.model
         view = self.controller.view
 
+        # Отпускание после перетаскивания центра
         if ui_state.center_dragging:
             ui_state.center_dragging = False
+            # Пересчет углов уже произошел в _on_move
             if ui_state.measure_start_idx is None:
-                self._apply_center_filters()
+                self._apply_center_filters()  # Применяем dead/search radius
+
             center = self.controller.get_center()
             if center:
                 self.controller.view_cx = center[1]
                 self.controller.view_cy = center[0]
+
             self.controller.redraw()
             self.controller.set_status("Center position updated.")
             return
 
-        if ui_state.rect_start and e.button == 1:
+        # Отпускание после прямоугольного выделения
+        if ui_state.rect_start and e.button == 1:  # Только для ЛКМ
             y0, x0 = ui_state.rect_start
             num_to_delete = 0
+
             if e.ydata is not None and e.xdata is not None:
                 y1, x1 = e.ydata, e.xdata
                 ymin, ymax = sorted([y0, y1])
                 xmin, xmax = sorted([x0, x1])
+
                 mask_in_rect = (
                         (model.points[:, 0] >= ymin) & (model.points[:, 0] <= ymax) &
                         (model.points[:, 1] >= xmin) & (model.points[:, 1] <= xmax)
                 )
                 num_to_delete = np.count_nonzero(mask_in_rect)
+
                 if num_to_delete > 0:
-                    self.controller.push_undo()
+                    self.controller.push_undo()  # Сохраняем состояние ДО удаления
                     indices_to_delete = np.where(mask_in_rect)[0]
+
+                    # Обновляем selected ring indices ПЕРЕД удалением
                     ui_state.update_ring_indices_after_delete(indices_to_delete)
-                    model.delete_points_by_mask(~mask_in_rect)
-                    self.controller._update_group_panel() # Обновляем панель
+
+                    # --- Удаляем точки через Модель ---
+                    model.delete_points_by_mask(~mask_in_rect) # ИСПОЛЬЗУЕМ ~mask_in_rect (True=сохранить)
+                    # --- КОНЕЦ ---
+
+                    # --- Обновляем панель групп ---
+                    self.controller._update_group_panel()
+                    # ---
+
                     self.controller.redo.clear()
                     self.controller.set_status(f"Deleted {num_to_delete} points in selection.")
                 else:
                     self.controller.set_status("Rectangular selection finished, no points deleted.")
+
             ui_state.rect_start = None
             view.remove_rect_artist(ui_state)
+
             if num_to_delete > 0:
                 self.controller.redraw()
             return
@@ -883,8 +759,11 @@ class EditorEventHandlers:
     def _on_scroll(self, event):
         """Обработка зума колесом мыши."""
         if event.xdata is None or event.ydata is None: return
+
+        # Обновляем центр зума
         self.controller.view_cx = event.xdata
         self.controller.view_cy = event.ydata
+
         zoom_step = 5
         if event.button == 'up':
             new_zoom_val = self.controller.zoom_val + zoom_step
@@ -892,30 +771,50 @@ class EditorEventHandlers:
             new_zoom_val = self.controller.zoom_val - zoom_step
         else:
             return
+
         new_zoom_val = max(0, min(100, new_zoom_val))
+
+        # Вызываем стандартизированный обработчик
         self.on_zoom_change_tk(new_zoom_val)
 
     def _apply_center_filters(self):
         """Применяет dead_radius и search_radius к точкам."""
         model = self.controller.model
         if model.is_empty(): return
+
         center = self.controller.get_center()
         if not center: return
+
         cy, cx = center
         dead = self.controller.get_dead_radius()
         sr = self.controller.get_search_radius()
+
         if dead <= 0 and sr <= 0: return
+
+        # Рассчитываем радиусы (углы не нужны)
         r = np.hypot(model.points[:, 1] - cx, model.points[:, 0] - cy)
+
         mask_keep = np.ones(len(model.points), dtype=bool)
         if dead > 0: mask_keep &= (r >= dead)
         if sr > 0: mask_keep &= (r <= sr)
+
         num_deleted = np.count_nonzero(~mask_keep)
+
         if num_deleted > 0:
-            self.controller.push_undo()
+            self.controller.push_undo()  # Сохраняем до удаления
             indices_to_delete = np.where(~mask_keep)[0]
+
+            # Обновляем ring_select_indices ПЕРЕД удалением
             self.controller.ui_state.update_ring_indices_after_delete(indices_to_delete)
-            model.delete_points_by_mask(mask_keep)
-            self.controller._update_group_panel() # Обновляем панель
+
+            # --- Удаляем точки через Модель ---
+            model.delete_points_by_mask(mask_keep) # Передаем mask_keep (True=сохранить)
+            # --- КОНЕЦ ---
+
+            # --- Обновляем панель групп ---
+            self.controller._update_group_panel()
+            # ---
+
             self.controller.set_status(f"Applied center filters, removed {num_deleted} points.")
             self.controller.redo.clear()
-            # self.controller.redraw() # Не нужно, вызовется из _on_up
+            # self.controller.redraw() # Redraw будет вызван в _on_up

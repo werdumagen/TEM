@@ -17,8 +17,6 @@ SAED Editor + Analysis (Refactored)
 - Добавлена правая панель "Group Inspector".
 - Убран параметр площади из авто-группировки.
 - Изменена логика цвета и отображения групп.
-- Функция достройки групп перенесена в контекстное меню панели групп.
-- Добавлено удаление группы через контекстное меню.
 """
 import sys, json, subprocess
 from pathlib import Path
@@ -101,8 +99,6 @@ class PointEditor(tk.Frame):
         # --- UI для Group Inspector ---
         self.group_tree: Optional[ttk.Treeview] = None
         self.group_tree_map: Dict[str, List[int]] = {} # Map item_id -> list of indices
-        self.group_context_menu: Optional[tk.Menu] = None # Контекстное меню
-        self._context_menu_group_id: Optional[int] = None # ID группы для контекстного меню
 
         # --- Строим UI ---
         self._build_ui() # Создает self.ax, self.canvas
@@ -124,15 +120,12 @@ class PointEditor(tk.Frame):
         self.btn_save.config(command=self.io.save_points_wrapper)
         self.btn_analysis.config(command=self.io.start_analysis_wrapper)
         self.btn_auto_group.config(command=self.handlers.auto_group_and_save_wrapper)
-        # Кнопка btn_complete_groups УБРАНА
         # --- Подключаем обработчик изменения симметрии ---
         self.cmb_symmetry.bind("<<ComboboxSelected>>", self._on_symmetry_change)
-        # --- Подключаем обработчики для панели групп ---
+        # --- Подключаем обработчик выбора группы ---
         if self.group_tree:
             self.group_tree.bind("<<TreeviewSelect>>", self._on_group_select)
-            # --- НОВОЕ: Привязка правого клика ---
-            self.group_tree.bind("<Button-3>", self._show_group_context_menu)
-            # ---
+        # ---
 
         # --- Привязки клавиш ---
         self.bind_all('<Control-z>', self._undo_btn)
@@ -189,13 +182,17 @@ class PointEditor(tk.Frame):
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vscroll.pack(side=tk.RIGHT, fill=tk.Y)
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # Убираем bind_all для MouseWheel здесь, т.к. он будет мешать matplotlib
+        # canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
         # --- Привязка колеса только к левому канвасу ---
         def _on_left_scroll(event):
+             # Проверяем, находится ли курсор над левым канвасом или его дочерними элементами
              widget_under_cursor = event.widget.winfo_containing(event.x_root, event.y_root)
              if widget_under_cursor is canvas or widget_under_cursor.master is scrollable_frame:
                   canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
         canvas.bind("<MouseWheel>", _on_left_scroll)
-        scrollable_frame.bind("<MouseWheel>", _on_left_scroll)
+        scrollable_frame.bind("<MouseWheel>", _on_left_scroll) # Для дочерних элементов
         # ---
 
         controls = ttk.Frame(scrollable_frame)
@@ -246,11 +243,9 @@ class PointEditor(tk.Frame):
             spin.grid(row=row, column=1, sticky="ew", pady=2)
             return spin
         self.spn_auto_radius_tol = _spin_param(auto_group, 0, "Radius Tol (px)", 3.0, from_=0.1, to=50.0, increment=0.1, format="%.1f")
-        # Кнопка группировки (теперь одна)
+        # self.spn_auto_area_tol УБРАН
         self.btn_auto_group = ttk.Button(auto_group, text="Auto-Group & Save Debug") # command= уст-ся в __init__
-        self.btn_auto_group.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0)) # Занимает всю ширину
-
-        # Кнопка btn_complete_groups УБРАНА
+        self.btn_auto_group.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0)) # Изменена строка на 1
 
         # --- Symmetry Panel ---
         ttk.Separator(controls, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 10))
@@ -286,7 +281,7 @@ class PointEditor(tk.Frame):
 
         # --- Help Panel ---
         self.help_panel = ttk.LabelFrame(scrollable_frame, text="Hints", padding=(16, 12, 16, 12))
-        # ... (Обновленный текст подсказок) ...
+        # ... (текст подсказок БЕЗ Area Tol) ...
         help_text = (
             "Ctrl+Z / Ctrl+Y — Undo/Redo actions\n"
             "Ctrl+S — Save current session (if in app)\n"
@@ -304,20 +299,17 @@ class PointEditor(tk.Frame):
             "Enter (with points selected) — average selected points\n\n"
             "Shift + LMB Drag (no points selected) — rectangular delete\n\n"
             "Auto Ring Grouping:\n"
-            " - Groups points by Radius Tolerance.\n"
-            " - Classifies groups based on Dominant Symmetry.\n"
+            " - Groups points by Radius Tolerance.\n" # Убрано Area
+            " - Classifies groups based on Dominant Symmetry (calculated automatically).\n"
             " - Assigns Numeric IDs to other groups.\n"
             " - Saves results & debug data to output folder.\n\n"
             "Symmetry Panel:\n"
             " - Shows automatically detected symmetry.\n"
             " - Allows selecting a specific fold symmetry (0 = Auto/None).\n\n"
-            "Group Inspector:\n"
+            "Group Inspector:\n" # Новая подсказка
             " - Lists all point groups found by Auto-Grouping.\n"
             " - Click a group to highlight its points on the canvas.\n"
-            " - Press Enter to average highlighted points.\n"
-            " - Right-Click a group for options:\n" # Новая подсказка
-            "   * Complete Group: Adds missing points based on symmetry.\n"
-            "   * Delete Group: Removes all points in the selected group."
+            " - Press Enter to average highlighted points."
         )
         ttk.Label(self.help_panel, text=help_text, justify="left", wraplength=280).pack(fill=tk.X)
         self._help_visible = False
@@ -345,7 +337,7 @@ class PointEditor(tk.Frame):
         self.canvas = FigureCanvasTkAgg(self.fig, master=canvas_frame) # Сохраняем canvas
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
-        # --- Правая Панель (Group Inspector) ---
+        # --- НОВАЯ Правая Панель (Group Inspector) ---
         group_panel_host = ttk.Frame(self, padding=(0, 16, 16, 16))
         group_panel_host.grid(row=0, column=2, sticky="nsew")
         group_panel_host.rowconfigure(0, weight=1)
@@ -374,19 +366,7 @@ class PointEditor(tk.Frame):
 
         self.group_tree.grid(row=0, column=0, sticky="nsew")
         tree_scroll.grid(row=0, column=1, sticky="ns")
-        # --- КОНЕЦ ПАНЕЛИ ГРУПП ---
-
-        # --- НОВОЕ: Создание контекстного меню ---
-        self.group_context_menu = tk.Menu(self, tearoff=0)
-        self.group_context_menu.add_command(
-            label="Complete this Group (Rotate)",
-            command=self._complete_selected_group_wrapper
-        )
-        self.group_context_menu.add_command(
-            label="Delete this Group",
-            command=self._delete_selected_group_wrapper
-        )
-        # ---
+        # --- КОНЕЦ НОВОЙ ПАНЕЛИ ---
 
 
     # ---------- Управление Контроллером ----------
@@ -468,6 +448,7 @@ class PointEditor(tk.Frame):
             selected_sym = self.selected_symmetry_var.get()
             self.set_status(f"Symmetry override set to: {selected_sym}-fold" if selected_sym > 0 else "Symmetry override: Auto/None")
             # Можно добавить сюда логику, если нужно что-то пересчитать при изменении
+            # Например, перерисовать точки другим цветом или подготовиться к авто-группировке
             # self.redraw() # Перерисовка, если нужно визуальное изменение
         except tk.TclError:
             pass # Ignore potential errors during widget initialization/destruction
@@ -563,61 +544,7 @@ class PointEditor(tk.Frame):
             print(f"Error handling group selection: {e}")
             self.ui_state.ring_select_indices.clear()
             self.redraw()
-
-    # --- НОВОЕ: Показ контекстного меню ---
-    def _show_group_context_menu(self, event):
-        """Показывает контекстное меню для выбранной группы."""
-        if not self.group_tree or not self.group_context_menu:
-            return
-
-        # Определяем элемент под курсором
-        iid = self.group_tree.identify_row(event.y)
-        if not iid: # Клик мимо строк
-            return
-
-        # Выделяем строку под курсором (если еще не выделена)
-        if iid not in self.group_tree.selection():
-             self.group_tree.selection_set(iid)
-             # _on_group_select будет вызван автоматически, обновит выделение на холсте
-
-        # Получаем ID группы из выбранного элемента
-        try:
-            values = self.group_tree.item(iid, 'values')
-            group_id = int(values[0]) # ID группы - первое значение
-            self._context_menu_group_id = group_id # Сохраняем ID для команд меню
-
-            # Показываем меню
-            self.group_context_menu.tk_popup(event.x_root, event.y_root)
-
-        except (ValueError, IndexError, tk.TclError) as e:
-            print(f"Error showing context menu: {e}")
-            self._context_menu_group_id = None
-
-    # --- НОВОЕ: Обертки для команд контекстного меню ---
-    def _complete_selected_group_wrapper(self):
-        """Вызывает достройку для группы из контекстного меню."""
-        if self.handlers and self._context_menu_group_id is not None:
-            group_id = self._context_menu_group_id
-            self._context_menu_group_id = None # Сбрасываем после использования
-            self.handlers.complete_specific_group_wrapper(group_id)
-        else:
-            messagebox.showerror("Error", "Could not complete group: Handlers or group ID not available.")
-
-    def _delete_selected_group_wrapper(self):
-        """Вызывает удаление для группы из контекстного меню."""
-        if self.handlers and self._context_menu_group_id is not None:
-            group_id = self._context_menu_group_id
-            self._context_menu_group_id = None # Сбрасываем после использования
-             # Добавим подтверждение
-            if messagebox.askyesno("Delete Group", f"Are you sure you want to delete all points in group ID {group_id}?"):
-                self.handlers.delete_group_wrapper(group_id)
-        else:
-            messagebox.showerror("Error", "Could not delete group: Handlers or group ID not available.")
-    # ---
-
-
-    # --- Обертка для кнопки "Complete Groups" (УДАЛЕНА) ---
-    # def _complete_symmetric_groups_wrapper(self): ...
+    # --- КОНЕЦ МЕТОДОВ Group Inspector ---
 
 
     # ---------- Управление состоянием (Undo/Redo) ----------
@@ -808,6 +735,7 @@ if __name__ == "__main__":
     try:
         import preproc
         import percentile_utils
+        # Проверим импорт scipy для симметрии (нужен для cluster_rings -> find_peaks)
         import scipy.signal
     except ImportError as e:
         print(f"ERROR: Could not import required module: {e}")
