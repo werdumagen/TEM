@@ -86,6 +86,7 @@ def _get_peaks_from_template_image(image_path: Path) -> Tuple[Optional[np.ndarra
 
 
 # <<< НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ (вне класса) >>>
+# <<< НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ (вне класса) >>>
 def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
                         experimental_pts_centered_polar: np.ndarray,
                         num_bins: int = 360) -> Tuple[float, float]:
@@ -97,7 +98,7 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     # 1. Поиск Масштаба (S)
     # Используем медиану радиусов N ближайших к центру точек
     N_FOR_SCALE = min(20, len(template_pts_centered_polar), len(experimental_pts_centered_polar))
-    if N_FOR_SCALE < 2: return 1.0, 0.0  # Недостаточно точек
+    if N_FOR_SCALE < 2: return 1.0, 0.0 # Недостаточно точек
 
     # [:, 0] это радиусы
     template_radii = np.sort(template_pts_centered_polar[:, 0])
@@ -105,11 +106,20 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
 
     # Пропускаем индекс 0 (может быть центральная точка с r=0)
     # И берем только те, что > 0
-    median_template_r = np.median(template_radii[template_radii > 1e-6][:N_FOR_SCALE])
-    median_exp_r = np.median(exp_radii[exp_radii > 1e-6][:N_FOR_SCALE])
+    valid_template_radii = template_radii[template_radii > 1e-6]
+    valid_exp_radii = exp_radii[exp_radii > 1e-6]
 
-    if median_template_r < 1e-6 or median_exp_r < 1e-6 or not np.isfinite(median_template_r) or not np.isfinite(
-            median_exp_r):
+    # Проверяем, достаточно ли точек после фильтрации
+    if len(valid_template_radii) < N_FOR_SCALE or len(valid_exp_radii) < N_FOR_SCALE:
+         # Если точек мало, используем все что есть (но не менее 1)
+         N_FOR_SCALE = max(1, min(len(valid_template_radii), len(valid_exp_radii)))
+         if N_FOR_SCALE == 0: return 1.0, 0.0 # Совсем нет точек > 0
+
+    median_template_r = np.median(valid_template_radii[:N_FOR_SCALE])
+    median_exp_r = np.median(valid_exp_radii[:N_FOR_SCALE])
+
+
+    if median_template_r < 1e-6 or median_exp_r < 1e-6 or not np.isfinite(median_template_r) or not np.isfinite(median_exp_r):
         scale = 1.0
     else:
         scale = median_exp_r / median_template_r
@@ -128,51 +138,69 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     valid_exp_radii = exp_radii[exp_radii > 1e-6]
     if len(valid_exp_radii) == 0: return scale, 0.0
 
-    max_r_from_exp = valid_exp_radii[min(len(valid_exp_radii) - 1, 50)]
+    max_r_idx = min(len(valid_exp_radii)-1, 50)
+    max_r_from_exp = valid_exp_radii[max_r_idx]
 
-    template_set = scaled_template_polar[
-        (scaled_template_polar[:, 0] < (max_r_from_exp * 1.5)) & (scaled_template_polar[:, 0] > 1e-6)]
-    exp_set = experimental_pts_centered_polar[(experimental_pts_centered_polar[:, 0] < (max_r_from_exp * 1.5)) & (
-                experimental_pts_centered_polar[:, 0] > 1e-6)]
 
-    if len(template_set) == 0 or len(exp_set) == 0:
+    template_set = scaled_template_polar[(scaled_template_polar[:, 0] < (max_r_from_exp * 1.5)) & (scaled_template_polar[:, 0] > 1e-6)]
+    exp_set = experimental_pts_centered_polar[(experimental_pts_centered_polar[:, 0] < (max_r_from_exp * 1.5)) & (experimental_pts_centered_polar[:, 0] > 1e-6)]
+
+    # <<< ИСПРАВЛЕНИЕ: Получаем размер exp_set ДО цикла >>>
+    exp_set_size = len(exp_set)
+
+    if len(template_set) == 0 or exp_set_size == 0:
         return scale, 0.0
 
     histogram = np.zeros((num_bins,))
     bin_width = 360.0 / num_bins
 
     # Допуск по радиусу для сопоставления
-    radius_tolerance = max(4.0, 0.05 * median_exp_r)  # 4 пикселя или 5%
+    radius_tolerance = max(4.0, 0.05 * median_exp_r) # 4 пикселя или 5%
 
     if cKDTree is None: raise RuntimeError("Scipy (cKDTree) не найден.")
 
     # Строим k-d tree из экспериментальных точек (r, a)
     tree_exp = cKDTree(exp_set)
+    tree_template = cKDTree(template_set) # <<< Строим дерево и для шаблона
+
     # Ищем пары для каждой точки шаблона
     # query_ball_tree находит все пары в радиусе (Евклидово)
-    pairs = tree_exp.query_ball_tree(cKDTree(template_set), r=radius_tolerance)
+    pairs = tree_exp.query_ball_tree(tree_template, r=radius_tolerance) # <<< Используем оба дерева
 
-    for i, exp_indices in enumerate(pairs):  # i = индекс точки шаблона
+    for i, exp_indices in enumerate(pairs): # i = индекс точки шаблона
         if not exp_indices:
+            continue
+
+        # Проверяем валидность i для template_set (на всякий случай)
+        if i < 0 or i >= len(template_set):
+            # print(f"!!! WARNING: Invalid template index {i} from query_ball_tree pairs!")
             continue
 
         t_r, t_a = template_set[i]
 
-        for j in exp_indices:  # j = индекс точки эксперимента
-            e_r, e_a = exp_set[j]
+        for j in exp_indices: # j = индекс точки эксперимента
+
+            # <<< --- ВОТ ИСПРАВЛЕНИЕ --- >>>
+            # Явно проверяем, что индекс j валиден для exp_set
+            if j < 0 or j >= exp_set_size:
+                # print(f"!!! WARNING: Invalid index {j} returned by query_ball_tree for exp_set size {exp_set_size}. Skipping.")
+                continue # Пропускаем этот невалидный индекс
+            # <<< --- КОНЕЦ ИСПРАВЛЕНИЯ --- >>>
+
+            e_r, e_a = exp_set[j] # Теперь доступ должен быть безопасным
 
             # (Допуск по радиусу уже проверен k-d tree)
             angle_diff = (e_a - t_a + 360) % 360
             bin_index = int(angle_diff / bin_width)
             if 0 <= bin_index < num_bins:
-                histogram[bin_index] += 1  # (radius_tolerance - abs(e_r - t_r)) # Взвешенный голос
+                histogram[bin_index] += 1 # (radius_tolerance - abs(e_r - t_r)) # Взвешенный голос
 
     if np.max(histogram) == 0:
-        return scale, 0.0  # Нет совпадений
+        return scale, 0.0 # Нет совпадений
 
     # Находим бин с макс. числом голосов
     best_bin = np.argmax(histogram)
-    rotation_deg = (best_bin + 0.5) * bin_width  # Центр бина
+    rotation_deg = (best_bin + 0.5) * bin_width # Центр бина
 
     return scale, rotation_deg
 
