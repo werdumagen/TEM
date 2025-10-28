@@ -422,7 +422,9 @@ class PipelineController:
         """Collect state from all tabs and save to a JSON file."""
         state = {
             'launcher': self.launcher.get_state(),
-            'editor': self.editor.io.get_state(),
+            # ++++++++++ НАЧАЛО ИЗМЕНЕНИЯ ++++++++++
+            'editor': self.editor.get_state(), # Убрано .io
+            # ++++++++++ КОНЕЦ ИЗМЕНЕНИЯ ++++++++++
             'analysis': self.analysis.get_state(),
             'active_tab': self.notebook.index(self.notebook.select()) # Save current tab index
         }
