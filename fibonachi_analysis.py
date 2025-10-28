@@ -439,7 +439,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             for i, r in enumerate(ratios, start=2):
                 entry_text = f'  ({i + 1}-{i}) / ({i}-{i - 1})  ≈  {r:.6g}'
                 self.lst.insert(tk.END, entry_text)
-                k = i - 1  # This 'k' is the index of the *first* segment in the ratio
+                k = i - 1  # <--- k = i - 1. So, when i=2, k=1.
                 self.list_index_map[row] = {'analysis_idx': self.active_analysis_idx, 'type': 'ratio', 'k': k}
                 row += 1
 
@@ -730,7 +730,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             self._draw_one_analysis_polygon(analysis_data, style)
 
     def _draw_one_analysis_chain(self, analysis_data: Dict[str, Any], style: Dict):
-        """Draws a chain (SL or Ratio) with V1 style (numbers, labels)."""
+        """Draws a chain (Ratio) with V1 style (numbers, labels)."""
         indices = analysis_data['indices']
         pts = self.points[indices]
         color = style['color']
@@ -793,7 +793,11 @@ class FibonacciAnalysisFrame(tk.Frame):
             # self._highlight_word_V1(analysis_data, meta['i0'], meta['n']) # УДАЛЕНО
             pass
         elif analysis_type == 'ratio':
-            self._highlight_ratio_pair_V1(analysis_data, meta['k'], meta['k'] + 1)
+            # ---
+            # ИСПРАВЛЕНИЕ ЗДЕСЬ
+            # ---
+            # Было: self._highlight_ratio_pair_V1(analysis_data, meta['k'], meta['k'] + 1)
+            self._highlight_ratio_pair_V1(analysis_data, meta['k'] - 1, meta['k'])
         elif analysis_type == 'polygon':
             self._highlight_polygon_V1(analysis_data)
 
