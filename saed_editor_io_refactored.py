@@ -143,21 +143,10 @@ class EditorIO:
 
     # --- Session Save/Load (Упрощено) ---
 
-    def get_state(self) -> dict:
-        """Возвращает состояние редактора (без типов/ID)."""
-        return {
-            "image_path": str(self.controller.image_path.resolve()) if self.controller.image_path else None,
-            "preproc_settings": self.controller._preproc_settings.to_json(),
-            "overlay": self.controller.overlay,
-            "zoom_val": self.controller.zoom_val,
-            "view_cx": self.controller.view_cx,
-            "view_cy": self.controller.view_cy,
-            "show_raw_background": self.controller.show_raw_background.get(),
-            # Снэпшот модели будет без типов/ID
-            "data_snapshot": self.controller.model.get_snapshot(),
-            "measurement": self.controller.ui_state.measurement,
-            "ring_select_indices": list(self.controller.ui_state.ring_select_indices),
-        }
+    # ++++++++++ НАЧАЛО ИЗМЕНЕНИЯ ++++++++++
+    # МЕТОД get_state(self) -> dict: БЫЛ УДАЛЕН ОТСЮДА
+    # Он перемещен в saed_editor.py
+    # ++++++++++ КОНЕЦ ИЗМЕНЕНИЯ ++++++++++
 
     # --- Сохранение отладки (Упрощено) ---
 

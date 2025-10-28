@@ -289,6 +289,27 @@ class PointEditor(tk.Frame):
     # ---------- *** КОНЕЦ НОВОГО МЕТОДА *** ----------
 
 
+    # ++++++++++ НАЧАЛО ИЗМЕНЕНИЯ ++++++++++
+    # ---------- *** НОВЫЙ МЕТОД: get_state (перемещен из IO) *** ----------
+    def get_state(self) -> dict:
+        """Возвращает состояние редактора (без типов/ID)."""
+        return {
+            "image_path": str(self.image_path.resolve()) if self.image_path else None,
+            "preproc_settings": self._preproc_settings.to_json(),
+            "overlay": self.overlay,
+            "zoom_val": self.zoom_val,
+            "view_cx": self.view_cx,
+            "view_cy": self.view_cy,
+            "show_raw_background": self.show_raw_background.get(),
+            # Снэпшот модели будет без типов/ID
+            "data_snapshot": self.model.get_snapshot(),
+            "measurement": self.ui_state.measurement,
+            "ring_select_indices": list(self.ui_state.ring_select_indices),
+        }
+    # ---------- *** КОНЕЦ НОВОГО МЕТОДА *** ----------
+    # ++++++++++ КОНЕЦ ИЗМЕНЕНИЯ ++++++++++
+
+
     # ---------- Управление Контроллером (Остальное без изменений) ----------
     def redraw(self):
         if self.view: self.view.redraw(self)
