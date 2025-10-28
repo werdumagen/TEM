@@ -6,11 +6,12 @@
 Отвечает ИСКЛЮЧИТЕЛЬНО за отрисовку данных из
 Модели (model) и Состояния UI (ui_state) на
 холсте (ax).
+*** ИЗМЕНЕНО: Использует model.get_colors_for_drawing() для точек ***
 """
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
-from typing import Optional, Tuple # <--- ИСПРАВЛЕНИЕ: Добавлен этот импорт
+from typing import Optional, Tuple
 
 # Импорт UI State для type hint
 try:
@@ -18,7 +19,12 @@ try:
 except ImportError:
     # Фоллбэк, если файл еще не создан или есть ошибка импорта
     print("Warning: Could not import EditorUIState. Using dummy class.")
-    class EditorUIState: pass
+
+
+    class EditorUIState:
+        pass
+
+
     CENTER_AS_POINT_IDX = -1
 
 
@@ -27,7 +33,7 @@ class EditorDrawingView:
     def __init__(self, ax, canvas):
         self.ax = ax
         self.canvas = canvas
-        self._center_hit_radius = 10.0 # Допуск нажатия на центр
+        self._center_hit_radius = 10.0  # Допуск нажатия на центр
 
     # --- Методы View/Zoom ---
 
@@ -54,7 +60,9 @@ class EditorDrawingView:
         """Применяет текущий зум и панорамирование к self.ax."""
         img_to_use = controller.get_image_to_display()
         if img_to_use is None:
-             self.ax.set_xlim(0, 100); self.ax.set_ylim(100, 0); return
+            self.ax.set_xlim(0, 100);
+            self.ax.set_ylim(100, 0);
+            return
 
         H, W = img_to_use.shape[:2]
         self._ensure_view_center(controller)
@@ -64,33 +72,36 @@ class EditorDrawingView:
 
         if controller.zoom_val <= 0:
             self.ax.set_xlim(x0_full, x1_full)
-            self.ax.set_ylim(y0_full, y1_full) # ymax, ymin for imshow
+            self.ax.set_ylim(y0_full, y1_full)  # ymax, ymin for imshow
             return
 
         min_dim = min(H, W)
         L = max(50.0, min_dim - (min_dim - 50.0) * (controller.zoom_val / 100.0))
-        half_w, half_h = L/2.0, L/2.0 # Keep aspect ratio square for zoom window
+        half_w, half_h = L / 2.0, L / 2.0  # Keep aspect ratio square for zoom window
         cx = float(controller.view_cx)
         cy = float(controller.view_cy)
 
         x0 = max(x0_full, cx - half_w)
         x1 = min(x1_full, cx + half_w)
-        y1 = max(y1_full, cy - half_h) # ymin is max() because axis inverted
-        y0 = min(y0_full, cy + half_h) # ymax is min()
+        y1 = max(y1_full, cy - half_h)  # ymin is max() because axis inverted
+        y0 = min(y0_full, cy + half_h)  # ymax is min()
 
         # Adjust if zoom window is smaller than L due to hitting image boundaries
         current_w = x1 - x0
-        current_h = y0 - y1 # y0 > y1
+        current_h = y0 - y1  # y0 > y1
         if current_w < L - 1e-6:
-             if x0 == x0_full: x1 = min(x1_full, x0 + L)
-             elif x1 == x1_full: x0 = max(x0_full, x1 - L)
+            if x0 == x0_full:
+                x1 = min(x1_full, x0 + L)
+            elif x1 == x1_full:
+                x0 = max(x0_full, x1 - L)
         if current_h < L - 1e-6:
-             if y1 == y1_full: y0 = min(y0_full, y1 + L)
-             elif y0 == y0_full: y1 = max(y1_full, y0 - L)
+            if y1 == y1_full:
+                y0 = min(y0_full, y1 + L)
+            elif y0 == y0_full:
+                y1 = max(y1_full, y0 - L)
 
         self.ax.set_xlim(x0, x1)
-        self.ax.set_ylim(y0, y1) # ymax, ymin
-
+        self.ax.set_ylim(y0, y1)  # ymax, ymin
 
     # ---------- Методы Отрисовки Оверлеев ----------
 
@@ -107,21 +118,26 @@ class EditorDrawingView:
             end_y, end_x = ui_state.measurement.get("end_yx", (0, 0))
             length = float(ui_state.measurement.get("length", 0.0))
 
-            (line,) = self.ax.plot([start_x, end_x], [start_y, end_y], color="#ffcc33", lw=1.8, alpha=0.95, scalex=False, scaley=False, zorder=5)
-            ui_state.measure_line_artist = line # Сохраняем artist в UI State
+            (line,) = self.ax.plot([start_x, end_x], [start_y, end_y], color="#ffcc33", lw=1.8, alpha=0.95,
+                                   scalex=False, scaley=False, zorder=5)
+            ui_state.measure_line_artist = line  # Сохраняем artist в UI State
 
-            mid_x = (start_x + end_x) / 2.0; mid_y = (start_y + end_y) / 2.0
+            mid_x = (start_x + end_x) / 2.0;
+            mid_y = (start_y + end_y) / 2.0
             txt = f"L = {length:.1f} px"
-            annot = self.ax.annotate(txt, xy=(mid_x, mid_y), xytext=(0, -14), textcoords="offset points", ha="center", va="top", bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.9), fontsize=9, zorder=6)
-            ui_state.measure_annotation = annot # Сохраняем artist в UI State
+            annot = self.ax.annotate(txt, xy=(mid_x, mid_y), xytext=(0, -14), textcoords="offset points", ha="center",
+                                     va="top", bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.9),
+                                     fontsize=9, zorder=6)
+            ui_state.measure_annotation = annot  # Сохраняем artist в UI State
 
         # 3. Рисуем превью (пунктир)
         if (ui_state.measure_start_point is not None and ui_state.measure_preview_end is not None):
             y0, x0 = ui_state.measure_start_point
             y1, x1 = ui_state.measure_preview_end
 
-            (pline,) = self.ax.plot([x0, x1], [y0, y1], color="#ffcc33", lw=1.6, ls="--", alpha=0.9, scalex=False, scaley=False, zorder=10)
-            ui_state.measure_preview_artist = pline # Сохраняем artist в UI State
+            (pline,) = self.ax.plot([x0, x1], [y0, y1], color="#ffcc33", lw=1.6, ls="--", alpha=0.9, scalex=False,
+                                    scaley=False, zorder=10)
+            ui_state.measure_preview_artist = pline  # Сохраняем artist в UI State
 
     def remove_ring_preview_artist(self, ui_state: EditorUIState) -> bool:
         """Удаляет artists кольца из ui_state."""
@@ -133,7 +149,8 @@ class EditorDrawingView:
                     ui_state.ring_select_artist.remove()
                 ui_state.ring_select_artist = None
                 return True
-            except Exception: pass
+            except Exception:
+                pass
             ui_state.ring_select_artist = None
         return False
 
@@ -154,11 +171,11 @@ class EditorDrawingView:
 
         self.ax.add_patch(circle_outer)
         self.ax.add_patch(circle_inner)
-        ui_state.ring_select_artist = [circle_outer, circle_inner] # Сохраняем в UI State
+        ui_state.ring_select_artist = [circle_outer, circle_inner]  # Сохраняем в UI State
 
     def highlight_selected_ring_points(self, model, ui_state: EditorUIState) -> None:
         """Подсвечивает точки, выбранные кольцом."""
-        if not ui_state.ring_select_indices or (model is None or model.is_empty()): return # Добавлена проверка model
+        if not ui_state.ring_select_indices or (model is None or model.is_empty()): return  # Добавлена проверка model
 
         indices = list(ui_state.ring_select_indices)
         valid_indices = [i for i in indices if 0 <= i < len(model.points)]
@@ -170,16 +187,18 @@ class EditorDrawingView:
     def remove_rect_artist(self, ui_state: EditorUIState):
         """Удаляет artist прямоугольного выделения."""
         if ui_state.rect_artist is not None:
-            try: ui_state.rect_artist.remove()
-            except Exception: pass
+            try:
+                ui_state.rect_artist.remove()
+            except Exception:
+                pass
             ui_state.rect_artist = None
 
     def draw_rect_preview(self, ui_state: EditorUIState, pos_yx: Tuple[float, float]):
         """Рисует прямоугольник выделения."""
-        self.remove_rect_artist(ui_state) # Удаляем старый
+        self.remove_rect_artist(ui_state)  # Удаляем старый
 
-        if ui_state.rect_start is None: # Добавлена проверка
-             return
+        if ui_state.rect_start is None:  # Добавлена проверка
+            return
 
         y0, x0 = ui_state.rect_start
         y1, x1 = pos_yx
@@ -187,13 +206,15 @@ class EditorDrawingView:
         current_xlim = self.ax.get_xlim()
         current_ylim = self.ax.get_ylim()
 
-        rect_x = min(x0, x1); rect_y = min(y0, y1)
-        rect_w = abs(x1 - x0); rect_h = abs(y1 - y0)
+        rect_x = min(x0, x1);
+        rect_y = min(y0, y1)
+        rect_w = abs(x1 - x0);
+        rect_h = abs(y1 - y0)
 
         rect_artist = plt.Rectangle((rect_x, rect_y), rect_w, rect_h,
                                     fill=False, ec="red", ls="--", lw=1.5, zorder=15)
         self.ax.add_patch(rect_artist)
-        ui_state.rect_artist = rect_artist # Сохраняем в UI State
+        ui_state.rect_artist = rect_artist  # Сохраняем в UI State
 
         self.ax.set_xlim(current_xlim)
         self.ax.set_ylim(current_ylim)
@@ -214,7 +235,7 @@ class EditorDrawingView:
         if model is None or ui_state is None:
             print("Warning: Redraw called before model/ui_state are initialized.")
             self.ax.axis("off")
-            self._apply_zoom(controller) # Применяем зум, чтобы показать пустую область
+            self._apply_zoom(controller)  # Применяем зум, чтобы показать пустую область
             self.canvas.draw_idle()
             return
 
@@ -228,9 +249,13 @@ class EditorDrawingView:
         center = controller.get_center()
         if center:
             cy, cx = center
-            center_color = "red"; center_zorder = 5; center_size = 40
+            center_color = "red";
+            center_zorder = 5;
+            center_size = 40
             if ui_state.measure_start_idx == CENTER_AS_POINT_IDX:
-                 center_color = "#FFA500"; center_zorder = 4; center_size = 50
+                center_color = "#FFA500";
+                center_zorder = 4;
+                center_size = 50
             self.ax.scatter([cx], [cy], s=center_size, c=center_color, marker="o", zorder=center_zorder)
 
             dead = controller.get_dead_radius()
@@ -241,11 +266,13 @@ class EditorDrawingView:
         # --- 3. Точки ---
         if not model.is_empty():
             points_to_draw = model.points
-            # *** КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Модель сама решает, какие цвета ***
-            colors = model.get_colors_for_drawing()
-            # ***
 
-            if colors: # Убедимся, что список цветов не пуст
+            # <<< --- ИЗМЕНЕНИЕ --- >>>
+            # *** Модель сама решает, какие цвета ***
+            colors = model.get_colors_for_drawing()
+            # <<< --- КОНЕЦ ИЗМЕНЕНИЯ --- >>>
+
+            if colors:  # Убедимся, что список цветов не пуст
                 self.ax.scatter(points_to_draw[:, 1], points_to_draw[:, 0],
                                 s=22, c=colors, alpha=0.9, marker="o",
                                 linewidths=0.5, edgecolors="black", zorder=3)
@@ -255,7 +282,7 @@ class EditorDrawingView:
 
         # --- 5. Подсветка начальной точки замера ---
         if ui_state.measure_start_idx is not None and \
-           ui_state.measure_start_idx != CENTER_AS_POINT_IDX:
+                ui_state.measure_start_idx != CENTER_AS_POINT_IDX:
 
             idx = ui_state.measure_start_idx
             # Добавлена проверка model

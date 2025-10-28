@@ -4,12 +4,13 @@
 Класс Модели Данных (Упрощенный)
 --------------------------------
 Инкапсулирует данные о точках (координаты, значения, площади, углы).
-Классификация и группировка удалены.
+*** ИЗМЕНЕНО: Добавлен 'source' для отслеживания происхождения точки ***
 """
 import numpy as np
 import math
-import matplotlib.pyplot as plt # Остается для _colormap, хотя он больше не используется
+import matplotlib.pyplot as plt  # Остается для _colormap, хотя он больше не используется
 from typing import Optional, Dict, Any, List, Tuple, Union
+
 
 class SaedDataModel:
 
@@ -19,9 +20,10 @@ class SaedDataModel:
         self.values = np.zeros((0,), float)  # Интенсивности в процентилях
         self.areas = np.zeros((0,), float)  # Площади пикселей
         self.angles = np.zeros((0,), float)  # Углы
+        self.sources = np.zeros((0,), str)  # <<< НОВОЕ: Источник точки (manual, detected, template)
 
         # --- Настройки для отрисовки (Упрощено) ---
-        self._default_point_color = "cyan" # Все точки теперь одного цвета
+        self._default_point_color = "cyan"  # Цвет по умолчанию
 
     def is_empty(self) -> bool:
         return len(self.points) == 0
@@ -38,7 +40,7 @@ class SaedDataModel:
         return r, a
 
     def add_point(self, y: float, x: float, value: float, center: Optional[Tuple[float, float]],
-                  area: float = 0.0):
+                  area: float = 0.0, source: str = "manual"):  # <<< ИЗМЕНЕНО: Добавлен 'source'
         """
         Добавляет новую точку и связанные с ней данные.
         Типы и ID удалены.
@@ -46,6 +48,7 @@ class SaedDataModel:
         self.points = np.vstack([self.points, [y, x]])
         self.values = np.append(self.values, value)
         self.areas = np.append(self.areas, area)
+        self.sources = np.append(self.sources, source)  # <<< НОВОЕ: Сохраняем 'source'
 
         # Рассчитываем угол
         new_angle = np.nan
@@ -71,6 +74,7 @@ class SaedDataModel:
         self.values = self.values[mask]
         self.areas = self.areas[mask]
         self.angles = self.angles[mask]
+        self.sources = self.sources[mask]  # <<< НОВОЕ: Фильтруем 'source'
         # Типы и ID удалены
 
     def update_points(self, indices: List[int], new_points_yx: np.ndarray,
@@ -85,6 +89,7 @@ class SaedDataModel:
 
         self.points[indices] = new_points_yx
         self.values[indices] = new_values
+        # Источник (source) при усреднении не меняем. Он остается тем же.
 
         # Пересчитываем углы для обновленных точек
         if center:
@@ -103,6 +108,7 @@ class SaedDataModel:
             if self.is_empty():
                 return np.array([])
             else:
+                # Фоллбэк, если нет центра (хотя это не должно происходить)
                 r = np.hypot(self.points[:, 1] - 0, self.points[:, 0] - 0)
                 return r
 
@@ -122,6 +128,7 @@ class SaedDataModel:
             "values": self.values.copy(),
             "areas": self.areas.copy(),
             "angles": self.angles.copy(),
+            "sources": self.sources.copy(),  # <<< НОВОЕ: Добавляем 'sources'
             # Типы и ID удалены
         }
 
@@ -132,6 +139,8 @@ class SaedDataModel:
         n = len(self.points)
         self.areas = snapshot.get("areas", np.zeros((n,))).copy()
         self.angles = snapshot.get("angles", np.full(n, np.nan)).copy()
+        # <<< НОВОЕ: Восстанавливаем 'sources', с фоллбэком 'manual' для старых снэпшотов
+        self.sources = snapshot.get("sources", np.full(n, "manual")).copy()
         # Типы и ID удалены
         self._validate_consistency()
 
@@ -147,6 +156,9 @@ class SaedDataModel:
         if len(self.angles) != n:
             self.angles = np.full((n,), np.nan)
             print("Warning: Model inconsistency (angles) corrected.")
+        if len(self.sources) != n:  # <<< НОВОЕ: Проверка 'sources'
+            self.sources = np.full((n,), "manual")
+            print("Warning: Model inconsistency (sources) corrected.")
         # Типы и ID удалены
 
     # --- Методы для IO (Упрощено) ---
@@ -163,6 +175,9 @@ class SaedDataModel:
         self.points = np.column_stack([yy, xx]).astype(float)
         n = len(self.points)
         self.areas = np.array([float(p.get("area", 0.0)) for p in points_list], dtype=float)
+
+        # <<< НОВОЕ: Загружаем 'source', по умолчанию 'detected', т.к. JSON обычно из temn.py
+        self.sources = np.array([str(p.get("source", "detected")) for p in points_list], dtype=str)
 
         # Углы
         saved_angles = [p.get("angle") for p in points_list]
@@ -190,6 +205,7 @@ class SaedDataModel:
                 "y": float(y), "x": float(x),
                 "intensity": float(self.values[i]) if i < len(self.values) else 0.0,
                 "area": int(self.areas[i]) if i < len(self.areas) else 0,
+                "source": str(self.sources[i]) if i < len(self.sources) else "manual",  # <<< НОВОЕ: Сохраняем 'source'
                 # Типы и ID удалены
             }
             if angle is not None:
@@ -200,8 +216,21 @@ class SaedDataModel:
     # --- Методы для View (Упрощено) ---
 
     def get_colors_for_drawing(self) -> List[str]:
-        """Возвращает массив одного цвета для всех точек."""
-        return [self._default_point_color] * len(self.points)
+        """
+        *** ИЗМЕНЕНО: Возвращает цвета на основе 'source' ***
+        """
+        color_map = {
+            "manual": "cyan",  # Добавлено вручную
+            "detected": "lime",  # Найдено алгоритмом
+            "template": "magenta",  # Добавлено из шаблона
+            "unknown": "gray",
+        }
+
+        if len(self.sources) != len(self.points):
+            # Фоллбэк, если что-то пошло не так
+            return [self._default_point_color] * len(self.points)
+
+        return [color_map.get(str(src), self._default_point_color) for src in self.sources]
 
     def get_point_data_for_tooltip(self, idx: int, center: Optional[Tuple[float, float]]) -> str:
         """Форматирует строку для Tooltip (без типа/ID)."""
@@ -211,8 +240,9 @@ class SaedDataModel:
         y, x = self.points[idx]
         intensity = float(self.values[idx])
         area = float(self.areas[idx])
+        source = str(self.sources[idx]) if idx < len(self.sources) else "N/A"  # <<< НОВОЕ: Получаем 'source'
         radius = None
-        angle = float(self.angles[idx]) if not np.isnan(self.angles[idx]) else None
+        angle = float(self.angles[idx]) if (idx < len(self.angles) and not np.isnan(self.angles[idx])) else None
 
         if center:
             cy, cx = center
@@ -226,6 +256,7 @@ class SaedDataModel:
         txt_lines.append(f"Angle: {angle:.1f}°" if angle is not None else "Angle: N/A")
         txt_lines.append(f"Intensity: {intensity:.1f} %")
         txt_lines.append(f"Area: {area:.1f} px²")
+        txt_lines.append(f"Source: {source}")  # <<< НОВОЕ: Добавляем 'source'
         # Типы и ID удалены
 
         return "\n".join(txt_lines)
@@ -243,6 +274,7 @@ class SaedDataModel:
                 "angle_deg": angle,
                 "intensity_perc": float(self.values[i]),
                 "area_px2": float(self.areas[i]),
+                "source": str(self.sources[i]) if i < len(self.sources) else "manual",  # <<< НОВОЕ: Добавляем 'source'
                 # Типы и ID удалены
             })
         return data_to_save

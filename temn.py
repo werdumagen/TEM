@@ -1408,9 +1408,14 @@ class SAEDLauncherFrame(ttk.Frame):
 
             points_list_for_json = []
             for i, (y, x, v, area) in enumerate(pts_processed):
-                pt_type = point_types.get(i, "unknown")
+                # pt_type = point_types.get(i, "unknown") # Старая логика
                 points_list_for_json.append(
-                    {"y": float(y), "x": float(x), "intensity": float(v), "area": int(area), "type": pt_type})
+                    {"y": float(y), "x": float(x),
+                     "intensity": float(v), "area": int(area),
+                     # "type": pt_type, # Старая логика
+                     "source": "detected" # <<< НОВОЕ: Помечаем точки как найденные детектором
+                    }
+                )
 
             saed_input_data = {
                 "image": str(image_path), "preproc_mode": settings.mode, "preproc": preproc_payload,
