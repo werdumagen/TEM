@@ -5,7 +5,7 @@
 ---------------------
 Отвечает за загрузку/сохранение JSON, изображений, сессий.
 Не обрабатывает типы/ID точек.
-*** ИЗМЕНЕНО: Добавлена логика выравнивания по шаблону ***
+*** ИЗМЕНЕНО: Добавлена логика выравнивания по шаблону с уточнением и фильтрацией ***
 """
 import json
 from pathlib import Path
@@ -70,7 +70,8 @@ def _get_peaks_from_template_image(image_path: Path) -> Tuple[Optional[np.ndarra
             return None, None  # Точки не найдены
 
         # Первый центроид (индекс 0) - это фон
-        points_yx = centroids[1:, ::-1]  # Получаем все центроиды (y, x)
+        # centroids[:, ::-1] переворачивает x, y -> y, x
+        points_yx = centroids[1:, ::-1].astype(float)  # Получаем все центроиды (y, x)
 
         # Находим центр шаблона (центр масс найденных точек)
         if len(points_yx) > 0:
@@ -86,7 +87,6 @@ def _get_peaks_from_template_image(image_path: Path) -> Tuple[Optional[np.ndarra
 
 
 # <<< НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ (вне класса) >>>
-# <<< НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ (вне класса) >>>
 def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
                         experimental_pts_centered_polar: np.ndarray,
                         num_bins: int = 360) -> Tuple[float, float]:
@@ -98,7 +98,7 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     # 1. Поиск Масштаба (S)
     # Используем медиану радиусов N ближайших к центру точек
     N_FOR_SCALE = min(20, len(template_pts_centered_polar), len(experimental_pts_centered_polar))
-    if N_FOR_SCALE < 2: return 1.0, 0.0 # Недостаточно точек
+    if N_FOR_SCALE < 2: return 1.0, 0.0  # Недостаточно точек
 
     # [:, 0] это радиусы
     template_radii = np.sort(template_pts_centered_polar[:, 0])
@@ -111,15 +111,15 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
 
     # Проверяем, достаточно ли точек после фильтрации
     if len(valid_template_radii) < N_FOR_SCALE or len(valid_exp_radii) < N_FOR_SCALE:
-         # Если точек мало, используем все что есть (но не менее 1)
-         N_FOR_SCALE = max(1, min(len(valid_template_radii), len(valid_exp_radii)))
-         if N_FOR_SCALE == 0: return 1.0, 0.0 # Совсем нет точек > 0
+        # Если точек мало, используем все что есть (но не менее 1)
+        N_FOR_SCALE = max(1, min(len(valid_template_radii), len(valid_exp_radii)))
+        if N_FOR_SCALE == 0: return 1.0, 0.0  # Совсем нет точек > 0
 
     median_template_r = np.median(valid_template_radii[:N_FOR_SCALE])
     median_exp_r = np.median(valid_exp_radii[:N_FOR_SCALE])
 
-
-    if median_template_r < 1e-6 or median_exp_r < 1e-6 or not np.isfinite(median_template_r) or not np.isfinite(median_exp_r):
+    if median_template_r < 1e-6 or median_exp_r < 1e-6 or not np.isfinite(median_template_r) or not np.isfinite(
+            median_exp_r):
         scale = 1.0
     else:
         scale = median_exp_r / median_template_r
@@ -138,12 +138,13 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     valid_exp_radii = exp_radii[exp_radii > 1e-6]
     if len(valid_exp_radii) == 0: return scale, 0.0
 
-    max_r_idx = min(len(valid_exp_radii)-1, 50)
+    max_r_idx = min(len(valid_exp_radii) - 1, 50)
     max_r_from_exp = valid_exp_radii[max_r_idx]
 
-
-    template_set = scaled_template_polar[(scaled_template_polar[:, 0] < (max_r_from_exp * 1.5)) & (scaled_template_polar[:, 0] > 1e-6)]
-    exp_set = experimental_pts_centered_polar[(experimental_pts_centered_polar[:, 0] < (max_r_from_exp * 1.5)) & (experimental_pts_centered_polar[:, 0] > 1e-6)]
+    template_set = scaled_template_polar[
+        (scaled_template_polar[:, 0] < (max_r_from_exp * 1.5)) & (scaled_template_polar[:, 0] > 1e-6)]
+    exp_set = experimental_pts_centered_polar[(experimental_pts_centered_polar[:, 0] < (max_r_from_exp * 1.5)) & (
+                experimental_pts_centered_polar[:, 0] > 1e-6)]
 
     # <<< ИСПРАВЛЕНИЕ: Получаем размер exp_set ДО цикла >>>
     exp_set_size = len(exp_set)
@@ -155,19 +156,19 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     bin_width = 360.0 / num_bins
 
     # Допуск по радиусу для сопоставления
-    radius_tolerance = max(4.0, 0.05 * median_exp_r) # 4 пикселя или 5%
+    radius_tolerance = max(4.0, 0.05 * median_exp_r)  # 4 пикселя или 5%
 
     if cKDTree is None: raise RuntimeError("Scipy (cKDTree) не найден.")
 
     # Строим k-d tree из экспериментальных точек (r, a)
     tree_exp = cKDTree(exp_set)
-    tree_template = cKDTree(template_set) # <<< Строим дерево и для шаблона
+    tree_template = cKDTree(template_set)  # <<< Строим дерево и для шаблона
 
     # Ищем пары для каждой точки шаблона
     # query_ball_tree находит все пары в радиусе (Евклидово)
-    pairs = tree_exp.query_ball_tree(tree_template, r=radius_tolerance) # <<< Используем оба дерева
+    pairs = tree_exp.query_ball_tree(tree_template, r=radius_tolerance)  # <<< Используем оба дерева
 
-    for i, exp_indices in enumerate(pairs): # i = индекс точки шаблона
+    for i, exp_indices in enumerate(pairs):  # i = индекс точки шаблона
         if not exp_indices:
             continue
 
@@ -178,29 +179,31 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
 
         t_r, t_a = template_set[i]
 
-        for j in exp_indices: # j = индекс точки эксперимента
+        for j in exp_indices:  # j = индекс точки эксперимента
 
             # <<< --- ВОТ ИСПРАВЛЕНИЕ --- >>>
             # Явно проверяем, что индекс j валиден для exp_set
             if j < 0 or j >= exp_set_size:
                 # print(f"!!! WARNING: Invalid index {j} returned by query_ball_tree for exp_set size {exp_set_size}. Skipping.")
-                continue # Пропускаем этот невалидный индекс
+                continue  # Пропускаем этот невалидный индекс
             # <<< --- КОНЕЦ ИСПРАВЛЕНИЯ --- >>>
 
-            e_r, e_a = exp_set[j] # Теперь доступ должен быть безопасным
+            e_r, e_a = exp_set[j]  # Теперь доступ должен быть безопасным
 
             # (Допуск по радиусу уже проверен k-d tree)
             angle_diff = (e_a - t_a + 360) % 360
             bin_index = int(angle_diff / bin_width)
             if 0 <= bin_index < num_bins:
-                histogram[bin_index] += 1 # (radius_tolerance - abs(e_r - t_r)) # Взвешенный голос
+                # Взвешенный голос (ближе по радиусу - больше вес)
+                weight = max(0, 1.0 - abs(e_r - t_r) / radius_tolerance)
+                histogram[bin_index] += weight
 
     if np.max(histogram) == 0:
-        return scale, 0.0 # Нет совпадений
+        return scale, 0.0  # Нет совпадений
 
     # Находим бин с макс. числом голосов
     best_bin = np.argmax(histogram)
-    rotation_deg = (best_bin + 0.5) * bin_width # Центр бина
+    rotation_deg = (best_bin + 0.5) * bin_width  # Центр бина
 
     return scale, rotation_deg
 
@@ -257,9 +260,9 @@ class EditorIO:
             import traceback
             traceback.print_exc()  # Для отладки
 
-    # <<< НОВЫЙ ОСНОВНОЙ МЕТОД >>>
+    # <<< ОБНОВЛЕННЫЙ ОСНОВНОЙ МЕТОД >>>
     def run_template_matching(self, template_path: Path):
-        """Основная логика выравнивания по шаблону."""
+        """Основная логика выравнивания по шаблону с уточнением и фильтрацией."""
 
         # 1. Получаем экспериментальные точки и центр
         if self.controller.model.is_empty():
@@ -276,9 +279,9 @@ class EditorIO:
         exp_cy, exp_cx = experimental_center_yx
 
         # 2. Получаем точки шаблона и центр
-        template_points_yx, template_center_yx = _get_peaks_from_template_image(template_path)
+        template_points_yx_orig, template_center_yx = _get_peaks_from_template_image(template_path)
 
-        if template_points_yx is None or template_center_yx is None:
+        if template_points_yx_orig is None or template_center_yx is None:
             messagebox.showerror("Ошибка", "Не удалось найти пики на изображении шаблона.")
             return
 
@@ -292,11 +295,11 @@ class EditorIO:
         exp_a = (np.degrees(np.arctan2(exp_centered_yx[:, 0], exp_centered_yx[:, 1])) + 360) % 360
         exp_polar = np.column_stack((exp_r, exp_a))
 
-        # --- Шаблон ---
-        temp_centered_yx = template_points_yx - template_center_yx
+        # --- Шаблон (сохраняем и декартовы, и полярные центрированные) ---
+        temp_centered_yx = template_points_yx_orig - template_center_yx
         temp_r = np.hypot(temp_centered_yx[:, 1], temp_centered_yx[:, 0])
         temp_a = (np.degrees(np.arctan2(temp_centered_yx[:, 0], temp_centered_yx[:, 1])) + 360) % 360
-        temp_polar = np.column_stack((temp_r, temp_a))
+        temp_polar = np.column_stack((temp_r, temp_a))  # radius, angle_deg
 
         # 4. Находим Масштаб (S) и Поворот (R)
         self.controller.set_status("Выравнивание шаблона... (может занять время)")
@@ -310,8 +313,7 @@ class EditorIO:
             messagebox.showwarning("Предупреждение",
                                    f"Необычный фактор масштабирования ({scale:.3f}). Результат может быть неточным.")
 
-        # 5. Трансформируем *все* точки шаблона
-
+        # 5. Трансформируем *все* точки шаблона (глобальное выравнивание)
         temp_r_all = temp_polar[:, 0]
         temp_a_all_rad = np.deg2rad(temp_polar[:, 1])
 
@@ -324,32 +326,93 @@ class EditorIO:
         transformed_centered_y = scaled_r * np.sin(rotated_a_rad)
 
         # Добавляем сдвиг (центр эксперимента)
-        transformed_final_x = transformed_centered_x + exp_cx
-        transformed_final_y = transformed_centered_y + exp_cy
+        initial_transformed_x = transformed_centered_x + exp_cx
+        initial_transformed_y = transformed_centered_y + exp_cy
 
-        transformed_template_points_yx = np.column_stack((transformed_final_y, transformed_final_x))
+        initial_transformed_template_points_yx = np.column_stack((initial_transformed_y, initial_transformed_x))
 
-        # 6. Находим "пропущенные" точки
+        # --- <<< НОВОЕ: 5.5 Уточнение смещения >>> ---
+        self.controller.set_status("Уточнение выравнивания...")
+        self.controller.update()
 
-        # Порог близости. 5 пикселей - разумное значение.
-        proximity_threshold = 5.0
-
+        proximity_threshold = 5.0  # Порог для поиска пар
         exp_tree = cKDTree(experimental_points_yx)
 
-        # Находим дистанцию от каждой точки шаблона до ближайшей точки эксперимента
-        distances, _indices = exp_tree.query(transformed_template_points_yx)
+        # Находим ближайших соседей для *первично трансформированных* точек шаблона
+        distances, indices_in_exp = exp_tree.query(initial_transformed_template_points_yx)
 
-        # Находим точки, где дистанция *больше* порога
-        missed_points_mask = (distances > proximity_threshold)
-        missed_points_yx = transformed_template_points_yx[missed_points_mask]
+        # Находим пары, которые достаточно близки
+        matched_mask = (distances <= proximity_threshold)
+        matched_template_indices = np.where(matched_mask)[0]
+        matched_exp_indices = indices_in_exp[matched_mask]
 
-        num_missed = len(missed_points_yx)
-        if num_missed == 0:
-            messagebox.showinfo("Выравнивание", "Новые точки не найдены. Все точки шаблона соответствуют существующим.")
+        average_offset_yx = np.array([0.0, 0.0])  # y, x
+        if len(matched_template_indices) > 0:
+            # Координаты совпавших точек шаблона (после первоначальной трансформации)
+            matched_template_pts_yx = initial_transformed_template_points_yx[matched_template_indices]
+            # Координаты соответствующих им экспериментальных точек
+            matched_exp_pts_yx = experimental_points_yx[matched_exp_indices]
+            # Вычисляем векторы смещений (experiment - template) для каждой пары
+            offsets_yx = matched_exp_pts_yx - matched_template_pts_yx
+            # Усредняем смещение
+            average_offset_yx = np.mean(offsets_yx, axis=0)
+            self.controller.set_status(
+                f"Найдено {len(matched_template_indices)} пар. Уточняющее смещение: Y={average_offset_yx[0]:.2f}, X={average_offset_yx[1]:.2f}")
+        else:
+            self.controller.set_status(
+                "Не найдено близких пар для уточнения смещения. Используется глобальное выравнивание.")
+
+        # Применяем уточняющее смещение ко *всем* точкам шаблона
+        final_transformed_template_points_yx = initial_transformed_template_points_yx + average_offset_yx
+        # --- <<< КОНЕЦ УТОЧНЕНИЯ >>> ---
+
+        # 6. Находим "пропущенные" точки (ИСПОЛЬЗУЯ УТОЧНЕННЫЕ КООРДИНАТЫ)
+        # Перестраиваем дерево или используем то же? (То же)
+        # Находим дистанцию от *уточненных* точек шаблона до ближайшей точки эксперимента
+        final_distances, final_indices_in_exp = exp_tree.query(final_transformed_template_points_yx)
+
+        # Находим индексы точек шаблона, где дистанция *больше* порога
+        missed_mask_indices = np.where(final_distances > proximity_threshold)[0]
+
+        # --- <<< НОВОЕ: 6.5 Фильтрация пропущенных по радиусу совпавших >>> ---
+        # Находим индексы шаблона, которые СОВПАЛИ (после уточнения)
+        final_matched_mask = (final_distances <= proximity_threshold)
+        final_matched_template_indices = np.where(final_matched_mask)[0]
+
+        if len(final_matched_template_indices) == 0:
+            messagebox.showwarning("Выравнивание",
+                                   "Не найдено ни одной совпадающей точки после уточнения. Добавление точек отменено.")
             return
 
-        # 7. Добавляем пропущенные точки в модель
+        # Получаем исходные радиусы совпавших точек шаблона
+        matched_original_radii = temp_polar[final_matched_template_indices, 0]
+        min_matched_r = np.min(matched_original_radii)
+        max_matched_r = np.max(matched_original_radii)
 
+        # Фильтруем пропущенные точки: оставляем только те,
+        # чей ИСХОДНЫЙ радиус лежит в диапазоне радиусов совпавших
+        filtered_missed_indices = []
+        for idx in missed_mask_indices:
+            original_radius = temp_polar[idx, 0]
+            # Добавим небольшой допуск к диапазону
+            if (min_matched_r - proximity_threshold) <= original_radius <= (max_matched_r + proximity_threshold):
+                filtered_missed_indices.append(idx)
+
+        num_candidates_initial = len(missed_mask_indices)
+        num_candidates_filtered = len(filtered_missed_indices)
+
+        if num_candidates_filtered == 0:
+            messagebox.showinfo("Выравнивание",
+                                f"Кандидаты на добавление ({num_candidates_initial}) не прошли фильтрацию по радиусу совпавших точек.")
+            return
+
+        # Получаем координаты отфильтрованных пропущенных точек (уже уточненные)
+        missed_points_yx = final_transformed_template_points_yx[filtered_missed_indices]
+        # --- <<< КОНЕЦ ФИЛЬТРАЦИИ >>> ---
+
+        num_missed_final = len(missed_points_yx)
+
+        # 7. Добавляем пропущенные точки в модель
         # Получаем их интенсивность из *экспериментального* изображения
         sampled_values = self.controller.sample_intensities(missed_points_yx)
 
@@ -359,10 +422,9 @@ class EditorIO:
         num_added = 0
 
         # Порог интенсивности (чтобы не добавлять точки в местах, где на снимке пусто)
-        # Возьмем 10% процентиль
         intensity_threshold = 10.0
 
-        for i in range(num_missed):
+        for i in range(num_missed_final):
             y, x = missed_points_yx[i]
             value = sampled_values[i]
 
@@ -383,9 +445,11 @@ class EditorIO:
 
         self.controller.redo.clear()
         self.controller.redraw()
-        msg = f"Добавлено {num_added} новых точек (из {num_missed} кандидатов) по шаблону."
-        if num_added < num_missed:
-            msg += f" {num_missed - num_added} отброшено из-за низкой интенсивности."
+        msg = f"Добавлено {num_added} новых точек (из {num_candidates_filtered} кандидатов после фильтрации) по шаблону."
+        if num_candidates_initial > num_candidates_filtered:
+            msg += f" {num_candidates_initial - num_candidates_filtered} отброшено фильтром по радиусу."
+        if num_added < num_candidates_filtered:
+            msg += f" {num_candidates_filtered - num_added} отброшено из-за низкой интенсивности."
         self.controller.set_status(msg)
 
     # ---------- Основная Логика IO ----------
