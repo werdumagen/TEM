@@ -115,38 +115,54 @@ class SaedDataModel:
 
     # --- Методы для Undo/Redo (Упрощено) ---
 
+    # ++++++++++ НАЧАЛО ИЗМЕНЕНИЯ ++++++++++
     def get_snapshot(self) -> Dict[str, Any]:
         """Создает "слепок" всех данных для стека Undo."""
         return {
-            "points": self.points.copy(),
-            "values": self.values.copy(),
-            "areas": self.areas.copy(),
-            "angles": self.angles.copy(),
+            "points": self.points.copy().tolist(), # .tolist() для JSON
+            "values": self.values.copy().tolist(), # .tolist() для JSON
+            "areas": self.areas.copy().tolist(),   # .tolist() для JSON
+            "angles": self.angles.copy().tolist(),  # .tolist() для JSON
             # Типы и ID удалены
         }
 
     def apply_snapshot(self, snapshot: Dict[str, Any]):
         """Восстанавливает состояние модели из "слепка"."""
-        self.points = snapshot.get("points", np.zeros((0, 2))).copy()
-        self.values = snapshot.get("values", np.zeros((0,))).copy()
+        # Конвертируем списки из JSON обратно в ndarray
+        self.points = np.array(snapshot.get("points", []), dtype=float).reshape(-1, 2)
+        self.values = np.array(snapshot.get("values", []), dtype=float)
         n = len(self.points)
-        self.areas = snapshot.get("areas", np.zeros((n,))).copy()
-        self.angles = snapshot.get("angles", np.full(n, np.nan)).copy()
+        self.areas = np.array(snapshot.get("areas", []), dtype=float)
+        self.angles = np.array(snapshot.get("angles", []), dtype=float)
         # Типы и ID удалены
         self._validate_consistency()
+    # ++++++++++ КОНЕЦ ИЗМЕНЕНИЯ ++++++++++
 
     def _validate_consistency(self):
         """Проверяет, что все массивы имеют одинаковую длину."""
         n = len(self.points)
         if len(self.values) != n:
-            self.values = np.zeros((n,), float)
-            print("Warning: Model inconsistency (values) corrected.")
+            # Исправляем несоответствие, если оно возникло при загрузке
+            new_values = np.zeros((n,), float)
+            if len(self.values) > 0:
+                copy_len = min(n, len(self.values))
+                new_values[:copy_len] = self.values[:copy_len]
+            self.values = new_values
+            print(f"Warning: Model inconsistency (values) corrected. Expected {n}, got {len(self.values)}.")
         if len(self.areas) != n:
-            self.areas = np.zeros((n,), float)
-            print("Warning: Model inconsistency (areas) corrected.")
+            new_areas = np.zeros((n,), float)
+            if len(self.areas) > 0:
+                copy_len = min(n, len(self.areas))
+                new_areas[:copy_len] = self.areas[:copy_len]
+            self.areas = new_areas
+            print(f"Warning: Model inconsistency (areas) corrected. Expected {n}, got {len(self.areas)}.")
         if len(self.angles) != n:
-            self.angles = np.full((n,), np.nan)
-            print("Warning: Model inconsistency (angles) corrected.")
+            new_angles = np.full((n,), np.nan)
+            if len(self.angles) > 0:
+                copy_len = min(n, len(self.angles))
+                new_angles[:copy_len] = self.angles[:copy_len]
+            self.angles = new_angles
+            print(f"Warning: Model inconsistency (angles) corrected. Expected {n}, got {len(self.angles)}.")
         # Типы и ID удалены
 
     # --- Методы для IO (Упрощено) ---
@@ -212,12 +228,12 @@ class SaedDataModel:
         intensity = float(self.values[idx])
         area = float(self.areas[idx])
         radius = None
-        angle = float(self.angles[idx]) if not np.isnan(self.angles[idx]) else None
+        angle = float(self.angles[idx]) if i < len(self.angles) and not np.isnan(self.angles[idx]) else None
 
         if center:
             cy, cx = center
             radius = float(math.hypot(x - cx, y - cy))
-            if angle is None:
+            if angle is None and i < len(self.points): # Добавлена проверка i
                 _, angle_arr = self._calculate_pol_from(center, np.array([[y, x]]))
                 angle = float(angle_arr[0])
 
