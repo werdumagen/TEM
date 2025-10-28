@@ -62,7 +62,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.pick_tol = 10.0
         self.max_dist_line = 20.0
         self.mode_buttons: Dict[str, tk.Button] = {}
-        self.analysis_mode: str = 'sl'
+        self.analysis_mode: str = 'ratio'  # ИЗМЕНЕНО: по умолчанию 'ratio'
         self.anchor_idx: Optional[int] = None
         self.rubber_line = None
 
@@ -233,27 +233,29 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         mode_switch = tk.Frame(controls)
         mode_switch.grid(row=3, column=0, columnspan=2, sticky='ew', padx=4, pady=(8, 2))
-        for col in range(3): mode_switch.columnconfigure(col, weight=1)
+        # ИЗМЕНЕНО: 2 колонки
+        for col in range(2): mode_switch.columnconfigure(col, weight=1)
 
-        self.mode_buttons['sl'] = tk.Button(mode_switch, text='🔗 Chain', command=lambda: self._set_analysis_mode('sl'))
-        self.mode_buttons['sl'].grid(row=0, column=0, sticky='ew', padx=(0, 2))
+        # ИЗМЕНЕНО: Кнопка 'sl' удалена
+        # self.mode_buttons['sl'] = tk.Button(mode_switch, text='🔗 Chain', command=lambda: self._set_analysis_mode('sl'))
+        # self.mode_buttons['sl'].grid(row=0, column=0, sticky='ew', padx=(0, 2))
         self.mode_buttons['ratio'] = tk.Button(mode_switch, text='📊 Ratio',
                                                command=lambda: self._set_analysis_mode('ratio'))
-        self.mode_buttons['ratio'].grid(row=0, column=1, sticky='ew', padx=2)
+        self.mode_buttons['ratio'].grid(row=0, column=0, sticky='ew', padx=(0, 2))  # ИЗМЕНЕНО: column=0
         self.mode_buttons['polygon'] = tk.Button(mode_switch, text='🔺 Polygon',
                                                  command=lambda: self._set_analysis_mode('polygon'))
-        self.mode_buttons['polygon'].grid(row=0, column=2, sticky='ew', padx=(2, 0))
+        self.mode_buttons['polygon'].grid(row=0, column=1, sticky='ew', padx=(2, 0))  # ИЗМЕНЕНО: column=1
 
-        is_full_version = self.license_manager is None or self.license_manager.has_valid_license()
-        HoverTooltip(self.mode_buttons['sl'], 'Chain analysis: use Left Click to select two endpoints.')
-        if is_full_version:
-            HoverTooltip(self.mode_buttons['ratio'], 'Neighbor ratios: use Left Click to select two endpoints.')
-            HoverTooltip(self.mode_buttons['polygon'],
-                         'Polygon analysis: add vertices with Left Click, close by clicking the first point.')
-        else:
-            for mode in ['ratio', 'polygon']:
-                self.mode_buttons[mode].config(state=tk.DISABLED, relief='sunken')
-                HoverTooltip(self.mode_buttons[mode], 'Available in the full version')
+        # ИЗМЕНЕНО: Логика лицензии
+        # is_full_version = self.license_manager is None or self.license_manager.has_valid_license() # УБРАНО
+        # HoverTooltip(self.mode_buttons['sl'], 'Chain analysis: use Left Click to select two endpoints.') # УБРАНО
+
+        # Режимы Ratio и Polygon теперь доступны всегда
+        HoverTooltip(self.mode_buttons['ratio'], 'Neighbor ratios: use Left Click to select two endpoints.')
+        HoverTooltip(self.mode_buttons['polygon'],
+                     'Polygon analysis: add vertices with Left Click, close by clicking the first point.')
+
+        # Блок 'else', отключающий кнопки, УБРАН
 
         zoom_group = ttk.LabelFrame(controls, text='Scale')
         zoom_group.grid(row=4, column=0, columnspan=2, sticky='ew', padx=4, pady=(8, 4))
@@ -280,11 +282,10 @@ class FibonacciAnalysisFrame(tk.Frame):
         tab_subsegments = ttk.Frame(self.results_notebook);
         tab_subsegments.grid_columnconfigure(0, weight=1);
         tab_subsegments.grid_rowconfigure(0, weight=1)
-        tab_prefixes = ttk.Frame(self.results_notebook);
-        tab_prefixes.grid_columnconfigure(0, weight=1);
-        tab_prefixes.grid_rowconfigure(1, weight=1)
+        # ИЗМЕНЕНО: Вкладка Fib-Words удалена
+        # tab_prefixes = ttk.Frame(self.results_notebook); tab_prefixes.grid_columnconfigure(0, weight=1); tab_prefixes.grid_rowconfigure(1, weight=1)
         self.results_notebook.add(tab_subsegments, text='Details')
-        self.results_notebook.add(tab_prefixes, text='Fib-Words')
+        # self.results_notebook.add(tab_prefixes, text='Fib-Words') # УДАЛЕНО
 
         self.lst = tk.Listbox(tab_subsegments, width=66, height=15)  # <<< lst DEFINED HERE
         self.lst.grid(row=0, column=0, sticky='nsew')
@@ -292,29 +293,24 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         info_frame = tk.Frame(tab_subsegments)
         info_frame.grid(row=1, column=0, sticky='ew', pady=(6, 0))
-        self.lbl_ratio = tk.Label(info_frame, text='Average L/S along chain: —')
-        self.lbl_ratio.pack(anchor='w')
+        # ИЗМЕНЕНО: lbl_ratio (для 'sl') удалена
+        # self.lbl_ratio = tk.Label(info_frame, text='Average L/S along chain: —')
+        # self.lbl_ratio.pack(anchor='w')
         self.lbl_ratio_neigh = tk.Label(info_frame, text='Average neighboring segment ratio: —')
         self.lbl_ratio_neigh.pack(anchor='w')
         self.lbl_ratio_polygons = tk.Label(info_frame, text='Average neighboring polygon linear ratio: —')
         self.lbl_ratio_polygons.pack(anchor='w')
 
-        tk.Label(tab_subsegments, text='S/L sequence (full):').grid(row=2, column=0, sticky='w', pady=(4, 2))
-        self.txt_sl = tk.Text(tab_subsegments, height=4, wrap='word')
-        self.txt_sl.grid(row=3, column=0, sticky='ew', pady=(0, 4))
-        self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)
+        # ИЗМЕНЕНО: Элементы 'sl' (txt_sl) удалены
+        # tk.Label(tab_subsegments, text='S/L sequence (full):').grid(row=2, column=0, sticky='w', pady=(4, 2))
+        # self.txt_sl = tk.Text(tab_subsegments, height=4, wrap='word')
+        # self.txt_sl.grid(row=3, column=0, sticky='ew', pady=(0, 4))
+        # self.txt_sl.bind('<KeyPress>', self._on_sl_keypress)
 
-        prefixes_header = tk.Label(tab_prefixes, text='Prefixes of "fib-words" (L→LS, S→L)')
-        prefixes_header.grid(row=0, column=0, sticky='w', pady=(0, 4))
-        prefixes_frame = tk.Frame(tab_prefixes);
-        prefixes_frame.grid(row=1, column=0, sticky='nsew')
-        prefixes_frame.grid_columnconfigure(0, weight=1);
-        prefixes_frame.grid_rowconfigure(0, weight=1)
-        self.txt_words = tk.Text(prefixes_frame, height=10, state='disabled')
-        self.txt_words.grid(row=0, column=0, sticky='nsew')
-        scroll_words = tk.Scrollbar(prefixes_frame, orient='vertical', command=self.txt_words.yview)
-        scroll_words.grid(row=0, column=1, sticky='ns')
-        self.txt_words.configure(yscrollcommand=scroll_words.set)
+        # ИЗМЕНЕНО: Элементы 'Fib-Words' (txt_words) удалены
+        # prefixes_header = tk.Label(tab_prefixes, text='Prefixes of "fib-words" (L→LS, S→L)')
+        # ...
+        # self.txt_words.configure(yscrollcommand=scroll_words.set)
 
         # Key bindings
         self.bind_all('<Return>', self._on_enter_key)
@@ -322,7 +318,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self.bind_all('<Escape>', self._on_escape_key)
 
         # Set initial mode AFTER lst is created
-        self._set_analysis_mode('sl')
+        self._set_analysis_mode('ratio')  # ИЗМЕНЕНО: 'ratio'
 
     def _set_status(self, text: str):
         if hasattr(self, "status") and self.status.winfo_exists():
@@ -403,13 +399,11 @@ class FibonacciAnalysisFrame(tk.Frame):
         # Clear all info panels first
         self.lst.delete(0, tk.END)
         self.list_index_map.clear()
-        self.lbl_ratio.config(text='Average L/S along chain: —')
+        # self.lbl_ratio.config(text='Average L/S along chain: —') # УДАЛЕНО
         self.lbl_ratio_neigh.config(text='Average neighboring segment ratio: —')
         self.lbl_ratio_polygons.config(text='Average neighboring polygon linear ratio: —')
-        self._set_sl_text("")
-        self.txt_words.configure(state='normal');
-        self.txt_words.delete('1.0', tk.END);
-        self.txt_words.configure(state='disabled')
+        # self._set_sl_text("") # УДАЛЕНО
+        # self.txt_words.configure(state='normal'); self.txt_words.delete('1.0', tk.END); self.txt_words.configure(state='disabled') # УДАЛЕНО
         self.lst_header.config(text='Select an analysis to view details')
 
         if self.active_analysis_idx is None or self.active_analysis_idx >= len(self.permanent_analyses):
@@ -419,52 +413,16 @@ class FibonacciAnalysisFrame(tk.Frame):
         analysis_type = analysis['type']
 
         if analysis_type == 'sl':
-            self._populate_sl_info(analysis)
+            # self._populate_sl_info(analysis) # УДАЛЕНО
+            pass  # Игнорируем старые 'sl' анализы
         elif analysis_type == 'ratio':
             self._populate_ratio_info(analysis)
         elif analysis_type == 'polygon':
             # Polygon info is special, it aggregates *all* saved polygons
             self._populate_polygon_info()
 
-    def _populate_sl_info(self, analysis_data):
-        self.lst_header.config(text='Found words (Fibonacci subsegments)')
-        self.list_index_map.clear()
-        self.lst.delete(0, tk.END)
-
-        ratio = analysis_data['data'].get('ratio', float('nan'))
-        found = analysis_data['data'].get('found_words', [])
-        SL = analysis_data['data'].get('sl_chain', [])
-
-        groups: Dict[int, List] = {}
-        for entry in found: groups.setdefault(entry[0], []).append(entry)
-
-        row = 0
-        if groups:
-            for n in sorted(groups.keys()):
-                self.lst.insert(tk.END, f'— n={n} —')
-                self.list_index_map[row] = {'type': 'header'}
-                row += 1
-                for (n_, i0, word, Lc, Sc) in groups[n]:
-                    self.lst.insert(tk.END, f'  i={i0}  word={word}  L={Lc} S={Sc}')
-                    self.list_index_map[row] = {'analysis_idx': self.active_analysis_idx, 'type': 'sl', 'i0': i0,
-                                                'n': n_}
-                    row += 1
-                self.lst.insert(tk.END, '')
-                self.list_index_map[row] = {'type': 'spacer'}
-                row += 1
-        else:
-            self.lst.insert(tk.END, 'No matches (n≥3)')
-
-        if math.isfinite(ratio): self.lbl_ratio.config(text=f'Average L/S along chain: {ratio:.3f}')
-        self._set_sl_text(''.join(SL))
-
-        max_len_ref = max(groups.keys(), default=min(len(SL), 34))
-        # gen_fibonacci_words ТЕПЕРЬ ИМПОРТИРУЕТСЯ ИЗ UTILS
-        self.txt_words.configure(state='normal');
-        self.txt_words.delete('1.0', tk.END)
-        for w in gen_fibonacci_words(max_len=max_len_ref, start='L'):
-            self.txt_words.insert(tk.END, f'len={len(w)} → {w}\n')
-        self.txt_words.configure(state='disabled')
+    # ИЗМЕНЕНО: Функция _populate_sl_info УДАЛЕНА
+    # def _populate_sl_info(self, analysis_data): ...
 
     def _populate_ratio_info(self, analysis_data):
         self.lst_header.config(text='Neighboring segment ratios (Ratio mode)')
@@ -568,22 +526,22 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         self._focus_on(float(self.points[j, 1]), float(self.points[j, 0]))
 
-        if self.analysis_mode in ('sl', 'ratio'):
+        # ИЗМЕНЕНО: Удалена логика 'sl'
+        if self.analysis_mode == 'ratio':
             if self.anchor_idx is None:
                 self.anchor_idx = j
                 self._redraw_canvas()
             else:
                 indices = self._collect_points_along_segment(self.anchor_idx, j, self.max_dist_line)
-                if len(indices) < (3 if self.analysis_mode == 'ratio' else 2):
+                # ИЗМЕНЕНО: Убрано 'else 2'
+                if len(indices) < 3:
                     self._set_status(f"Not enough points found for {self.analysis_mode} analysis.")  # Use _set_status
                     self.anchor_idx = None
                     self._redraw_canvas()
                     return
 
-                if self.analysis_mode == 'sl':
-                    self.run_analysis(indices)
-                else:
-                    self.run_ratio_analysis(indices)
+                # ИЗМЕНЕНО: Убран 'if sl'
+                self.run_ratio_analysis(indices)
 
                 self.anchor_idx = None
 
@@ -605,7 +563,7 @@ class FibonacciAnalysisFrame(tk.Frame):
                 if dist_sq < min_dist_sq:
                     min_dist_sq = dist_sq
                     best_idx = i
-            else:  # chain or ratio
+            elif analysis['type'] == 'ratio':  # ИЗМЕНЕНО: 'sl' удален
                 for k in range(len(pts) - 1):
                     p1_yx = pts[k]
                     p2_yx = pts[k + 1]
@@ -615,6 +573,7 @@ class FibonacciAnalysisFrame(tk.Frame):
                     if dist_sq < min_dist_sq:
                         min_dist_sq = dist_sq
                         best_idx = i
+            # 'sl' type is just ignored
 
         # Use a larger tolerance for selection than for point picking
         if best_idx is not None and math.sqrt(min_dist_sq) < self.pick_tol * 3:
@@ -764,7 +723,8 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         style = {'color': color, 'ls': ls, 'lw': lw, 'zorder': zorder, 'active': is_active or is_pending}
 
-        if analysis_type in ('sl', 'ratio'):
+        # ИЗМЕНЕНО: 'sl' убран
+        if analysis_type == 'ratio':
             self._draw_one_analysis_chain(analysis_data, style)
         elif analysis_type == 'polygon':
             self._draw_one_analysis_polygon(analysis_data, style)
@@ -791,15 +751,9 @@ class FibonacciAnalysisFrame(tk.Frame):
                 self.ax.text(xN, yN, str(i + 1), color=style['color'], fontsize=8, ha='right', va='bottom',
                              zorder=style['zorder'] + 0.2)
 
-            if analysis_data['type'] == 'sl':
-                sl_chain = analysis_data['data'].get('sl_chain', [])
-                for k in range(len(sl_chain)):
-                    if k + 1 < len(pts):  # Ensure index exists
-                        y1, x1 = pts[k];
-                        y2, x2 = pts[k + 1]
-                        my, mx = (y1 + y2) / 2, (x1 + x2) / 2
-                        self.ax.text(mx, my, sl_chain[k], color='red', fontsize=9, ha='center', va='center',
-                                     zorder=style['zorder'] + 0.2)
+            # ИЗМЕНЕНО: Блок 'sl' удален
+            # if analysis_data['type'] == 'sl':
+            #     ...
 
     def _draw_one_analysis_polygon(self, analysis_data: Dict[str, Any], style: Dict):
         """Draws a polygon with V1 style (fill, label)."""
@@ -836,27 +790,15 @@ class FibonacciAnalysisFrame(tk.Frame):
         analysis_data = self.permanent_analyses[analysis_idx]
 
         if analysis_type == 'sl':
-            self._highlight_word_V1(analysis_data, meta['i0'], meta['n'])
+            # self._highlight_word_V1(analysis_data, meta['i0'], meta['n']) # УДАЛЕНО
+            pass
         elif analysis_type == 'ratio':
             self._highlight_ratio_pair_V1(analysis_data, meta['k'], meta['k'] + 1)
         elif analysis_type == 'polygon':
             self._highlight_polygon_V1(analysis_data)
 
-    def _highlight_word_V1(self, analysis_data: Dict, i0: int, n: int):
-        """Draws lime green highlight for a 'word' (from V1)"""
-        if self.points is None: return
-        indices = analysis_data['indices']
-        chain = self.points[indices]
-        sl_chain = analysis_data['data'].get('sl_chain', [])
-
-        for k in range(i0, i0 + n):
-            if k + 1 < len(chain):  # Ensure index exists
-                y1, x1 = chain[k];
-                y2, x2 = chain[k + 1]
-                self.ax.plot([x1, x2], [y1, y2], color='lime', lw=3.2, zorder=10)
-                my, mx = (y1 + y2) / 2, (x1 + x2) / 2
-                if k < len(sl_chain):  # Ensure SL label exists
-                    self.ax.text(mx, my, sl_chain[k], color='red', fontsize=9, ha='center', va='center', zorder=10.1)
+    # ИЗМЕНЕНО: Функция _highlight_word_V1 УДАЛЕНА
+    # def _highlight_word_V1(self, analysis_data: Dict, i0: int, n: int): ...
 
     def _highlight_ratio_pair_V1(self, analysis_data: Dict, seg_a: int, seg_b: int):
         """Draws lime green highlight for a ratio pair (from V1)"""
@@ -895,39 +837,8 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     # --- Analysis Logic (Modified) ---
 
-    def run_analysis(self, indices: List[int]):
-        chain = self.points[indices].copy()
-        seg = np.linalg.norm(np.diff(chain, axis=0), axis=1)
-        # cluster_lengths, fib_list_upto ТЕПЕРЬ ИМПОРТИРУЮТСЯ ИЗ UTILS
-        labels, Slen, Llen, sidx, lidx = cluster_lengths(seg)
-        sl_chain = ['S' if labels[i] == sidx else 'L' for i in range(len(seg))]
-        ratio = (Llen / Slen) if (Slen and not math.isnan(Slen) and Slen > 0) else float('nan')
-
-        # Find words
-        found_words: List[Tuple[int, int, str, int, int]] = []
-        fibNs = [n for n in fib_list_upto(len(sl_chain)) if n >= 3]
-        for n in fibNs:
-            fibs = fib_list_upto(n)
-            k = len(fibs) - 1
-            exp1 = (fibs[k - 1], fibs[k - 2]) if k >= 2 else (1, 0)
-            for i in range(0, len(sl_chain) - n + 1):
-                sub = sl_chain[i:i + n]
-                Lc, Sc = sub.count('L'), sub.count('S')
-                if (Lc, Sc) == exp1:
-                    found_words.append((n, i, ''.join(sub), Lc, Sc))
-
-        analysis_data = {
-            'type': 'sl',
-            'indices': indices,
-            'dialog_pos': chain.mean(axis=0)[::-1].tolist(),  # (x,y)
-            'data': {
-                'sl_chain': sl_chain,
-                'ratio': ratio,
-                'found_words': found_words,
-            }
-        }
-        self._prompt_for_confirmation(analysis_data)
-        self._set_status(f"Chain analysis complete. Please confirm or reject.")  # Use _set_status
+    # ИЗМЕНЕНО: Функция run_analysis (для 'sl') УДАЛЕНА
+    # def run_analysis(self, indices: List[int]): ...
 
     def run_ratio_analysis(self, indices: List[int]):
         chain = self.points[indices].copy()
@@ -1069,16 +980,18 @@ class FibonacciAnalysisFrame(tk.Frame):
             pass
 
     def _set_analysis_mode(self, mode: str):
-        if self.license_manager and not self.license_manager.has_valid_license() and mode in ['ratio', 'polygon']:
-            return
+        # ИЗМЕНЕНО: Проверка лицензии удалена
+        # if self.license_manager and not self.license_manager.has_valid_license() and mode in ['ratio', 'polygon']:
+        #     return
 
         # Reject pending analysis if switching modes
         if self.pending_analysis:
             self._reject_pending_analysis(ask_user=False)
 
         self.analysis_mode = mode
+        # ИЗМЕНЕНО: 'sl' удален из подсказок
         hints = {
-            'sl': 'Chain mode: Left Click to select two endpoints.',
+            # 'sl': 'Chain mode: Left Click to select two endpoints.',
             'ratio': 'Ratio mode: Left Click to select two endpoints.',
             'polygon': 'Polygon mode: Left Click to add vertices, close on the first point.',
         }
@@ -1170,7 +1083,7 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def _clear_rubber_lines(self):
         """
-        ИСПРАВЛЕННЫЙ МЕТОД
+        (Код с исправленным синтаксисом)
         Очищает все "резиновые" линии (превью).
         """
         removed = False
@@ -1192,19 +1105,11 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         # if removed: self.canvas.draw_idle() # Avoid redraw if nothing changed
 
-    def _on_sl_keypress(self, event):
-        # Manual editing of the SL chain is disabled in this workflow
-        # to prevent data mismatch.
-        messagebox.showinfo("Info",
-                            "Manual editing of the S/L chain is disabled. Please re-run the chain analysis if needed.")
-        return "break"
+    # ИЗМЕНЕНО: Функция _on_sl_keypress УДАЛЕНА
+    # def _on_sl_keypress(self, event): ...
 
-    def _set_sl_text(self, s: str):
-        state = self.txt_sl.cget('state')
-        self.txt_sl.config(state=tk.NORMAL)
-        self.txt_sl.delete('1.0', tk.END)
-        self.txt_sl.insert('1.0', s)
-        self.txt_sl.config(state=state)
+    # ИЗМЕНЕНО: Функция _set_sl_text УДАЛЕНА
+    # def _set_sl_text(self, s: str): ...
 
     def _collect_points_along_segment(self, i0: int, i1: int, max_dist: float) -> List[int]:
         if self.points is None: return []
