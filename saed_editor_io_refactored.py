@@ -5,7 +5,7 @@
 ---------------------
 Отвечает за загрузку/сохранение JSON, изображений, сессий.
 Не обрабатывает типы/ID точек.
-*** ИЗМЕНЕНО: Добавлена логика выравнивания по шаблону с уточнением и фильтрацией ***
+*** ИЗМЕНЕНО: Добавлена логика выравнивания по шаблону с уточнением через аффинное преобразование и фильтрацией ***
 """
 import json
 from pathlib import Path
@@ -16,7 +16,6 @@ from typing import Tuple, Union, Optional, Dict, Any, List
 # <<< НОВОЕ: Добавляем необходимые импорты >>>
 import cv2
 import math
-
 try:
     from scipy.spatial import cKDTree
 except ImportError:
@@ -31,23 +30,13 @@ try:
 except ImportError as e:
     print(f"Ошибка импорта зависимостей: {e}")
     messagebox.showerror("Import Error", f"Failed to import dependencies: {e}")
-
-
     class PreprocSettings:
         def __init__(self, mode="raw"): self.mode = mode
-
         @staticmethod
         def from_json(data, fallback_mode=None): return PreprocSettings(fallback_mode or "raw")
-
         def to_json(self): return {"mode": self.mode}
-
-
-    def load_grayscale_with_preproc(path, settings):
-        raise ImportError("preproc.py not found")
-
-
-    def compute_percentile_map(img):
-        raise ImportError("percentile_utils.py not found")
+    def load_grayscale_with_preproc(path, settings): raise ImportError("preproc.py not found")
+    def compute_percentile_map(img): raise ImportError("percentile_utils.py not found")
 
 
 # <<< НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ (вне класса) >>>
@@ -67,11 +56,11 @@ def _get_peaks_from_template_image(image_path: Path) -> Tuple[Optional[np.ndarra
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_img, connectivity=8)
 
         if num_labels <= 1:
-            return None, None  # Точки не найдены
+            return None, None # Точки не найдены
 
         # Первый центроид (индекс 0) - это фон
         # centroids[:, ::-1] переворачивает x, y -> y, x
-        points_yx = centroids[1:, ::-1].astype(float)  # Получаем все центроиды (y, x)
+        points_yx = centroids[1:, ::-1].astype(float) # Получаем все центроиды (y, x)
 
         # Находим центр шаблона (центр масс найденных точек)
         if len(points_yx) > 0:
@@ -85,7 +74,6 @@ def _get_peaks_from_template_image(image_path: Path) -> Tuple[Optional[np.ndarra
         messagebox.showerror("Ошибка шаблона", f"Не удалось обработать изображение шаблона:\n{e}")
         return None, None
 
-
 # <<< НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ (вне класса) >>>
 def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
                         experimental_pts_centered_polar: np.ndarray,
@@ -98,7 +86,7 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     # 1. Поиск Масштаба (S)
     # Используем медиану радиусов N ближайших к центру точек
     N_FOR_SCALE = min(20, len(template_pts_centered_polar), len(experimental_pts_centered_polar))
-    if N_FOR_SCALE < 2: return 1.0, 0.0  # Недостаточно точек
+    if N_FOR_SCALE < 2: return 1.0, 0.0 # Недостаточно точек
 
     # [:, 0] это радиусы
     template_radii = np.sort(template_pts_centered_polar[:, 0])
@@ -111,15 +99,15 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
 
     # Проверяем, достаточно ли точек после фильтрации
     if len(valid_template_radii) < N_FOR_SCALE or len(valid_exp_radii) < N_FOR_SCALE:
-        # Если точек мало, используем все что есть (но не менее 1)
-        N_FOR_SCALE = max(1, min(len(valid_template_radii), len(valid_exp_radii)))
-        if N_FOR_SCALE == 0: return 1.0, 0.0  # Совсем нет точек > 0
+         # Если точек мало, используем все что есть (но не менее 1)
+         N_FOR_SCALE = max(1, min(len(valid_template_radii), len(valid_exp_radii)))
+         if N_FOR_SCALE == 0: return 1.0, 0.0 # Совсем нет точек > 0
 
     median_template_r = np.median(valid_template_radii[:N_FOR_SCALE])
     median_exp_r = np.median(valid_exp_radii[:N_FOR_SCALE])
 
-    if median_template_r < 1e-6 or median_exp_r < 1e-6 or not np.isfinite(median_template_r) or not np.isfinite(
-            median_exp_r):
+
+    if median_template_r < 1e-6 or median_exp_r < 1e-6 or not np.isfinite(median_template_r) or not np.isfinite(median_exp_r):
         scale = 1.0
     else:
         scale = median_exp_r / median_template_r
@@ -138,13 +126,12 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     valid_exp_radii = exp_radii[exp_radii > 1e-6]
     if len(valid_exp_radii) == 0: return scale, 0.0
 
-    max_r_idx = min(len(valid_exp_radii) - 1, 50)
+    max_r_idx = min(len(valid_exp_radii)-1, 50)
     max_r_from_exp = valid_exp_radii[max_r_idx]
 
-    template_set = scaled_template_polar[
-        (scaled_template_polar[:, 0] < (max_r_from_exp * 1.5)) & (scaled_template_polar[:, 0] > 1e-6)]
-    exp_set = experimental_pts_centered_polar[(experimental_pts_centered_polar[:, 0] < (max_r_from_exp * 1.5)) & (
-                experimental_pts_centered_polar[:, 0] > 1e-6)]
+
+    template_set = scaled_template_polar[(scaled_template_polar[:, 0] < (max_r_from_exp * 1.5)) & (scaled_template_polar[:, 0] > 1e-6)]
+    exp_set = experimental_pts_centered_polar[(experimental_pts_centered_polar[:, 0] < (max_r_from_exp * 1.5)) & (experimental_pts_centered_polar[:, 0] > 1e-6)]
 
     # <<< ИСПРАВЛЕНИЕ: Получаем размер exp_set ДО цикла >>>
     exp_set_size = len(exp_set)
@@ -156,19 +143,19 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
     bin_width = 360.0 / num_bins
 
     # Допуск по радиусу для сопоставления
-    radius_tolerance = max(4.0, 0.05 * median_exp_r)  # 4 пикселя или 5%
+    radius_tolerance = max(4.0, 0.05 * median_exp_r) # 4 пикселя или 5%
 
     if cKDTree is None: raise RuntimeError("Scipy (cKDTree) не найден.")
 
     # Строим k-d tree из экспериментальных точек (r, a)
     tree_exp = cKDTree(exp_set)
-    tree_template = cKDTree(template_set)  # <<< Строим дерево и для шаблона
+    tree_template = cKDTree(template_set) # <<< Строим дерево и для шаблона
 
     # Ищем пары для каждой точки шаблона
     # query_ball_tree находит все пары в радиусе (Евклидово)
-    pairs = tree_exp.query_ball_tree(tree_template, r=radius_tolerance)  # <<< Используем оба дерева
+    pairs = tree_exp.query_ball_tree(tree_template, r=radius_tolerance) # <<< Используем оба дерева
 
-    for i, exp_indices in enumerate(pairs):  # i = индекс точки шаблона
+    for i, exp_indices in enumerate(pairs): # i = индекс точки шаблона
         if not exp_indices:
             continue
 
@@ -179,16 +166,16 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
 
         t_r, t_a = template_set[i]
 
-        for j in exp_indices:  # j = индекс точки эксперимента
+        for j in exp_indices: # j = индекс точки эксперимента
 
             # <<< --- ВОТ ИСПРАВЛЕНИЕ --- >>>
             # Явно проверяем, что индекс j валиден для exp_set
             if j < 0 or j >= exp_set_size:
                 # print(f"!!! WARNING: Invalid index {j} returned by query_ball_tree for exp_set size {exp_set_size}. Skipping.")
-                continue  # Пропускаем этот невалидный индекс
+                continue # Пропускаем этот невалидный индекс
             # <<< --- КОНЕЦ ИСПРАВЛЕНИЯ --- >>>
 
-            e_r, e_a = exp_set[j]  # Теперь доступ должен быть безопасным
+            e_r, e_a = exp_set[j] # Теперь доступ должен быть безопасным
 
             # (Допуск по радиусу уже проверен k-d tree)
             angle_diff = (e_a - t_a + 360) % 360
@@ -199,11 +186,11 @@ def _find_transform_s_r(template_pts_centered_polar: np.ndarray,
                 histogram[bin_index] += weight
 
     if np.max(histogram) == 0:
-        return scale, 0.0  # Нет совпадений
+        return scale, 0.0 # Нет совпадений
 
     # Находим бин с макс. числом голосов
     best_bin = np.argmax(histogram)
-    rotation_deg = (best_bin + 0.5) * bin_width  # Центр бина
+    rotation_deg = (best_bin + 0.5) * bin_width # Центр бина
 
     return scale, rotation_deg
 
@@ -220,18 +207,13 @@ class EditorIO:
             filetypes=[("SAED Input JSON", "*saed_input.json;*.json"), ("All", "*.*")]
         )
         if p:
-            try:
-                self.load_input_json(Path(p), push_undo=True)
-            except FileNotFoundError:
-                messagebox.showerror("Error", f"File not found: {p}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load JSON:\n{e}")
+            try: self.load_input_json(Path(p), push_undo=True)
+            except FileNotFoundError: messagebox.showerror("Error", f"File not found: {p}")
+            except Exception as e: messagebox.showerror("Error", f"Failed to load JSON:\n{e}")
 
     def save_points_wrapper(self):
-        try:
-            self._save_points()
-        except Exception as e:
-            messagebox.showerror("Save Error", f"Failed to save points:\n{e}")
+        try: self._save_points()
+        except Exception as e: messagebox.showerror("Save Error", f"Failed to save points:\n{e}")
 
     # <<< НОВЫЙ МЕТОД-ОБЕРТКА >>>
     def fill_from_template_wrapper(self):
@@ -258,11 +240,11 @@ class EditorIO:
         except Exception as e:
             messagebox.showerror("Ошибка выравнивания", f"Произошла ошибка:\n{e}")
             import traceback
-            traceback.print_exc()  # Для отладки
+            traceback.print_exc() # Для отладки
 
     # <<< ОБНОВЛЕННЫЙ ОСНОВНОЙ МЕТОД >>>
     def run_template_matching(self, template_path: Path):
-        """Основная логика выравнивания по шаблону с уточнением и фильтрацией."""
+        """Основная логика выравнивания по шаблону с уточнением через аффинное преобразование и фильтрацией."""
 
         # 1. Получаем экспериментальные точки и центр
         if self.controller.model.is_empty():
@@ -287,7 +269,7 @@ class EditorIO:
 
         temp_cy, temp_cx = template_center_yx
 
-        # 3. Конвертируем в центрированные полярные координаты
+        # 3. Конвертируем в центрированные *декартовы* и полярные координаты
 
         # --- Эксперимент ---
         exp_centered_yx = experimental_points_yx - experimental_center_yx
@@ -295,96 +277,129 @@ class EditorIO:
         exp_a = (np.degrees(np.arctan2(exp_centered_yx[:, 0], exp_centered_yx[:, 1])) + 360) % 360
         exp_polar = np.column_stack((exp_r, exp_a))
 
-        # --- Шаблон (сохраняем и декартовы, и полярные центрированные) ---
+        # --- Шаблон ---
         temp_centered_yx = template_points_yx_orig - template_center_yx
         temp_r = np.hypot(temp_centered_yx[:, 1], temp_centered_yx[:, 0])
         temp_a = (np.degrees(np.arctan2(temp_centered_yx[:, 0], temp_centered_yx[:, 1])) + 360) % 360
-        temp_polar = np.column_stack((temp_r, temp_a))  # radius, angle_deg
+        temp_polar = np.column_stack((temp_r, temp_a)) # radius, angle_deg
 
-        # 4. Находим Масштаб (S) и Поворот (R)
-        self.controller.set_status("Выравнивание шаблона... (может занять время)")
-        self.controller.update()  # Обновляем UI
+        # 4. Находим *Первоначальные* Масштаб (S) и Поворот (R)
+        self.controller.set_status("Поиск первоначального выравнивания...")
+        self.controller.update() # Обновляем UI
 
-        scale, rotation_deg = _find_transform_s_r(temp_polar, exp_polar)
+        initial_scale, initial_rotation_deg = _find_transform_s_r(temp_polar, exp_polar)
 
-        self.controller.set_status(f"Выравнивание найдено: Масштаб={scale:.3f}, Поворот={rotation_deg:.2f}°")
+        self.controller.set_status(f"Начальное выравнивание: S={initial_scale:.3f}, R={initial_rotation_deg:.2f}°")
 
-        if scale < 0.1 or scale > 10:
-            messagebox.showwarning("Предупреждение",
-                                   f"Необычный фактор масштабирования ({scale:.3f}). Результат может быть неточным.")
+        if initial_scale < 0.1 or initial_scale > 10:
+            messagebox.showwarning("Предупреждение", f"Необычный фактор масштабирования ({initial_scale:.3f}). Результат может быть неточным.")
 
-        # 5. Трансформируем *все* точки шаблона (глобальное выравнивание)
-        temp_r_all = temp_polar[:, 0]
-        temp_a_all_rad = np.deg2rad(temp_polar[:, 1])
+        # 5. Применяем *Первоначальное* преобразование (S, R) к точкам шаблона (центрированным)
+        initial_rotation_rad = np.deg2rad(initial_rotation_deg)
+        cos_r = np.cos(initial_rotation_rad)
+        sin_r = np.sin(initial_rotation_rad)
 
-        # Применяем S и R
-        scaled_r = temp_r_all * scale
-        rotated_a_rad = temp_a_all_rad + np.deg2rad(rotation_deg)
+        # Матрица поворота и масштабирования 2x2
+        # [[ s*cos, -s*sin ],
+        #  [ s*sin,  s*cos ]]
+        initial_transform_matrix = initial_scale * np.array([
+            [cos_r, -sin_r],
+            [sin_r, cos_r]
+        ])
 
-        # Обратно в декартовы (центрированные)
-        transformed_centered_x = scaled_r * np.cos(rotated_a_rad)
-        transformed_centered_y = scaled_r * np.sin(rotated_a_rad)
+        # Применяем матрицу к центрированным декартовым координатам шаблона (y, x) -> (x', y')
+        # Нужно транспонировать temp_centered_yx для матричного умножения
+        # Результат будет (N, 2) с колонками (x', y')
+        # Используем .dot() для матричного умножения
+        initially_transformed_centered_xy = temp_centered_yx[:, ::-1].dot(initial_transform_matrix.T)
 
-        # Добавляем сдвиг (центр эксперимента)
-        initial_transformed_x = transformed_centered_x + exp_cx
-        initial_transformed_y = transformed_centered_y + exp_cy
 
-        initial_transformed_template_points_yx = np.column_stack((initial_transformed_y, initial_transformed_x))
+        # Добавляем сдвиг к центру эксперимента, чтобы получить абсолютные координаты (y'', x'')
+        initially_transformed_template_points_yx = initially_transformed_centered_xy[:, ::-1] + experimental_center_yx
 
-        # --- <<< НОВОЕ: 5.5 Уточнение смещения >>> ---
-        self.controller.set_status("Уточнение выравнивания...")
+
+        # --- 6. Уточнение преобразования с помощью cv2.estimateAffinePartial2D ---
+        self.controller.set_status("Уточнение аффинного преобразования...")
         self.controller.update()
 
-        proximity_threshold = 5.0  # Порог для поиска пар
+        proximity_threshold = 5.0 # Порог для поиска пар
+        if cKDTree is None: raise RuntimeError("Scipy (cKDTree) не найден.")
         exp_tree = cKDTree(experimental_points_yx)
 
         # Находим ближайших соседей для *первично трансформированных* точек шаблона
-        distances, indices_in_exp = exp_tree.query(initial_transformed_template_points_yx)
+        distances, indices_in_exp = exp_tree.query(initially_transformed_template_points_yx)
 
         # Находим пары, которые достаточно близки
         matched_mask = (distances <= proximity_threshold)
         matched_template_indices = np.where(matched_mask)[0]
         matched_exp_indices = indices_in_exp[matched_mask]
 
-        average_offset_yx = np.array([0.0, 0.0])  # y, x
-        if len(matched_template_indices) > 0:
-            # Координаты совпавших точек шаблона (после первоначальной трансформации)
-            matched_template_pts_yx = initial_transformed_template_points_yx[matched_template_indices]
+        # Матрица для финального преобразования
+        final_affine_matrix = None # Будет [2, 3]
+
+        if len(matched_template_indices) >= 3: # Нужно хотя бы 3 пары для аффинного преобразования
+            # Координаты совпавших точек шаблона (ИСХОДНЫЕ, не трансформированные!)
+            # Формат для OpenCV: (N, 1, 2) и float32, колонки (x, y)
+            src_pts = template_points_yx_orig[matched_template_indices][:, ::-1].reshape(-1, 1, 2).astype(np.float32)
             # Координаты соответствующих им экспериментальных точек
-            matched_exp_pts_yx = experimental_points_yx[matched_exp_indices]
-            # Вычисляем векторы смещений (experiment - template) для каждой пары
-            offsets_yx = matched_exp_pts_yx - matched_template_pts_yx
-            # Усредняем смещение
-            average_offset_yx = np.mean(offsets_yx, axis=0)
-            self.controller.set_status(
-                f"Найдено {len(matched_template_indices)} пар. Уточняющее смещение: Y={average_offset_yx[0]:.2f}, X={average_offset_yx[1]:.2f}")
+            dst_pts = experimental_points_yx[matched_exp_indices][:, ::-1].reshape(-1, 1, 2).astype(np.float32)
+
+            # Используем estimateAffinePartial2D (только вращение, масштаб, сдвиг), RANSAC для робастности
+            # M, inliers = cv2.estimateAffinePartial2D(src_pts, dst_pts, method=cv2.RANSAC, ransacReprojThreshold=proximity_threshold)
+
+            # ИЛИ Используем estimateAffine2D (включает сдвиг/shear), может быть лучше для искажений
+            M, inliers = cv2.estimateAffine2D(src_pts, dst_pts, method=cv2.RANSAC, ransacReprojThreshold=proximity_threshold)
+
+
+            if M is not None and inliers is not None and len(np.where(inliers.ravel() == 1)[0]) >= 3 : # Проверяем, что RANSAC нашел достаточно совпадений
+                final_affine_matrix = M
+                num_inliers = len(np.where(inliers.ravel() == 1)[0])
+                self.controller.set_status(f"Найдено {len(matched_template_indices)} пар. Уточнено аффинное преобразование (inliers: {num_inliers}).")
+            else:
+                self.controller.set_status("Не удалось уточнить аффинное преобразование (мало inliers). Используется начальное.")
         else:
-            self.controller.set_status(
-                "Не найдено близких пар для уточнения смещения. Используется глобальное выравнивание.")
+            self.controller.set_status("Не найдено достаточно близких пар (<3). Используется начальное выравнивание.")
 
-        # Применяем уточняющее смещение ко *всем* точкам шаблона
-        final_transformed_template_points_yx = initial_transformed_template_points_yx + average_offset_yx
-        # --- <<< КОНЕЦ УТОЧНЕНИЯ >>> ---
 
-        # 6. Находим "пропущенные" точки (ИСПОЛЬЗУЯ УТОЧНЕННЫЕ КООРДИНАТЫ)
-        # Перестраиваем дерево или используем то же? (То же)
-        # Находим дистанцию от *уточненных* точек шаблона до ближайшей точки эксперимента
+        # 7. Применяем *финальное* преобразование ко *всем* ИСХОДНЫМ точкам шаблона
+        if final_affine_matrix is not None:
+            # Преобразуем исходные точки шаблона (x, y) с помощью матрицы M
+            # Нужно добавить столбец единиц для аффинного преобразования
+            src_all_pts_xy_hom = np.hstack((template_points_yx_orig[:, ::-1], np.ones((len(template_points_yx_orig), 1))))
+            # Применяем матрицу M [2, 3]
+            transformed_xy = (final_affine_matrix @ src_all_pts_xy_hom.T).T
+            # Конвертируем обратно в (y, x)
+            final_transformed_template_points_yx = transformed_xy[:, ::-1]
+        else:
+            # Если уточнение не удалось, используем результат первоначального выравнивания
+            # И применяем среднее смещение (как раньше)
+            average_offset_yx = np.array([0.0, 0.0]) # y, x
+            if len(matched_template_indices) > 0:
+                matched_template_pts_yx = initially_transformed_template_points_yx[matched_template_indices]
+                matched_exp_pts_yx = experimental_points_yx[matched_exp_indices]
+                offsets_yx = matched_exp_pts_yx - matched_template_pts_yx
+                average_offset_yx = np.mean(offsets_yx, axis=0)
+            final_transformed_template_points_yx = initially_transformed_template_points_yx + average_offset_yx
+
+
+        # 8. Находим "пропущенные" точки (ИСПОЛЬЗУЯ ФИНАЛЬНЫЕ КООРДИНАТЫ)
+        # Находим дистанцию от *финальных* точек шаблона до ближайшей точки эксперимента
         final_distances, final_indices_in_exp = exp_tree.query(final_transformed_template_points_yx)
 
         # Находим индексы точек шаблона, где дистанция *больше* порога
         missed_mask_indices = np.where(final_distances > proximity_threshold)[0]
 
-        # --- <<< НОВОЕ: 6.5 Фильтрация пропущенных по радиусу совпавших >>> ---
-        # Находим индексы шаблона, которые СОВПАЛИ (после уточнения)
+        # 9. Фильтрация пропущенных по радиусу совпавших
+        # Находим индексы шаблона, которые СОВПАЛИ (после финального преобразования)
         final_matched_mask = (final_distances <= proximity_threshold)
         final_matched_template_indices = np.where(final_matched_mask)[0]
 
         if len(final_matched_template_indices) == 0:
-            messagebox.showwarning("Выравнивание",
-                                   "Не найдено ни одной совпадающей точки после уточнения. Добавление точек отменено.")
-            return
+             messagebox.showwarning("Выравнивание", "Не найдено ни одной совпадающей точки после финального преобразования. Добавление точек отменено.")
+             return
 
         # Получаем исходные радиусы совпавших точек шаблона
+        # Используем temp_polar, который хранит ИСХОДНЫЕ полярные координаты
         matched_original_radii = temp_polar[final_matched_template_indices, 0]
         min_matched_r = np.min(matched_original_radii)
         max_matched_r = np.max(matched_original_radii)
@@ -402,17 +417,15 @@ class EditorIO:
         num_candidates_filtered = len(filtered_missed_indices)
 
         if num_candidates_filtered == 0:
-            messagebox.showinfo("Выравнивание",
-                                f"Кандидаты на добавление ({num_candidates_initial}) не прошли фильтрацию по радиусу совпавших точек.")
+            messagebox.showinfo("Выравнивание", f"Кандидаты на добавление ({num_candidates_initial}) не прошли фильтрацию по радиусу совпавших точек.")
             return
 
-        # Получаем координаты отфильтрованных пропущенных точек (уже уточненные)
+        # Получаем финальные координаты отфильтрованных пропущенных точек
         missed_points_yx = final_transformed_template_points_yx[filtered_missed_indices]
-        # --- <<< КОНЕЦ ФИЛЬТРАЦИИ >>> ---
 
         num_missed_final = len(missed_points_yx)
 
-        # 7. Добавляем пропущенные точки в модель
+        # 10. Добавляем пропущенные точки в модель
         # Получаем их интенсивность из *экспериментального* изображения
         sampled_values = self.controller.sample_intensities(missed_points_yx)
 
@@ -421,25 +434,23 @@ class EditorIO:
         center_for_model = self.controller.get_center()
         num_added = 0
 
-        # Порог интенсивности (чтобы не добавлять точки в местах, где на снимке пусто)
+        # Порог интенсивности
         intensity_threshold = 10.0
 
         for i in range(num_missed_final):
             y, x = missed_points_yx[i]
             value = sampled_values[i]
 
-            # Не добавляем точки, если на экспериментальном снимке там слишком темно
             if value < intensity_threshold:
                 continue
 
-            # Используем новый 'source'
             self.controller.model.add_point(
                 y=y,
                 x=x,
                 value=value,
                 center=center_for_model,
-                area=1.0,  # У точек из шаблона площадь 1
-                source="template"  # <<< НОВАЯ МЕТКА
+                area=1.0,
+                source="template"
             )
             num_added += 1
 
@@ -449,8 +460,9 @@ class EditorIO:
         if num_candidates_initial > num_candidates_filtered:
             msg += f" {num_candidates_initial - num_candidates_filtered} отброшено фильтром по радиусу."
         if num_added < num_candidates_filtered:
-            msg += f" {num_candidates_filtered - num_added} отброшено из-за низкой интенсивности."
+             msg += f" {num_candidates_filtered - num_added} отброшено из-за низкой интенсивности."
         self.controller.set_status(msg)
+
 
     # ---------- Основная Логика IO ----------
 
@@ -459,17 +471,12 @@ class EditorIO:
         if not path.exists(): raise FileNotFoundError(f"Input JSON file not found: {path}")
         if push_undo: self.controller.push_undo()
 
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON format in {path.name}: {e}")
-        except Exception as e:
-            raise IOError(f"Failed to read JSON file {path.name}: {e}")
+        try: data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e: raise ValueError(f"Invalid JSON format in {path.name}: {e}")
+        except Exception as e: raise IOError(f"Failed to read JSON file {path.name}: {e}")
 
-        self.controller.img_arr_raw = None;
-        self.controller.img_arr_processed = None
-        self.controller._percent_map = None;
-        self.controller._percent_lookup = None
+        self.controller.img_arr_raw = None; self.controller.img_arr_processed = None
+        self.controller._percent_map = None; self.controller._percent_lookup = None
 
         img_path_str = data.get("image")
         if not img_path_str: raise ValueError("JSON missing 'image' field.")
@@ -492,10 +499,8 @@ class EditorIO:
             if self.controller.img_arr_processed is None: self.controller.img_arr_processed = self.controller.img_arr_raw.copy()
 
         img_h, img_w = self.controller.img_arr_processed.shape[:2]
-        c = data.get("center") or {};
-        r = data.get("radii") or {}
-        default_cx = (img_w - 1) / 2.0;
-        default_cy = (img_h - 1) / 2.0
+        c = data.get("center") or {}; r = data.get("radii") or {}
+        default_cx = (img_w - 1) / 2.0; default_cy = (img_h - 1) / 2.0
         center_data = {"x": float(c.get("x", default_cx)), "y": float(c.get("y", default_cy))}
         self.controller.overlay = {
             "center": center_data,
@@ -515,10 +520,7 @@ class EditorIO:
         self.controller.ui_state.clear_tooltip()
         if reset_view: self.controller.view_cx = None; self.controller.view_cy = None
         self.controller.ensure_view_center()
-        self.controller.undo.clear();
-        self.controller.redo.clear()
-        # УДАЛЕНО: _calculate_initial_symmetry()
-        # УДАЛЕНО: _update_group_panel()
+        self.controller.undo.clear(); self.controller.redo.clear()
         self.controller.redraw()
         self.controller.update_zoom_hint()
         self.controller.set_status(f"Loaded: {path.name}")
@@ -530,9 +532,14 @@ class EditorIO:
         pts_list = self.controller.model.to_json_list()
 
         def default_serializer(obj):
-            if isinstance(obj, np.integer): return int(obj)
-            if isinstance(obj, np.floating): return float(obj)
+            if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
+                return int(obj)
+            elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist() # Convert arrays to lists, if needed
             raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
 
         spots_path = output_dir / "spots.json"
         spots_path.write_text(json.dumps({"points": pts_list}, indent=2, default=default_serializer), encoding="utf-8")
@@ -547,12 +554,10 @@ class EditorIO:
                 "dead": self.controller.overlay.get("dead_radius", 0.0),
                 "search": self.controller.overlay.get("search_radius", 0.0)
             },
-            "points": pts_list  # Уже включает 'source'
+            "points": pts_list # Уже включает 'source'
         }
         edited_path = output_dir / "saed_input.edited.json"
-        edited_path.write_text(
-            json.dumps(saed_input_edited_data, ensure_ascii=False, indent=2, default=default_serializer),
-            encoding="utf-8")
+        edited_path.write_text(json.dumps(saed_input_edited_data, ensure_ascii=False, indent=2, default=default_serializer), encoding="utf-8")
         self.controller.set_status(f"Points saved to {output_dir.name}")
         return spots_path
 
@@ -576,7 +581,7 @@ class EditorIO:
 
     # --- Сохранение отладки (Упрощено) ---
 
-    def save_debug_data(self, filename: str = "points_debug.json"):  # Изменено имя по умолчанию
+    def save_debug_data(self, filename: str = "points_debug.json"):
         """Сохраняет отладочные данные из Модели (включая 'source')."""
         output_dir = self.controller.get_output_dir()
         if self.controller.model.is_empty():
@@ -589,8 +594,12 @@ class EditorIO:
         filepath = output_dir / filename
         try:
             def default_serializer(obj):
-                if isinstance(obj, np.integer): return int(obj)
-                if isinstance(obj, np.floating): return float(obj)
+                if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
+                    return int(obj)
+                elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
                 raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
             filepath.write_text(json.dumps(data_to_save, indent=2, default=default_serializer), encoding="utf-8")
@@ -626,19 +635,21 @@ class EditorIO:
                 "preproc_mode": self.controller._preproc_settings.mode,
                 "preproc": self.controller._preproc_settings.to_json(),
                 "points": pts_list,
-                "centers": {"geometric": geo_center_data, "overlay": self.controller.overlay.get("center")},
-                "radii": {"dead": self.controller.overlay.get("dead_radius", 0.0),
-                          "search": self.controller.overlay.get("search_radius", 0.0)},
+                "centers": { "geometric": geo_center_data, "overlay": self.controller.overlay.get("center") },
+                "radii": { "dead": self.controller.overlay.get("dead_radius", 0.0), "search": self.controller.overlay.get("search_radius", 0.0) },
                 "spots_json": str(saved_spots_path.resolve())
             }
 
             def default_serializer(obj):
-                if isinstance(obj, np.integer): return int(obj)
-                if isinstance(obj, np.floating): return float(obj)
+                if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
+                    return int(obj)
+                elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
                 raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
-            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=default_serializer),
-                                    encoding="utf-8")
+            payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=default_serializer), encoding="utf-8")
             self.controller.set_status("Prepared data for analysis…")
         except Exception as e:
             messagebox.showerror("Data Prep Error", f"Failed to create ({payload_path.name}):\n{e}")
@@ -646,8 +657,7 @@ class EditorIO:
 
         if self.controller.app_controller is not None:
             try:
-                self.controller.app_controller.open_analysis(payload_path.resolve(), abs_image_path,
-                                                             saved_spots_path.resolve())
+                self.controller.app_controller.open_analysis(payload_path.resolve(), abs_image_path, saved_spots_path.resolve())
             except Exception as e:
                 print(f"Error calling controller.open_analysis: {e}")
                 messagebox.showerror("Launch Error", f"Failed to switch to analysis tab.\nDetails: {e}")
