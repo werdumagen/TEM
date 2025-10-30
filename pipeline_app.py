@@ -445,7 +445,7 @@ class PipelineController:
 
         try:
             with open(path, 'r', encoding='utf-8') as f:
-                state = json.load(f)
+                state = json.load(f) #1
 
             # --- Critical Order: Set launcher state FIRST ---
             # This ensures the output path is set before other modules might need it
