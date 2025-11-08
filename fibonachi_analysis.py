@@ -733,35 +733,45 @@ class FibonacciAnalysisFrame(tk.Frame):
     # --- Drawing Logic (Modified) ---
 
     # --- НОВЫЙ МЕТОД: _get_display_coords ---
-    def _get_display_coords(self, indices: np.ndarray | List[int]) -> np.ndarray:
-        """
-        Возвращает 2D-координаты для отображения (реальные 2D или проекционные 1D)
-        для заданных индексов точек.
-        """
-        if self.points is None or len(indices) == 0:
-            return np.array([])
+        # --- НОВЫЙ МЕТОД: _get_display_coords (ИСПРАВЛЕННЫЙ) ---
+        def _get_display_coords(self, indices: np.ndarray | List[int]) -> np.ndarray:
+            """
+            Возвращает 2D-координаты для отображения (реальные 2D или проекционные 1D)
+            для заданных индексов точек.
+            """
+            if self.points is None or not hasattr(indices, '__len__') or len(indices) == 0:
+                return np.array([])
 
-        # Убедимся, что indices - это numpy-массив
-        if not isinstance(indices, np.ndarray):
-            indices = np.array(indices)
+            # Убедимся, что indices - это numpy-массив
+            if not isinstance(indices, np.ndarray):
+                indices = np.array(indices)
 
-        # Получаем *оригинальные* 2D-координаты
-        pts_2d = self.points[indices].copy()
+            # Получаем *оригинальные* 2D-координаты
+            # .copy() КРИТИЧЕСКИ ВАЖЕН, чтобы не испортить self.points
+            pts_2d = self.points[indices].copy()
 
-        # Если режим 2D или нет картинки, возвращаем как есть
-        if self.projection_mode == '2d' or self._img_shape is None:
+            # Если режим 2D или нет картинки, возвращаем как есть
+            if self.projection_mode == '2d' or self._img_shape is None:
+                return pts_2d
+
+            h, w = self._img_shape
+
+            # ---
+            # ВОТ ГЛАВНОЕ ИСПРАВЛЕНИЕ
+            # ---
+            if self.projection_mode == 'x':
+                # "Сплющиваем" на X-ось:
+                # Y-координата становится константой (внизу экрана)
+                # X-координата ОСТАЕТСЯ ОРИГИНАЛЬНОЙ
+                pts_2d[:, 0] = h * 0.95
+            elif self.projection_mode == 'y':
+                # "Сплющиваем" на Y-ось:
+                # X-координата становится константой (слева)
+                # Y-координата ОСТАЕТСЯ ОРИГИНАЛЬНОЙ
+                pts_2d[:, 1] = w * 0.05
+
             return pts_2d
-
-        h, w = self._img_shape
-
-        if self.projection_mode == 'x':
-            # Проецируем на горизонтальную линию (95% высоты)
-            pts_2d[:, 0] = h * 0.95
-        elif self.projection_mode == 'y':
-            # Проецируем на вертикальную линию (5% ширины)
-            pts_2d[:, 1] = w * 0.05
-
-        return pts_2d
+        # ---------------------------------------------
 
     # ---------------------------------------------
 
