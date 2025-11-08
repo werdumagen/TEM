@@ -152,7 +152,6 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
     # Расчет допусков: 1.1 * половина расстояния до соседнего прототипа
     for n in range(max_n):
         if n == 0:
-            # Расстояние до M (n=1) или до L/PHI
             if max_n > 1:
                 tol_next = (PROTOTYPES[0] - PROTOTYPES[1]) / 2.0
             else:
@@ -167,9 +166,18 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
             tol_lo = (PROTOTYPES[n] - (PROTOTYPES[n] / PHI)) / 2.0
             TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
 
+    if not TOLERANCES and PROTOTYPES:
+        TOLERANCES.append((PROTOTYPES[0] - (PROTOTYPES[0] / PHI)) / 2.0 * 1.1)
+
+    if len(TOLERANCES) < len(PROTOTYPES):
+        missing = len(PROTOTYPES) - len(TOLERANCES)
+        for i in range(missing):
+            n_idx = len(TOLERANCES)
+            tol_lo = (PROTOTYPES[n_idx] - (PROTOTYPES[n_idx] / PHI)) / 2.0
+            TOLERANCES.append(tol_lo * 1.1)
+
     # 4. Классифицируем каждый сегмент
     full_sequence_data = []
-    # Определяем фактическое количество используемых классов
     max_used_n = 0
     for length in lengths:
         dists = [abs(length - p) for p in PROTOTYPES]
@@ -184,59 +192,58 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
     full_sequence_labels = [s['label'] for s in full_sequence_data]
 
     # 5. ДИНАМИЧЕСКАЯ ДЕФЛЯЦИЯ по правилу (Smallest + Next Smallest) -> Next Larger
-    # Дефляция происходит ОТ САМЫХ МЕЛКИХ (начиная с max_used_n)
+    # [ИСПРАВЛЕННАЯ ЛОГИКА - итеративная обработка каждого уровня]
+
     temp_labels = full_sequence_labels.copy()
 
-    # n_pass_start - это индекс самого мелкого класса, который может быть создан дефляцией.
-    # Если max_used_n=2 (S), то нам нужно, чтобы создалась M (n=1). n_pass_start = 2
-    for n_pass in range(max_used_n, 0, -1):
+    # n_pass от самого маленького используемого класса (S, XS, XXS) вверх к L (L=0)
+    for n_level in range(max_used_n, 0, -1):
 
-        # L_target - метка, которую мы создаем (индекс n-1)
-        L_target = LABELS[n_pass - 1]
+        # Индексы: S_sub (самый маленький, n_level) + M_sub (следующий, n_level - 1)
+        # -> L_target (на уровень выше, n_level - 2)
 
-        # M_sub - средний сегмент, который входит в сумму (индекс n)
-        M_sub = LABELS[n_pass]
+        S_sub = LABELS[n_level]  # Сегмент S_sub (меньший из пары)
+        M_sub = LABELS[n_level - 1]  # Сегмент M_sub (больший из пары)
+        L_target = LABELS[n_level - 2] if n_level > 1 else LABELS[0]  # Сегмент L_target (результат суммы)
 
-        # S_sub - самый маленький сегмент, который входит в сумму (индекс n+1)
-        S_sub = LABELS[n_pass + 1] if n_pass + 1 < max_n else None
+        # Фиксированная точка: повторять проход на текущем уровне n_level, пока есть изменения
+        while True:
+            i = 0
+            pass_labels = []
+            has_changed = False
+            while i < len(temp_labels):
 
-        if S_sub is None: continue
+                # Проверяем, есть ли пара M_sub + S_sub (M_sub - Smallest + S_sub - Next Smallest)
+                # Это фактически M_sub (L_n-1) + S_sub (L_n) -> L_target (L_n-2)
+                # Пример: M (L1) + S (L2) -> L (L0)
 
-        i = 0
-        pass_labels = []
-        has_changed = False
-        while i < len(temp_labels):
+                # Проверяем M_sub + S_sub
+                if (i + 1 < len(temp_labels) and
+                        temp_labels[i] == M_sub and temp_labels[i + 1] == S_sub):
+                    pass_labels.append(L_target)
+                    i += 2
+                    has_changed = True
 
-            # Проверяем на M_sub + S_sub (Next Smallest + Smallest)
-            if (i + 1 < len(temp_labels) and
-                    temp_labels[i] == M_sub and temp_labels[i + 1] == S_sub):
-                pass_labels.append(L_target)
-                i += 2
-                has_changed = True
+                # Проверяем S_sub + M_sub
+                elif (i + 1 < len(temp_labels) and
+                      temp_labels[i] == S_sub and temp_labels[i + 1] == M_sub):
+                    pass_labels.append(L_target)
+                    i += 2
+                    has_changed = True
 
-            # Проверяем на S_sub + M_sub (Smallest + Next Smallest)
-            elif (i + 1 < len(temp_labels) and
-                  temp_labels[i] == S_sub and temp_labels[i + 1] == M_sub):
-                pass_labels.append(L_target)
-                i += 2
-                has_changed = True
+                else:
+                    pass_labels.append(temp_labels[i])
+                    i += 1
 
-            else:
-                pass_labels.append(temp_labels[i])
-                i += 1
-
-        # Если произошли изменения, обновляем последовательность и повторяем проход
-        # на этом же уровне (потому что новый L_target может создать новую дефляцию)
-        if has_changed:
+            # Если изменений нет, переходим к следующему уровню (break), иначе повторяем
             temp_labels = pass_labels
-            # Повторяем текущий проход
-            n_pass += 1
-        else:
-            temp_labels = pass_labels
+            if not has_changed:
+                break
 
     simplified_sequence_labels = temp_labels
 
     # 6. Финальное L/S отображение (L и S)
+    # Здесь мы оставляем только L и S, отбрасывая другие типы, если они остались.
     final_ls_labels = [label for label in simplified_sequence_labels if label in ['L', 'S']]
     l_count = final_ls_labels.count('L')
     s_count = final_ls_labels.count('S')
