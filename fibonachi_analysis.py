@@ -473,7 +473,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         self._set_text_content(self.txt_chain_simple, simple_seq)
         self._set_text_content(self.txt_words, "\n".join(fib_words))
 
-        # +++ ИСПРАВЛЕНИЕ ОШИБКИ ОТОБРАЖЕНИЯ (только 1 строка) +++
+        # +++ ИСПРАВЛЕНИЕ ОШИБКИ ОТОБРАЖЕНИЯ (принудительное обновление) +++
         # Принудительно переключаемся на вкладку "Details" (индекс 0) для обновления
         self.results_notebook.select(0)
         # +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
@@ -775,6 +775,47 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     # ---------------------------------------------
 
+    # +++ НОВЫЙ МЕТОД: _merge_close_points_1d +++
+    def _merge_close_points_1d(self, pts_yx: np.ndarray, threshold: float) -> np.ndarray:
+        """
+        Merges points in 1D mode (x or y) that are closer than the threshold.
+        Averages coordinates of merged points.
+        """
+        if pts_yx.shape[0] < 2:
+            return pts_yx
+
+        # Determine which coordinate to use for distance calculation (X or Y)
+        # YX convention: Y is 0, X is 1
+        coord_index = 1 if self.projection_mode == 'x' else 0
+
+        merged_points = []
+        current_cluster = [pts_yx[0]]
+
+        for i in range(1, pts_yx.shape[0]):
+            # Distance is calculated based on the selected dimension
+            # We compare the current point to the *last point added to the cluster*
+            current_coord = pts_yx[i, coord_index]
+            prev_coord = current_cluster[-1][coord_index]
+
+            distance = np.abs(current_coord - prev_coord)
+
+            if distance < threshold:
+                current_cluster.append(pts_yx[i])
+            else:
+                # Finalize the current cluster and start a new one
+                if len(current_cluster) > 0:
+                    # Merge by averaging all coordinates in the cluster
+                    merged_points.append(np.mean(current_cluster, axis=0))
+                current_cluster = [pts_yx[i]]
+
+        # Finalize the last cluster
+        if len(current_cluster) > 0:
+            merged_points.append(np.mean(current_cluster, axis=0))
+
+        return np.array(merged_points, dtype=float)
+
+    # +++ КОНЕЦ НОВОГО МЕТОДА +++
+
     def _redraw_canvas(self):
         self.ax.clear()
 
@@ -987,6 +1028,23 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     def run_chain_analysis(self, indices: List[int]):
         chain_points = self.points[indices].copy()
+
+        # +++ ЛОГИКА СЛИЯНИЯ ТОЧЕК ДЛЯ 1D РЕЖИМА +++
+        if self.projection_mode != '2d':
+            threshold = self.max_dist_line  # Берем значение из Spinbox
+
+            chain_points_merged = self._merge_close_points_1d(chain_points, threshold)
+
+            if chain_points_merged.shape[0] < chain_points.shape[0]:
+                self._set_status(f"Points merged: {chain_points.shape[0]} -> {chain_points_merged.shape[0]} (1D mode)")
+                chain_points = chain_points_merged
+
+            # Проверяем, достаточно ли точек осталось после слияния
+            if chain_points.shape[0] < 3:
+                self._set_status(f"Not enough merged points found for chain analysis ({chain_points.shape[0]}).")
+                return
+        # +++ КОНЕЦ ЛОГИКИ СЛИЯНИЯ +++
+
         # --- ИЗМЕНЕНО: Передаем projection_mode в функцию анализа ---
         analysis_results = analyze_chain_fibonacci(
             chain_points,
