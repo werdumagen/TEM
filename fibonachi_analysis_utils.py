@@ -110,143 +110,147 @@ def load_input(json_path: Path):
 
 # --- Функции алгоритмов анализа ---
 
-# --- ИЗМЕНЕНО: Добавлен `projection_mode` ---
 def analyze_chain_fibonacci(chain_points: np.ndarray,
-                            max_n: int = 6,
+                            max_n: int = 10,
                             projection_mode: str = '2d') -> Dict[str, Any]:
     """
-    Анализирует цепочку точек на иерархию Фибоначчи L, M, S, ...
-    и упрощает ее до базовой L/S последовательности.
-    Работает в 2D, 1D-X или 1D-Y режиме.
+    Анализирует цепочку точек, используя динамическую классификацию и правила
+    суммы Фибоначчи для дефляции, как запрошено пользователем.
     """
     PHI = (1 + 5 ** 0.5) / 2
-    LABELS = ['L', 'M', 'S', 'XS', 'XXS', '3XS', '4XS', '5XS']  # Метки для n=0 до n=7
+    # Используем более длинный список меток для динамической классификации
+    LABELS = ['L', 'M', 'S', 'XS', 'XXS', '3XS', '4XS', '5XS', '6XS', '7XS']
+    max_n = len(LABELS)
 
-    # 1. Рассчитываем длины сегментов (lengths) В ЗАВИСИМОСТИ ОТ РЕЖИМА
+    # 1. Рассчитываем длины сегментов (lengths)
     if projection_mode == 'x':
-        lengths = np.abs(np.diff(chain_points[:, 1]))  # Только X
-        print(f"Analyzing 1D (X) distances for {len(lengths)} segments.")
+        lengths = np.abs(np.diff(chain_points[:, 1]))
     elif projection_mode == 'y':
-        lengths = np.abs(np.diff(chain_points[:, 0]))  # Только Y
-        print(f"Analyzing 1D (Y) distances for {len(lengths)} segments.")
-    else:  # '2d'
-        lengths = np.linalg.norm(np.diff(chain_points, axis=0), axis=1)  # 2D
-        print(f"Analyzing 2D distances for {len(lengths)} segments.")
+        lengths = np.abs(np.diff(chain_points[:, 0]))
+    else:
+        lengths = np.linalg.norm(np.diff(chain_points, axis=0), axis=1)
 
     if lengths.size == 0:
         return {'segments': [], 'full_sequence_str': "", 'simplified_sequence_str': "", 'final_ls_ratio': np.nan,
                 'fib_words': []}
 
-    # +++ ИСПРАВЛЕННАЯ ЛОГИКА L_base +++
-    # 2. Находим базовую "L" (n=0)
+    # 2. Находим базовую "L" (L_base)
     try:
-        # Используем 90-й процентиль для более надежного L_base
         q90 = np.percentile(lengths, 90)
-        L_base = np.mean(lengths[lengths >= q90]) if np.any(lengths >= q90) else np.mean(lengths)
+        valid_lengths = lengths[lengths >= q90]
+        L_base = np.mean(valid_lengths) if valid_lengths.size > 0 else np.mean(lengths)
     except IndexError:
         L_base = np.mean(lengths)
 
     if not np.isfinite(L_base) or L_base <= 1e-6:
         L_base = np.max(lengths) if lengths.size > 0 else 1.0
-    # +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
 
-    # 3. Генерируем прототипы и допуски
+    # 3. Генерируем прототипы и ДИНАМИЧЕСКИЕ допуски
     PROTOTYPES = [L_base * (PHI ** -n) for n in range(max_n)]
-
-    # +++ ИСПРАВЛЕННАЯ ЛОГИКА ДОПУСКОВ +++
     TOLERANCES = []
 
-    # Допуск для L (n=0)
-    if max_n > 0:
-        tol_0 = (PROTOTYPES[0] - PROTOTYPES[1]) / 2.0 if max_n > 1 else (PROTOTYPES[0] / PHI / 2.0)
-        TOLERANCES.append(tol_0 * 1.1)  # Допуск = половина расстояния до M, +10%
-
-    # Допуски для M, S, ... (n=1 до max_n-2)
-    for n in range(1, max_n - 1):
-        tol_hi = (PROTOTYPES[n - 1] - PROTOTYPES[n]) / 2.0  # Половина расстояния до "старшего"
-        tol_lo = (PROTOTYPES[n] - PROTOTYPES[n + 1]) / 2.0  # Половина расстояния до "младшего"
-        # Допуск = наибольшая из двух половин, +10% (чтобы окна перекрывались)
-        TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
-
-    # Допуск для последнего элемента (n=max_n-1)
-    if max_n > 1:
-        tol_hi = (PROTOTYPES[max_n - 2] - PROTOTYPES[max_n - 1]) / 2.0
-        tol_lo = (PROTOTYPES[max_n - 1] - (PROTOTYPES[max_n - 1] / PHI)) / 2.0
-        TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
-
-    # Убедимся, что у нас есть допуск для каждого прототипа
-    if len(TOLERANCES) < len(PROTOTYPES):
-        missing = len(PROTOTYPES) - len(TOLERANCES)
-        for _ in range(missing):
-            TOLERANCES.append(PROTOTYPES[-1] / 2.0)  # Запасной допуск
-    # +++ КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ +++
+    # Расчет допусков: 1.1 * половина расстояния до соседнего прототипа
+    for n in range(max_n):
+        if n == 0:
+            # Расстояние до M (n=1) или до L/PHI
+            if max_n > 1:
+                tol_next = (PROTOTYPES[0] - PROTOTYPES[1]) / 2.0
+            else:
+                tol_next = (PROTOTYPES[0] - (PROTOTYPES[0] / PHI)) / 2.0
+            TOLERANCES.append(tol_next * 1.1)
+        elif n < max_n - 1:
+            tol_hi = (PROTOTYPES[n - 1] - PROTOTYPES[n]) / 2.0
+            tol_lo = (PROTOTYPES[n] - PROTOTYPES[n + 1]) / 2.0
+            TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
+        else:  # Последний элемент
+            tol_hi = (PROTOTYPES[n - 1] - PROTOTYPES[n]) / 2.0
+            tol_lo = (PROTOTYPES[n] - (PROTOTYPES[n] / PHI)) / 2.0
+            TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
 
     # 4. Классифицируем каждый сегмент
     full_sequence_data = []
+    # Определяем фактическое количество используемых классов
+    max_used_n = 0
     for length in lengths:
         dists = [abs(length - p) for p in PROTOTYPES]
         best_n = int(np.argmin(dists))
 
-        # +++ ИСПРАВЛЕНИЕ: Проверяем, что best_n в пределах TOLERANCES +++
         if best_n < len(TOLERANCES) and dists[best_n] < TOLERANCES[best_n]:
             full_sequence_data.append({'len_1d': length, 'label': LABELS[best_n], 'n': best_n})
+            max_used_n = max(max_used_n, best_n)
         else:
             full_sequence_data.append({'len_1d': length, 'label': '?', 'n': -1})
 
     full_sequence_labels = [s['label'] for s in full_sequence_data]
 
-    # 5. Упрощаем ("дефляция")
+    # 5. ДИНАМИЧЕСКАЯ ДЕФЛЯЦИЯ по правилу (Smallest + Next Smallest) -> Next Larger
+    # Дефляция происходит ОТ САМЫХ МЕЛКИХ (начиная с max_used_n)
     temp_labels = full_sequence_labels.copy()
 
-    for n_pass in range(max_n - 3, -1, -1):  # т.е. от n=3 до n=0
+    # n_pass_start - это индекс самого мелкого класса, который может быть создан дефляцией.
+    # Если max_used_n=2 (S), то нам нужно, чтобы создалась M (n=1). n_pass_start = 2
+    for n_pass in range(max_used_n, 0, -1):
+
+        # L_target - метка, которую мы создаем (индекс n-1)
+        L_target = LABELS[n_pass - 1]
+
+        # M_sub - средний сегмент, который входит в сумму (индекс n)
+        M_sub = LABELS[n_pass]
+
+        # S_sub - самый маленький сегмент, который входит в сумму (индекс n+1)
+        S_sub = LABELS[n_pass + 1] if n_pass + 1 < max_n else None
+
+        if S_sub is None: continue
+
         i = 0
         pass_labels = []
-        L_n, M_n, S_n = LABELS[n_pass], LABELS[n_pass + 1], LABELS[n_pass + 2]  # n=0,1,2 -> L,M,S
-
+        has_changed = False
         while i < len(temp_labels):
+
+            # Проверяем на M_sub + S_sub (Next Smallest + Smallest)
             if (i + 1 < len(temp_labels) and
-                    temp_labels[i] == M_n and temp_labels[i + 1] == S_n):
-                pass_labels.append(L_n)
+                    temp_labels[i] == M_sub and temp_labels[i + 1] == S_sub):
+                pass_labels.append(L_target)
                 i += 2
+                has_changed = True
+
+            # Проверяем на S_sub + M_sub (Smallest + Next Smallest)
             elif (i + 1 < len(temp_labels) and
-                  temp_labels[i] == S_n and temp_labels[i + 1] == M_n):
-                pass_labels.append(L_n)
+                  temp_labels[i] == S_sub and temp_labels[i + 1] == M_sub):
+                pass_labels.append(L_target)
                 i += 2
+                has_changed = True
+
             else:
                 pass_labels.append(temp_labels[i])
                 i += 1
-        temp_labels = pass_labels
+
+        # Если произошли изменения, обновляем последовательность и повторяем проход
+        # на этом же уровне (потому что новый L_target может создать новую дефляцию)
+        if has_changed:
+            temp_labels = pass_labels
+            # Повторяем текущий проход
+            n_pass += 1
+        else:
+            temp_labels = pass_labels
 
     simplified_sequence_labels = temp_labels
 
-    # 6. Финальное L/S отображение (Карта M->L, S->S)
-    final_ls_labels = []
-    l_count = 0
-    s_count = 0
-    for label in simplified_sequence_labels:
-        if label == 'M':
-            final_ls_labels.append('L')
-            l_count += 1
-        elif label == 'S':
-            final_ls_labels.append('S')
-            s_count += 1
-        else:
-            if label == 'L':
-                final_ls_labels.append('L')
-                final_ls_labels.append('S')
-                l_count += 1
-                s_count += 1
-            else:
-                final_ls_labels.append(label)
+    # 6. Финальное L/S отображение (L и S)
+    final_ls_labels = [label for label in simplified_sequence_labels if label in ['L', 'S']]
+    l_count = final_ls_labels.count('L')
+    s_count = final_ls_labels.count('S')
 
     final_ls_ratio = l_count / s_count if s_count > 0 else np.nan
+
+    words = gen_fibonacci_words(len(lengths))
 
     return {
         'segments': full_sequence_data,
         'full_sequence_str': "-".join(full_sequence_labels),
-        'simplified_sequence_str': "-".join(final_ls_labels),
+        'simplified_sequence_str': "-".join(simplified_sequence_labels),
         'final_ls_ratio': final_ls_ratio,
-        'fib_words': gen_fibonacci_words(len(lengths))
+        'fib_words': words
     }
 
 
