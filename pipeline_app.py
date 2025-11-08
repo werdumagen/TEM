@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/-bin/env python3
 # -*- coding: utf-8 -*-
 """Unified window with launcher, editor, and analyzer tabs."""
 
@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Optional, Tuple
 import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 
+# ВОССТАНОВЛЕНО: Импорт реестра Windows
 try:
     import winreg
 except ImportError:
@@ -35,6 +36,7 @@ except ImportError:
 
 MODULE_DIR = Path(__file__).resolve().parent
 
+# ВОССТАНОВЛЕНО: Секреты лицензирования
 _LSP1 = "Q2hhbmdlTWVUb0FQcml"
 _LSP2 = "2YXRlU2VjcmV0"
 LICENSE_SECRET = base64.b64decode(_LSP1 + _LSP2).decode("utf-8")
@@ -42,7 +44,7 @@ LICENSE_SECRET = base64.b64decode(_LSP1 + _LSP2).decode("utf-8")
 TRIAL_DAYS = 3
 
 
-class MaskedEntry(ttk.Entry):
+class MaskedEntry(ttk.Entry): # ВОССТАНОВЛЕНО
     """An entry widget that enforces a mask for license key input."""
 
     def __init__(self, master=None, **kwargs):
@@ -106,7 +108,7 @@ class MaskedEntry(ttk.Entry):
         return self._get_raw_content()
 
 
-class LicenseDialog(tk.Toplevel):
+class LicenseDialog(tk.Toplevel): # ВОССТАНОВЛЕНО
     """A custom dialog for entering and validating a license key."""
 
     def __init__(self, parent, title, message):
@@ -200,7 +202,7 @@ def _import_module(name: str):
         raise exc
 
 
-class LicenseManager:
+class LicenseManager: # ВОССТАНОВЛЕНО (Оригинальная версия с winreg)
     """Handle trial and permanent license state."""
     REG_PATH = r"Software\SAEDSuite"
     REG_KEY_TRIAL_START = "TrialStartDate"
@@ -359,7 +361,7 @@ class PipelineController:
     def __init__(self, parent: tk.Misc, *, status_callback=None, license_manager: LicenseManager):
         self.parent = parent
         self._status_callback = status_callback or (lambda _msg: None)
-        self.license_manager = license_manager
+        self.license_manager = license_manager # ВОССТАНОВЛЕНО
         self.notebook = ttk.Notebook(parent)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
@@ -418,7 +420,7 @@ class PipelineController:
 
     # --- Session Save/Load Methods ---
 
-    def save_session(self, filepath: Path | str) -> None:
+    def save_session(self, filepath: Path | str) -> None: # ВОССТАНОВЛЕНО
         """Collect state from all tabs and save to a JSON file."""
         state = {
             'launcher': self.launcher.get_state(),
@@ -437,7 +439,7 @@ class PipelineController:
             raise # Re-raise for the caller to know
 
 
-    def load_session_from_file(self, filepath: Path | str) -> None:
+    def load_session_from_file(self, filepath: Path | str) -> None: # ВОССТАНОВЛЕНО
         """Load state from JSON and apply to all tabs."""
         path = Path(filepath)
         if not path.exists():
@@ -569,10 +571,10 @@ class TabbedPipelineApp(tk.Tk):
 
     def __init__(self, license_manager: LicenseManager, *, show_initially: bool = True):
         super().__init__()
-        self.license_manager = license_manager
+        self.license_manager = license_manager # ВОССТАНОВЛЕНО
         if not show_initially:
             self.withdraw() # Hide main window initially
-        self.title("SAED Symmetry — Suite")
+        self.title("SAED Symmetry — Suite") # ВОССТАНОВЛЕНО
         self.geometry("1520x980")
         self.resizable(True, True)
 
@@ -625,13 +627,13 @@ class TabbedPipelineApp(tk.Tk):
         )
 
         # --- License Info ---
-        self.license_label = ttk.Label(header, text="", style="License.TLabel", wraplength=720, justify="left")
-        self.license_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0)) # Spans first 2 columns
-        self.license_button = ttk.Button(
+        self.license_label = ttk.Label(header, text="", style="License.TLabel", wraplength=720, justify="left") # ВОССТАНОВЛЕНО
+        self.license_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0)) # Spans first 2 columns # ВОССТАНОВЛЕНО
+        self.license_button = ttk.Button( # ВОССТАНОВЛЕНО
             header, text="Enter License Key", command=self._prompt_for_license, style="Accent.TButton",
         )
         # Place license button in the last column, aligned right
-        self.license_button.grid(row=2, column=3, sticky="e", padx=(12, 0), pady=(12, 0)) # Используем column=3
+        self.license_button.grid(row=2, column=3, sticky="e", padx=(12, 0), pady=(12, 0)) # Используем column=3 # ВОССТАНОВЛЕНО
 
 
         # --- Main Content Area (Tabs) ---
@@ -644,22 +646,22 @@ class TabbedPipelineApp(tk.Tk):
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
         # --- Initialize Controller (and its tabs) ---
-        self.controller = PipelineController(content, status_callback=self._update_status, license_manager=self.license_manager)
+        self.controller = PipelineController(content, status_callback=self._update_status, license_manager=self.license_manager) # ВОССТАНОВЛЕНО
         self.controller.set_status("Opened tab: Launcher") # Initial status
 
         # Refresh license banner after controller is initialized
-        self._refresh_license_banner()
+        self._refresh_license_banner() # ВОССТАНОВЛЕНО
 
         # --- Bind save/close events ---
-        self.bind_all("<Control-s>", self._on_save_shortcut)
-        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
+        self.bind_all("<Control-s>", self._on_save_shortcut) # ВОССТАНОВЛЕНО
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window) # ВОССТАНОВЛЕНО
         # print("DEBUG: WM_DELETE_WINDOW protocol handler SET") # УДАЛЕНО ДЛЯ ЧИСТОТЫ
 
 
     def _update_status(self, message: str) -> None:
         self.status_var.set(message)
 
-    def _refresh_license_banner(self) -> None:
+    def _refresh_license_banner(self) -> None: # ВОССТАНОВЛЕНО
         message = self.license_manager.status_message()
         self.license_label.configure(text=message)
         # Change button text based on license status
@@ -669,7 +671,7 @@ class TabbedPipelineApp(tk.Tk):
             self.license_button.configure(text="Enter License Key")
 
 
-    def _prompt_for_license(self) -> None:
+    def _prompt_for_license(self) -> None: # ВОССТАНОВЛЕНО
         prompt_message = "Enter the permanent license key provided by the publisher:"
         dialog = LicenseDialog(self, "License Key", prompt_message)
         key = dialog.result # This will be None if cancelled
@@ -726,7 +728,7 @@ class TabbedPipelineApp(tk.Tk):
     # --- Session Save/Load Handlers ---
 
     # <<< НАЧАЛО _on_save_shortcut БЕЗ ОТЛАДКИ >>>
-    def _on_save_shortcut(self, event=None) -> bool:
+    def _on_save_shortcut(self, event=None) -> bool: # ВОССТАНОВЛЕНО
         """Saves the current session state to saed_session.json in the output folder."""
         # Check if controller and launcher exist
         if not hasattr(self, 'controller') or not hasattr(self.controller, 'launcher'):
@@ -752,7 +754,7 @@ class TabbedPipelineApp(tk.Tk):
     # <<< КОНЕЦ _on_save_shortcut БЕЗ ОТЛАДКИ >>>
 
     # <<< ИСПРАВЛЕННАЯ ФУНКЦИЯ _on_close_window БЕЗ ОТЛАДКИ >>>
-    def _on_close_window(self) -> None:
+    def _on_close_window(self) -> None: # ВОССТАНОВЛЕНО
         """Prompts to save on close, then destroys the window."""
         result = messagebox.askyesnocancel(
             "Confirm Exit",
@@ -778,7 +780,7 @@ class TabbedPipelineApp(tk.Tk):
     # <<< КОНЕЦ ИСПРАВЛЕНИЯ БЕЗ ОТЛАДКИ >>>
 
 
-def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool:
+def _show_trial_expired_dialog(license_manager: LicenseManager) -> bool: # ВОССТАНОВЛЕНО
     root = tk.Tk()
     root.withdraw() # Keep root hidden
     message = (
@@ -809,14 +811,14 @@ def main(
     splash_logo: Path | str | None = None,
     splash_duration_ms: int = 3000,
 ) -> None:
-    license_manager = LicenseManager()
+    license_manager = LicenseManager() # ВОССТАНОВЛЕНО
 
     # Check license status BEFORE creating the main app window
-    if not license_manager.has_valid_license() and license_manager.is_trial_expired():
-        activated = _show_trial_expired_dialog(license_manager)
-        if not activated:
-            print("Trial expired and no valid license provided. Exiting.")
-            return # Exit if trial expired and activation failed/cancelled
+    if not license_manager.has_valid_license() and license_manager.is_trial_expired(): # ВОССТАНОВЛЕНО
+        activated = _show_trial_expired_dialog(license_manager) # ВОССТАНОВЛЕНО
+        if not activated: # ВОССТАНОВЛЕНО
+            print("Trial expired and no valid license provided. Exiting.") # ВОССТАНОВЛЕНО
+            return # Exit if trial expired and activation failed/cancelled # ВОССТАНОВЛЕНО
 
     # If license is okay (or trial active), proceed to create main app
     app = TabbedPipelineApp(license_manager, show_initially=False) # Keep hidden for splash

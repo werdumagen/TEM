@@ -8,7 +8,8 @@ import numpy as np
 # Обратите внимание: импорт preproc нужен для PreprocSettings
 from preproc import PreprocSettings
 
-# --- Функции поиска и загрузки данных ---
+
+# --- Функции поиска и загрузки данных (без изменений) ---
 
 def _candidate_dirs(extra_image: Optional[Path]) -> List[Path]:
     cands: List[Path] = []
@@ -43,6 +44,7 @@ def _candidate_dirs(extra_image: Optional[Path]) -> List[Path]:
             seen.add(rp)
     return uniq
 
+
 def _autofind_json(extra_image: Optional[Path]) -> Optional[Path]:
     pats = ["fibo_input.json", "*fibo*input*.json", "*.fibo.json", "*.json"]
     for base in _candidate_dirs(extra_image):
@@ -63,6 +65,7 @@ def _autofind_json(extra_image: Optional[Path]) -> Optional[Path]:
                 continue
     return None
 
+
 def find_default_json(base_dir: Path) -> Optional[Path]:
     cand = base_dir / "fibo_input.json"
     if cand.exists():
@@ -80,6 +83,7 @@ def find_default_json(base_dir: Path) -> Optional[Path]:
         except Exception:
             pass
     return _autofind_json(None)
+
 
 def load_input(json_path: Path):
     d = json.loads(json_path.read_text(encoding='utf-8'))
@@ -103,9 +107,120 @@ def load_input(json_path: Path):
     preproc = PreprocSettings.from_json(d.get('preproc'), fallback_mode=fallback_mode)
     return img, pts, center, dead, srch, preproc
 
+
 # --- Функции алгоритмов анализа ---
 
+# --- ИЗМЕНЕНО: Добавлен `projection_mode` ---
+def analyze_chain_fibonacci(chain_points: np.ndarray,
+                            max_n: int = 6,
+                            projection_mode: str = '2d') -> Dict[str, Any]:
+    """
+    Анализирует цепочку точек на иерархию Фибоначчи L, M, S, ...
+    и упрощает ее до базовой L/S последовательности.
+    Работает в 2D, 1D-X или 1D-Y режиме.
+    """
+    PHI = (1 + 5 ** 0.5) / 2
+    LABELS = ['L', 'M', 'S', 'XS', 'XXS', '3XS', '4XS', '5XS']  # Метки для n=0 до n=7
+
+    # 1. Рассчитываем длины сегментов (lengths) В ЗАВИСИМОСТИ ОТ РЕЖИМА
+    if projection_mode == 'x':
+        lengths = np.abs(np.diff(chain_points[:, 1]))  # Только X
+        print(f"Analyzing 1D (X) distances for {len(lengths)} segments.")
+    elif projection_mode == 'y':
+        lengths = np.abs(np.diff(chain_points[:, 0]))  # Только Y
+        print(f"Analyzing 1D (Y) distances for {len(lengths)} segments.")
+    else:  # '2d'
+        lengths = np.linalg.norm(np.diff(chain_points, axis=0), axis=1)  # 2D
+        print(f"Analyzing 2D distances for {len(lengths)} segments.")
+
+    if lengths.size == 0:
+        return {'segments': [], 'full_sequence_str': "", 'simplified_sequence_str': "", 'final_ls_ratio': np.nan,
+                'fib_words': []}
+
+    # 2. Находим базовую "L" (n=0)
+    try:
+        L_base = np.mean(lengths[lengths > np.percentile(lengths, 90)])
+    except IndexError:
+        L_base = np.mean(lengths)
+    if not np.isfinite(L_base) or L_base <= 1e-6:
+        L_base = np.max(lengths) if lengths.size > 0 else 1.0
+
+    # 3. Генерируем прототипы и допуски
+    PROTOTYPES = [L_base * (PHI ** -n) for n in range(max_n)]
+    TOLERANCES = []
+    for n in range(max_n - 1):
+        TOLERANCES.append((PROTOTYPES[n] - PROTOTYPES[n + 1]) / 2.1)
+    TOLERANCES.append((PROTOTYPES[-1] - (PROTOTYPES[-1] / PHI)) / 2.1)
+
+    # 4. Классифицируем каждый сегмент
+    full_sequence_data = []
+    for length in lengths:
+        dists = [abs(length - p) for p in PROTOTYPES]
+        best_n = int(np.argmin(dists))
+        if dists[best_n] < TOLERANCES[best_n]:
+            full_sequence_data.append({'len_1d': length, 'label': LABELS[best_n], 'n': best_n})
+        else:
+            full_sequence_data.append({'len_1d': length, 'label': '?', 'n': -1})
+
+    full_sequence_labels = [s['label'] for s in full_sequence_data]
+
+    # 5. Упрощаем ("дефляция")
+    temp_labels = full_sequence_labels.copy()
+
+    for n_pass in range(max_n - 3, -1, -1):  # т.е. от n=3 до n=0
+        i = 0
+        pass_labels = []
+        L_n, M_n, S_n = LABELS[n_pass], LABELS[n_pass + 1], LABELS[n_pass + 2]  # n=0,1,2 -> L,M,S
+
+        while i < len(temp_labels):
+            if (i + 1 < len(temp_labels) and
+                    temp_labels[i] == M_n and temp_labels[i + 1] == S_n):
+                pass_labels.append(L_n)
+                i += 2
+            elif (i + 1 < len(temp_labels) and
+                  temp_labels[i] == S_n and temp_labels[i + 1] == M_n):
+                pass_labels.append(L_n)
+                i += 2
+            else:
+                pass_labels.append(temp_labels[i])
+                i += 1
+        temp_labels = pass_labels
+
+    simplified_sequence_labels = temp_labels
+
+    # 6. Финальное L/S отображение (Карта M->L, S->S)
+    final_ls_labels = []
+    l_count = 0
+    s_count = 0
+    for label in simplified_sequence_labels:
+        if label == 'M':
+            final_ls_labels.append('L')
+            l_count += 1
+        elif label == 'S':
+            final_ls_labels.append('S')
+            s_count += 1
+        else:
+            if label == 'L':
+                final_ls_labels.append('L')
+                final_ls_labels.append('S')
+                l_count += 1
+                s_count += 1
+            else:
+                final_ls_labels.append(label)
+
+    final_ls_ratio = l_count / s_count if s_count > 0 else np.nan
+
+    return {
+        'segments': full_sequence_data,
+        'full_sequence_str': "-".join(full_sequence_labels),
+        'simplified_sequence_str': "-".join(final_ls_labels),
+        'final_ls_ratio': final_ls_ratio,
+        'fib_words': gen_fibonacci_words(len(lengths))
+    }
+
+
 def cluster_lengths(lengths: np.ndarray):
+    # (Эта функция остается без изменений)
     if lengths.size == 0:
         return np.array([], dtype=int), float("nan"), float("nan"), 0, 1
     c0, c1 = float(lengths.min()), float(lengths.max())
@@ -130,14 +245,18 @@ def cluster_lengths(lengths: np.ndarray):
         m0, m1 = m1, m0
     return lab, m0, m1, 0, 1
 
+
 def fib_list_upto(n: int) -> List[int]:
+    # (Эта функция остается без изменений)
     if n <= 0: return []
     seq = [1, 1]
     while seq[-1] < n:
         seq.append(seq[-1] + seq[-2])
     return [k for k in seq if k <= n]
 
+
 def gen_fibonacci_words(max_len: int, start: str = "L") -> List[str]:
+    # (Эта функция остается без изменений)
     if max_len <= 0: return []
     words = ["L" if start.upper() == "L" else "S"]
     while len(words[-1]) <= max_len:
