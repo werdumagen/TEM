@@ -1299,8 +1299,12 @@ class FibonacciAnalysisFrame(tk.Frame):
 
             dist_sq = (p_xy[0] - proj[0]) ** 2 + (p_xy[1] - proj[1]) ** 2
 
-            # В 1D-режиме 'max_dist' должен быть очень маленьким
-            effective_max_dist = 2.0 if self.projection_mode != '2d' else max_dist
+            # +++ ИСПРАВЛЕНИЕ +++
+            # Убираем жестко заданный допуск 2.0 для 1D-режима.
+            # Теперь 1D и 2D используют ОДИНАКОВЫЙ допуск из Spinbox.
+            # В 1D-режиме dist_sq будет ~0, поэтому он всегда будет проходить проверку.
+            effective_max_dist = max_dist
+            # +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
 
             if (0.0 <= t <= 1.0 and dist_sq <= effective_max_dist ** 2) or k == i0 or k == i1:
                 t_val = 0.0 if k == i0 else (1.0 if k == i1 else t)
