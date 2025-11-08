@@ -139,24 +139,53 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
 
     # 2. Находим базовую "L" (n=0)
     try:
-        L_base = np.mean(lengths[lengths > np.percentile(lengths, 90)])
+        # Используем 90-й процентиль для более надежного L_base
+        q90 = np.percentile(lengths, 90)
+        L_base = np.mean(lengths[lengths >= q90]) if np.any(lengths >= q90) else np.mean(lengths)
     except IndexError:
         L_base = np.mean(lengths)
+
     if not np.isfinite(L_base) or L_base <= 1e-6:
         L_base = np.max(lengths) if lengths.size > 0 else 1.0
 
     # 3. Генерируем прототипы и допуски
     PROTOTYPES = [L_base * (PHI ** -n) for n in range(max_n)]
+
+    # +++ ИСПРАВЛЕННАЯ ЛОГИКА ДОПУСКОВ +++
     TOLERANCES = []
-    for n in range(max_n - 1):
-        TOLERANCES.append((PROTOTYPES[n] - PROTOTYPES[n + 1]) / 2.1)
-    TOLERANCES.append((PROTOTYPES[-1] - (PROTOTYPES[-1] / PHI)) / 2.1)
+
+    # Допуск для L (n=0)
+    if max_n > 0:
+        tol_0 = (PROTOTYPES[0] - PROTOTYPES[1]) / 2.0 if max_n > 1 else (PROTOTYPES[0] / PHI / 2.0)
+        TOLERANCES.append(tol_0 * 1.1)  # Допуск = половина расстояния до M, +10%
+
+    # Допуски для M, S, ... (n=1 до max_n-2)
+    for n in range(1, max_n - 1):
+        tol_hi = (PROTOTYPES[n - 1] - PROTOTYPES[n]) / 2.0  # Половина расстояния до "старшего"
+        tol_lo = (PROTOTYPES[n] - PROTOTYPES[n + 1]) / 2.0  # Половина расстояния до "младшего"
+        # Допуск = наибольшая из двух половин, +10% (чтобы окна перекрывались)
+        TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
+
+    # Допуск для последнего элемента (n=max_n-1)
+    if max_n > 1:
+        tol_hi = (PROTOTYPES[max_n - 2] - PROTOTYPES[max_n - 1]) / 2.0
+        tol_lo = (PROTOTYPES[max_n - 1] - (PROTOTYPES[max_n - 1] / PHI)) / 2.0
+        TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
+
+    # Убедимся, что у нас есть допуск для каждого прототипа
+    if len(TOLERANCES) < len(PROTOTYPES):
+        missing = len(PROTOTYPES) - len(TOLERANCES)
+        for _ in range(missing):
+            TOLERANCES.append(PROTOTYPES[-1] / 2.0)  # Запасной допуск
+    # +++ КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ +++
 
     # 4. Классифицируем каждый сегмент
     full_sequence_data = []
     for length in lengths:
         dists = [abs(length - p) for p in PROTOTYPES]
         best_n = int(np.argmin(dists))
+
+        # Теперь проверка стала намного мягче и логичнее
         if dists[best_n] < TOLERANCES[best_n]:
             full_sequence_data.append({'len_1d': length, 'label': LABELS[best_n], 'n': best_n})
         else:
