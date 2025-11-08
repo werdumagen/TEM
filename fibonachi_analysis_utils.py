@@ -137,6 +137,7 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
         return {'segments': [], 'full_sequence_str': "", 'simplified_sequence_str': "", 'final_ls_ratio': np.nan,
                 'fib_words': []}
 
+    # +++ ИСПРАВЛЕННАЯ ЛОГИКА L_base +++
     # 2. Находим базовую "L" (n=0)
     try:
         # Используем 90-й процентиль для более надежного L_base
@@ -147,6 +148,7 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
 
     if not np.isfinite(L_base) or L_base <= 1e-6:
         L_base = np.max(lengths) if lengths.size > 0 else 1.0
+    # +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
 
     # 3. Генерируем прототипы и допуски
     PROTOTYPES = [L_base * (PHI ** -n) for n in range(max_n)]
@@ -185,8 +187,8 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
         dists = [abs(length - p) for p in PROTOTYPES]
         best_n = int(np.argmin(dists))
 
-        # Теперь проверка стала намного мягче и логичнее
-        if dists[best_n] < TOLERANCES[best_n]:
+        # +++ ИСПРАВЛЕНИЕ: Проверяем, что best_n в пределах TOLERANCES +++
+        if best_n < len(TOLERANCES) and dists[best_n] < TOLERANCES[best_n]:
             full_sequence_data.append({'len_1d': length, 'label': LABELS[best_n], 'n': best_n})
         else:
             full_sequence_data.append({'len_1d': length, 'label': '?', 'n': -1})
