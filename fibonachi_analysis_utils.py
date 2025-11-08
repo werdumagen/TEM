@@ -142,14 +142,9 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
     try:
         # Используем 90-й процентиль для более надежного L_base
         q90 = np.percentile(lengths, 90)
-        # Проверяем, есть ли вообще значения >= q90
-        valid_lengths = lengths[lengths >= q90]
-        if valid_lengths.size > 0:
-            L_base = np.mean(valid_lengths)
-        else:
-            L_base = np.mean(lengths)  # Откат, если q90 не сработал
+        L_base = np.mean(lengths[lengths >= q90]) if np.any(lengths >= q90) else np.mean(lengths)
     except IndexError:
-        L_base = np.mean(lengths)  # Откат, если lengths пустой
+        L_base = np.mean(lengths)
 
     if not np.isfinite(L_base) or L_base <= 1e-6:
         L_base = np.max(lengths) if lengths.size > 0 else 1.0
@@ -163,8 +158,7 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
 
     # Допуск для L (n=0)
     if max_n > 0:
-        # Расстояние до M (n=1) или до L/PHI
-        tol_0 = (PROTOTYPES[0] - PROTOTYPES[1]) / 2.0 if max_n > 1 else (PROTOTYPES[0] - (PROTOTYPES[0] / PHI)) / 2.0
+        tol_0 = (PROTOTYPES[0] - PROTOTYPES[1]) / 2.0 if max_n > 1 else (PROTOTYPES[0] / PHI / 2.0)
         TOLERANCES.append(tol_0 * 1.1)  # Допуск = половина расстояния до M, +10%
 
     # Допуски для M, S, ... (n=1 до max_n-2)
@@ -180,18 +174,11 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
         tol_lo = (PROTOTYPES[max_n - 1] - (PROTOTYPES[max_n - 1] / PHI)) / 2.0
         TOLERANCES.append(max(tol_hi, tol_lo) * 1.1)
 
-    # Если max_n = 1, а TOLERANCES пуст
-    if not TOLERANCES and PROTOTYPES:
-        TOLERANCES.append((PROTOTYPES[0] - (PROTOTYPES[0] / PHI)) / 2.0 * 1.1)
-
     # Убедимся, что у нас есть допуск для каждого прототипа
     if len(TOLERANCES) < len(PROTOTYPES):
         missing = len(PROTOTYPES) - len(TOLERANCES)
-        for i in range(missing):
-            # Добавляем допуск для оставшихся
-            n_idx = len(TOLERANCES)
-            tol_lo = (PROTOTYPES[n_idx] - (PROTOTYPES[n_idx] / PHI)) / 2.0
-            TOLERANCES.append(tol_lo * 1.1)
+        for _ in range(missing):
+            TOLERANCES.append(PROTOTYPES[-1] / 2.0)  # Запасной допуск
     # +++ КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ +++
 
     # 4. Классифицируем каждый сегмент
@@ -223,3 +210,88 @@ def analyze_chain_fibonacci(chain_points: np.ndarray,
                 i += 2
             elif (i + 1 < len(temp_labels) and
                   temp_labels[i] == S_n and temp_labels[i + 1] == M_n):
+                pass_labels.append(L_n)
+                i += 2
+            else:
+                pass_labels.append(temp_labels[i])
+                i += 1
+        temp_labels = pass_labels
+
+    simplified_sequence_labels = temp_labels
+
+    # 6. Финальное L/S отображение (Карта M->L, S->S)
+    final_ls_labels = []
+    l_count = 0
+    s_count = 0
+    for label in simplified_sequence_labels:
+        if label == 'M':
+            final_ls_labels.append('L')
+            l_count += 1
+        elif label == 'S':
+            final_ls_labels.append('S')
+            s_count += 1
+        else:
+            if label == 'L':
+                final_ls_labels.append('L')
+                final_ls_labels.append('S')
+                l_count += 1
+                s_count += 1
+            else:
+                final_ls_labels.append(label)
+
+    final_ls_ratio = l_count / s_count if s_count > 0 else np.nan
+
+    return {
+        'segments': full_sequence_data,
+        'full_sequence_str': "-".join(full_sequence_labels),
+        'simplified_sequence_str': "-".join(final_ls_labels),
+        'final_ls_ratio': final_ls_ratio,
+        'fib_words': gen_fibonacci_words(len(lengths))
+    }
+
+
+def cluster_lengths(lengths: np.ndarray):
+    # (Эта функция остается без изменений)
+    if lengths.size == 0:
+        return np.array([], dtype=int), float("nan"), float("nan"), 0, 1
+    c0, c1 = float(lengths.min()), float(lengths.max())
+    if c0 == c1:
+        lab = np.zeros(len(lengths), dtype=int)
+        return lab, c0, float("nan"), 0, 1
+    lab = np.zeros(len(lengths), dtype=int)
+    for _ in range(60):
+        d0 = np.abs(lengths - c0)
+        d1 = np.abs(lengths - c1)
+        lab = (d1 < d0).astype(int)
+        nc0 = float(lengths[lab == 0].mean()) if np.any(lab == 0) else c0
+        nc1 = float(lengths[lab == 1].mean()) if np.any(lab == 1) else c1
+        if abs(nc0 - c0) < 1e-6 and abs(nc1 - c1) < 1e-6:
+            c0, c1 = nc0, nc1;
+            break
+        c0, c1 = nc0, nc1
+    m0 = float(lengths[lab == 0].mean()) if np.any(lab == 0) else float("nan")
+    m1 = float(lengths[lab == 1].mean()) if np.any(lab == 1) else float("nan")
+    if (not math.isnan(m0)) and (not math.isnan(m1)) and m0 > m1:
+        lab = 1 - lab
+        m0, m1 = m1, m0
+    return lab, m0, m1, 0, 1
+
+
+def fib_list_upto(n: int) -> List[int]:
+    # (Эта функция остается без изменений)
+    if n <= 0: return []
+    seq = [1, 1]
+    while seq[-1] < n:
+        seq.append(seq[-1] + seq[-2])
+    return [k for k in seq if k <= n]
+
+
+def gen_fibonacci_words(max_len: int, start: str = "L") -> List[str]:
+    # (Эта функция остается без изменений)
+    if max_len <= 0: return []
+    words = ["L" if start.upper() == "L" else "S"]
+    while len(words[-1]) <= max_len:
+        nxt = "".join(("LS" if ch == "L" else "L") for ch in words[-1])
+        if len(nxt) > max_len: break
+        words.append(nxt)
+    return words
