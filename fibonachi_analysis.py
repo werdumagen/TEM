@@ -470,8 +470,10 @@ class FibonacciAnalysisFrame(tk.Frame):
         self._set_text_content(self.txt_chain_simple, simple_seq)
         self._set_text_content(self.txt_words, "\n".join(fib_words))
 
-        self.results_notebook.select(tab_prefixes)
-        self.results_notebook.select(tab_subsegments)
+        # +++ ИСПРАВЛЕНИЕ: УДАЛЕНЫ ЭТИ ДВЕ СТРОКИ +++
+        # self.results_notebook.select(tab_prefixes)
+        # self.results_notebook.select(tab_subsegments)
+        # +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
 
     def _populate_ratio_info(self, analysis_data):
         self.lst_header.config(text='Neighboring segment ratios (Ratio mode)')
