@@ -590,8 +590,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         x, y = float(event.xdata), float(event.ydata)
 
         # --- ИЗМЕНЕНО: Ищем по _get_display_coords ---
-        all_indices = np.arange(len(self.points))
-        display_points = self._get_display_coords(all_indices)  # Получаем 1D или 2D точки
+        # 1. ИЗМЕНЕНИЕ: Передаем `self.points`
+        display_points = self._get_display_coords(self.points)  # Получаем 1D или 2D точки
 
         d2 = (display_points[:, 1] - x) ** 2 + (display_points[:, 0] - y) ** 2
         j = int(np.argmin(d2))
@@ -632,7 +632,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         for i, analysis in enumerate(self.permanent_analyses):
             # --- ИЗМЕНЕНО: Ищем по _get_display_coords ---
             indices = analysis['indices']
-            pts_display = self._get_display_coords(indices)  # 1D или 2D точки
+            # 2. ИЗМЕНЕНИЕ: Передаем `self.points[indices]`
+            pts_display = self._get_display_coords(self.points[indices])  # 1D или 2D точки
 
             if analysis['type'] == 'polygon':
                 center = pts_display.mean(axis=0)  # y, x
@@ -664,8 +665,8 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         # --- ИЗМЕНЕНО: Ищем по _get_display_coords ---
         if self.anchor_idx is not None:
-            # Получаем 1D/2D-координаты точки-якоря
-            ax, ay = self._get_display_coords(np.array([self.anchor_idx]))[0, [1, 0]]
+            # 3. ИЗМЕНЕНИЕ: Передаем `self.points[self.anchor_idx]` (с reshape)
+            ax, ay = self._get_display_coords(self.points[self.anchor_idx].reshape(1,2))[0, [1, 0]]
             bx, by = float(event.xdata), float(event.ydata)
             if self.rubber_line is None:
                 self.rubber_line, = self.ax.plot([ax, bx], [ay, by], color='yellow', lw=2.0, alpha=0.9, zorder=5)
@@ -673,8 +674,8 @@ class FibonacciAnalysisFrame(tk.Frame):
                 self.rubber_line.set_data([ax, bx], [ay, by])
             self.canvas.draw_idle()
         elif self.polygon_current_idx:
-            # Получаем 1D/2D-координаты последней точки полигона
-            ax, ay = self._get_display_coords(np.array([self.polygon_current_idx[-1]]))[0, [1, 0]]
+            # 4. ИЗМЕНЕНИЕ: Передаем `self.points[self.polygon_current_idx[-1]]` (с reshape)
+            ax, ay = self._get_display_coords(self.points[self.polygon_current_idx[-1]].reshape(1,2))[0, [1, 0]]
             bx, by = float(event.xdata), float(event.ydata)
             if self.polygon_rubber_line is None:
                 self.polygon_rubber_line, = self.ax.plot([ax, bx], [ay, by], color='orange', lw=2.2, alpha=0.8,
@@ -732,47 +733,40 @@ class FibonacciAnalysisFrame(tk.Frame):
 
     # --- Drawing Logic (Modified) ---
 
-    # --- НОВЫЙ МЕТОД: _get_display_coords ---
-        # --- НОВЫЙ МЕТОД: _get_display_coords (ИСПРАВЛЕННЫЙ) ---
-        def _get_display_coords(self, indices: np.ndarray | List[int]) -> np.ndarray:
-            """
-            Возвращает 2D-координаты для отображения (реальные 2D или проекционные 1D)
-            для заданных индексов точек.
-            """
-            if self.points is None or not hasattr(indices, '__len__') or len(indices) == 0:
-                return np.array([])
+    # --- НОВЫЙ МЕТОД: _get_display_coords (ИСПРАВЛЕННЫЙ) ---
+    # 5. ИЗМЕНЕНИЕ: Сигнатура функции и ее тело
+    def _get_display_coords(self, points_yx: np.ndarray) -> np.ndarray:
+        """
+        Возвращает 2D-координаты для отображения (реальные 2D или проекционные 1D)
+        для ЗАДАННЫХ КООРДИНАТ точек (а не индексов).
+        """
+        if points_yx is None or points_yx.size == 0:
+            return np.array([])
 
-            # Убедимся, что indices - это numpy-массив
-            if not isinstance(indices, np.ndarray):
-                indices = np.array(indices)
+        # .copy() КРИТИЧЕСКИ ВАЖЕН, чтобы не испортить
+        pts_2d = points_yx.copy()
 
-            # Получаем *оригинальные* 2D-координаты
-            # .copy() КРИТИЧЕСКИ ВАЖЕН, чтобы не испортить self.points
-            pts_2d = self.points[indices].copy()
-
-            # Если режим 2D или нет картинки, возвращаем как есть
-            if self.projection_mode == '2d' or self._img_shape is None:
-                return pts_2d
-
-            h, w = self._img_shape
-
-            # ---
-            # ВОТ ГЛАВНОЕ ИСПРАВЛЕНИЕ
-            # ---
-            if self.projection_mode == 'x':
-                # "Сплющиваем" на X-ось:
-                # Y-координата становится константой (внизу экрана)
-                # X-координата ОСТАЕТСЯ ОРИГИНАЛЬНОЙ
-                pts_2d[:, 0] = h * 0.95
-            elif self.projection_mode == 'y':
-                # "Сплющиваем" на Y-ось:
-                # X-координата становится константой (слева)
-                # Y-координата ОСТАЕТСЯ ОРИГИНАЛЬНОЙ
-                pts_2d[:, 1] = w * 0.05
-
+        # Если режим 2D или нет картинки, возвращаем как есть
+        if self.projection_mode == '2d' or self._img_shape is None:
             return pts_2d
-        # ---------------------------------------------
 
+        h, w = self._img_shape
+
+        # ---
+        # ВОТ ГЛАВНОЕ ИСПРАВЛЕНИЕ
+        # ---
+        if self.projection_mode == 'x':
+            # "Сплющиваем" на X-ось:
+            # Y-координата становится константой (внизу экрана)
+            # X-координата ОСТАЕТСЯ ОРИГИНАЛЬНОЙ
+            pts_2d[:, 0] = h * 0.95
+        elif self.projection_mode == 'y':
+            # "Сплющиваем" на Y-ось:
+            # X-координата становится константой (слева)
+            # Y-координата ОСТАЕТСЯ ОРИГИНАЛЬНОЙ
+            pts_2d[:, 1] = w * 0.05
+
+        return pts_2d
     # ---------------------------------------------
 
     def _redraw_canvas(self):
@@ -787,8 +781,8 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         if self.points is not None and len(self.points) > 0:
             # --- ИЗМЕНЕНО: Рисуем 1D/2D точки ---
-            all_indices = np.arange(len(self.points))
-            display_points = self._get_display_coords(all_indices)
+            # 6. ИЗМЕНЕНИЕ: Передаем `self.points`
+            display_points = self._get_display_coords(self.points)
 
             self.ax.scatter(display_points[:, 1], display_points[:, 0], s=24, c='cyan', edgecolors='black',
                             linewidths=0.4,
@@ -796,6 +790,7 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         if self.center is not None:
             # --- ИЗМЕНЕНО: Рисуем 1D/2D центр ---
+            # 7. ИЗМЕНЕНИЕ: Передаем `np.array([[self.center[0], self.center[1]]])`
             center_coords_display = self._get_display_coords(np.array([[self.center[0], self.center[1]]]))
             if center_coords_display.size > 0:
                 cy, cx = center_coords_display[0]
@@ -823,7 +818,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         # 5. Interactive elements
         if self.anchor_idx is not None:
             # --- ИЗМЕНЕНО: Рисуем 1D/2D якорь ---
-            y, x = self._get_display_coords(np.array([self.anchor_idx]))[0]
+            # 8. ИЗМЕНЕНИЕ: Передаем `self.points[self.anchor_idx]` (с reshape)
+            y, x = self._get_display_coords(self.points[self.anchor_idx].reshape(1,2))[0]
             self.ax.scatter([x], [y], s=52, c='yellow', edgecolors='k', linewidths=0.6, zorder=4)
 
         if self.polygon_current_idx:
@@ -855,7 +851,8 @@ class FibonacciAnalysisFrame(tk.Frame):
     def _draw_one_analysis_chain(self, analysis_data: Dict[str, Any], style: Dict):
         # --- ИЗМЕНЕНО: Рисуем 1D/2D ---
         indices = analysis_data['indices']
-        pts = self._get_display_coords(indices)  # 1D или 2D точки
+        # 9. ИЗМЕНЕНИЕ: Передаем `self.points[indices]`
+        pts = self._get_display_coords(self.points[indices])  # 1D или 2D точки
         color = style['color']
         # -----------------------------
 
@@ -888,7 +885,8 @@ class FibonacciAnalysisFrame(tk.Frame):
     def _draw_one_analysis_polygon(self, analysis_data: Dict[str, Any], style: Dict):
         # --- ИЗМЕНЕНО: Рисуем 1D/2D ---
         indices = analysis_data['indices']
-        pts = self._get_display_coords(indices)  # 1D или 2D точки
+        # 10. ИЗМЕНЕНИЕ: Передаем `self.points[indices]`
+        pts = self._get_display_coords(self.points[indices])  # 1D или 2D точки
         # -----------------------------
 
         poly = MplPolygon(pts[:, ::-1], closed=True,
@@ -928,7 +926,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self.points is None: return
         indices = analysis_data['indices']
         # --- ИЗМЕНЕНО: Рисуем 1D/2D ---
-        chain = self._get_display_coords(indices)
+        # 11. ИЗМЕНЕНИЕ: Передаем `self.points[indices]`
+        chain = self._get_display_coords(self.points[indices])
         M = len(chain) - 1
         if not (0 <= seg_k < M): return
 
@@ -943,7 +942,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self.points is None: return
         indices = analysis_data['indices']
         # --- ИЗМЕНЕНО: Рисуем 1D/2D ---
-        chain = self._get_display_coords(indices)
+        # 12. ИЗМЕНЕНИЕ: Передаем `self.points[indices]`
+        chain = self._get_display_coords(self.points[indices])
         M = len(chain) - 1
         if not (0 <= seg_a < M and 0 <= seg_b < M): return
 
@@ -959,14 +959,16 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self.points is None: return
         indices = analysis_data['indices']
         # --- ИЗМЕНЕНО: Рисуем 1D/2D ---
-        pts = self._get_display_coords(indices)
+        # 13. ИЗМЕНЕНИЕ: Передаем `self.points[indices]`
+        pts = self._get_display_coords(self.points[indices])
         poly = MplPolygon(pts[:, ::-1], closed=True, fill=False, edgecolor='lime', linewidth=3.2, zorder=10)
         self.ax.add_patch(poly)
 
     def _draw_polygon_construction(self):
         if not self.polygon_current_idx or self.points is None: return
         # --- ИЗМЕНЕНО: Рисуем 1D/2D ---
-        pts_cur = self._get_display_coords(self.polygon_current_idx)
+        # 14. ИЗМЕНЕНИЕ: Передаем `self.points[self.polygon_current_idx]`
+        pts_cur = self._get_display_coords(self.points[self.polygon_current_idx])
         xs, ys = pts_cur[:, 1], pts_cur[:, 0]
         self.ax.plot(xs, ys, color='orange', lw=2.2, zorder=3.1)
         self.ax.scatter(xs, ys, s=46, c='orange', edgecolors='k', linewidths=0.6, zorder=3.2)
@@ -990,7 +992,8 @@ class FibonacciAnalysisFrame(tk.Frame):
             'type': 'chain',
             'indices': indices,
             # --- ИЗМЕНЕНО: Позиция диалога по 1D/2D ---
-            'dialog_pos': self._get_display_coords(np.array([indices[len(indices) // 2]]))[0, ::-1].tolist(),
+            # 15. ИЗМЕНЕНИЕ: Передаем `self.points[...]` (с reshape)
+            'dialog_pos': self._get_display_coords(self.points[indices[len(indices) // 2]].reshape(1,2))[0, ::-1].tolist(),
             'data': analysis_results
         }
         self._prompt_for_confirmation(analysis_data)
@@ -1018,7 +1021,8 @@ class FibonacciAnalysisFrame(tk.Frame):
         analysis_data = {
             'type': 'ratio',
             'indices': indices,
-            'dialog_pos': self._get_display_coords(np.array([indices[len(indices) // 2]]))[0, ::-1].tolist(),
+            # 16. ИЗМЕНЕНИЕ: Передаем `self.points[...]` (с reshape)
+            'dialog_pos': self._get_display_coords(self.points[indices[len(indices) // 2]].reshape(1,2))[0, ::-1].tolist(),
             'data': {
                 'ratios': ratios_for_display,
                 'mean_ratio': mean_ratio,
@@ -1036,7 +1040,8 @@ class FibonacciAnalysisFrame(tk.Frame):
                 analysis_data = {
                     'type': 'polygon',
                     'indices': indices,
-                    'dialog_pos': self._get_display_coords(np.array([indices[-1]]))[0, ::-1].tolist(),
+                    # 17. ИЗМЕНЕНИЕ: Передаем `self.points[...]` (с reshape)
+                    'dialog_pos': self._get_display_coords(self.points[indices[-1]].reshape(1,2))[0, ::-1].tolist(),
                     'data': {'area': area, 'label': f'P{poly_num}'}
                 }
                 self.polygon_current_idx.clear()
@@ -1269,8 +1274,8 @@ class FibonacciAnalysisFrame(tk.Frame):
 
         # --- ИЗМЕНЕНО: Проекция работает по 1D или 2D ---
         # 1. Получаем *отображаемые* координаты для расчета проекции
-        all_indices = np.arange(len(self.points))
-        display_points_yx = self._get_display_coords(all_indices)
+        # 18. ИЗМЕНЕНИЕ: Передаем `self.points`
+        display_points_yx = self._get_display_coords(self.points)
 
         # 2. Выбираем p0, p1 из *отображаемых* точек
         p0_yx, p1_yx = display_points_yx[i0], display_points_yx[i1]
