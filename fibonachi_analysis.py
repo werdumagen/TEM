@@ -456,8 +456,11 @@ class FibonacciAnalysisFrame(tk.Frame):
             self.lst.insert(tk.END, 'No segments found.')
         else:
             for i, seg in enumerate(segments):
-                # --- ИЗМЕНЕНО: Добавляем 1D-длину ---
-                seg_len_1d = seg.get('len_1d', seg['len'])  # Для совместимости
+                # +++ ИСПРАВЛЕНИЕ ОШИБКИ KeyError: 'len' +++
+                # Используем .get() с безопасным фоллбэком, чтобы избежать KeyError
+                seg_len_1d = seg.get('len_1d', seg.get('len', 0.0))
+                # +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
+
                 entry_text = f'  Seg {i + 1}-{i + 2}: {seg_len_1d:<10.4g}  →  {seg["label"]} (n={seg["n"]})'
                 self.lst.insert(tk.END, entry_text)
                 self.list_index_map[row] = {'analysis_idx': self.active_analysis_idx, 'type': 'chain', 'k': i}
@@ -470,9 +473,9 @@ class FibonacciAnalysisFrame(tk.Frame):
         self._set_text_content(self.txt_chain_simple, simple_seq)
         self._set_text_content(self.txt_words, "\n".join(fib_words))
 
-        # +++ ИСПРАВЛЕНИЕ: УДАЛЕНЫ ЭТИ ДВЕ СТРОКИ +++
-        # self.results_notebook.select(tab_prefixes)
-        # self.results_notebook.select(tab_subsegments)
+        # +++ ИСПРАВЛЕНИЕ ОШИБКИ ОТОБРАЖЕНИЯ (только 1 строка) +++
+        # Принудительно переключаемся на вкладку "Details" (индекс 0) для обновления
+        self.results_notebook.select(0)
         # +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
 
     def _populate_ratio_info(self, analysis_data):
@@ -668,7 +671,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         # --- ИЗМЕНЕНО: Ищем по _get_display_coords ---
         if self.anchor_idx is not None:
             # 3. ИЗМЕНЕНИЕ: Передаем `self.points[self.anchor_idx]` (с reshape)
-            ax, ay = self._get_display_coords(self.points[self.anchor_idx].reshape(1,2))[0, [1, 0]]
+            ax, ay = self._get_display_coords(self.points[self.anchor_idx].reshape(1, 2))[0, [1, 0]]
             bx, by = float(event.xdata), float(event.ydata)
             if self.rubber_line is None:
                 self.rubber_line, = self.ax.plot([ax, bx], [ay, by], color='yellow', lw=2.0, alpha=0.9, zorder=5)
@@ -677,7 +680,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             self.canvas.draw_idle()
         elif self.polygon_current_idx:
             # 4. ИЗМЕНЕНИЕ: Передаем `self.points[self.polygon_current_idx[-1]]` (с reshape)
-            ax, ay = self._get_display_coords(self.points[self.polygon_current_idx[-1]].reshape(1,2))[0, [1, 0]]
+            ax, ay = self._get_display_coords(self.points[self.polygon_current_idx[-1]].reshape(1, 2))[0, [1, 0]]
             bx, by = float(event.xdata), float(event.ydata)
             if self.polygon_rubber_line is None:
                 self.polygon_rubber_line, = self.ax.plot([ax, bx], [ay, by], color='orange', lw=2.2, alpha=0.8,
@@ -769,6 +772,7 @@ class FibonacciAnalysisFrame(tk.Frame):
             pts_2d[:, 1] = w * 0.05
 
         return pts_2d
+
     # ---------------------------------------------
 
     def _redraw_canvas(self):
@@ -821,7 +825,7 @@ class FibonacciAnalysisFrame(tk.Frame):
         if self.anchor_idx is not None:
             # --- ИЗМЕНЕНО: Рисуем 1D/2D якорь ---
             # 8. ИЗМЕНЕНИЕ: Передаем `self.points[self.anchor_idx]` (с reshape)
-            y, x = self._get_display_coords(self.points[self.anchor_idx].reshape(1,2))[0]
+            y, x = self._get_display_coords(self.points[self.anchor_idx].reshape(1, 2))[0]
             self.ax.scatter([x], [y], s=52, c='yellow', edgecolors='k', linewidths=0.6, zorder=4)
 
         if self.polygon_current_idx:
@@ -995,7 +999,8 @@ class FibonacciAnalysisFrame(tk.Frame):
             'indices': indices,
             # --- ИЗМЕНЕНО: Позиция диалога по 1D/2D ---
             # 15. ИЗМЕНЕНИЕ: Передаем `self.points[...]` (с reshape)
-            'dialog_pos': self._get_display_coords(self.points[indices[len(indices) // 2]].reshape(1,2))[0, ::-1].tolist(),
+            'dialog_pos': self._get_display_coords(self.points[indices[len(indices) // 2]].reshape(1, 2))[
+                0, ::-1].tolist(),
             'data': analysis_results
         }
         self._prompt_for_confirmation(analysis_data)
@@ -1024,7 +1029,8 @@ class FibonacciAnalysisFrame(tk.Frame):
             'type': 'ratio',
             'indices': indices,
             # 16. ИЗМЕНЕНИЕ: Передаем `self.points[...]` (с reshape)
-            'dialog_pos': self._get_display_coords(self.points[indices[len(indices) // 2]].reshape(1,2))[0, ::-1].tolist(),
+            'dialog_pos': self._get_display_coords(self.points[indices[len(indices) // 2]].reshape(1, 2))[
+                0, ::-1].tolist(),
             'data': {
                 'ratios': ratios_for_display,
                 'mean_ratio': mean_ratio,
@@ -1043,7 +1049,7 @@ class FibonacciAnalysisFrame(tk.Frame):
                     'type': 'polygon',
                     'indices': indices,
                     # 17. ИЗМЕНЕНИЕ: Передаем `self.points[...]` (с reshape)
-                    'dialog_pos': self._get_display_coords(self.points[indices[-1]].reshape(1,2))[0, ::-1].tolist(),
+                    'dialog_pos': self._get_display_coords(self.points[indices[-1]].reshape(1, 2))[0, ::-1].tolist(),
                     'data': {'area': area, 'label': f'P{poly_num}'}
                 }
                 self.polygon_current_idx.clear()
